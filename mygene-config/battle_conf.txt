@@ -1,28 +1,28 @@
-// MYgene Custom v1.1 - Low Rate 7x/7x/4x
+// MYgene Custom v1.1 - Base/Job EXP 7x, normal drops 4x, mini-boss drops 3x, MVP drops 2x
 base_exp_rate: 700
 job_exp_rate: 700
 
 item_rate_common: 400
-item_rate_common_boss: 400
-item_rate_common_mvp: 400
+item_rate_common_boss: 300
+item_rate_common_mvp: 200
 
 item_rate_heal: 400
-item_rate_heal_boss: 400
-item_rate_heal_mvp: 400
+item_rate_heal_boss: 300
+item_rate_heal_mvp: 200
 
 item_rate_use: 400
-item_rate_use_boss: 400
-item_rate_use_mvp: 400
+item_rate_use_boss: 300
+item_rate_use_mvp: 200
 
 item_rate_equip: 400
-item_rate_equip_boss: 400
-item_rate_equip_mvp: 400
+item_rate_equip_boss: 300
+item_rate_equip_mvp: 200
 
 item_rate_card: 400
-item_rate_card_boss: 400
-item_rate_card_mvp: 400
+item_rate_card_boss: 300
+item_rate_card_mvp: 200
 
-item_rate_mvp: 400
+item_rate_mvp: 200
 item_rate_adddrop: 400
 item_group_rate: 400
 item_rate_treasure: 400
