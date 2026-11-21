@@ -1,5 +1,5 @@
 // MYgene Yellow Fabre — standalone server event.
-// 30 kills of base Fabre (1007) on Prontera field prt_fild08 spawn one
+// 30 kills of base Fabre (1007) on Prontera field prt_fild01 spawn one
 // Yellow Fabre (31050). Global field counter, not a character quest.
 // A Yellow Fabre must be killed before the next 30-kill cycle begins.
 // Custom rewards: exact per-kill chances, independent of 4x global drop rate;
@@ -8,7 +8,7 @@
 OnInit:
     .FabreKills = 0;
     .YellowActive = 0;
-    .Field$ = "prt_fild08";
+    .Field$ = "prt_fild01";
     end;
 
 OnNPCKillEvent:
