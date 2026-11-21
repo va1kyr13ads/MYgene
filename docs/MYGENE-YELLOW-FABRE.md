@@ -9,7 +9,7 @@ The matching client visual/UI changes are on `va1kyr13ads/rustnarok-client`, bra
 - **Monster:** Yellow Fabre (ID `31050`, `MYGENE_YELLOW_FABRE`), inspired by the standard Fabre (1007).
 - **Appearance:** Yellow-tinted base Fabre animation rendered by the MYgene client at runtime (no new game GRF).
 - **Combat:** Level 8, 650 HP, ATK 22–30, Small Insect, Earth 1, slightly faster than regular Fabre.
-- **Map:** `prt_fild08` (Prontera field). The NPC event script watches ordinary Fabre (1007) deaths on this field.
+- **Map:** `prt_fild01` (Prontera field). The NPC event script watches ordinary Fabre (1007) deaths on this field.
 - **Trigger:** After the 30th ordinary Fabre death, one Yellow Fabre spawns at a random walkable location on that map. A field-wide announcement appears. While it is alive, additional Fabre kills are not counted. After its death, the count restarts at zero.
 - **Server restart:** The temporary counter and encounter state reset on server/script restart. Do not reload scripts while the special monster is alive; clean up its spawn before development reloads.
 
@@ -89,6 +89,6 @@ Observe map-server startup logs for YAML, NPC and C++ errors. Confirm the new it
 - The yellow tint applies to green-dominant Fabre sprite pixels; its visual appearance depends on the source game's sprite palette.
 - Unique new icon/weapon/card illustrations are not part of this prototype.
 - The event keeps the counter in temporary NPC memory and resets it on script/server restart.
-- The encounter currently targets only `prt_fild08`, not all fields or the entire server.
+- The encounter currently targets only `prt_fild01`, not all fields or the entire server.
 - Current potion behavior uses a repeated AI scan chance and should be balanced with real-player testing.
 - Default item IDs are in a custom range (31001–31003). Inspect database conflicts before merging in later custom items.
