@@ -1,0 +1,47 @@
+# MYgene: Yellow Fabre exclusive rewards.
+# Default item appearances reuse existing, legally supplied Ragnarok assets;
+# server logic for the knife's special proc is in src/map/battle.cpp.
+Header:
+  Type: ITEM_DB
+  Version: 3
+
+Body:
+  - Id: 31001
+    AegisName: MYGENE_FABRE_SLAYER
+    Name: Fabre Slayer Knife
+    Type: Weapon
+    SubType: Dagger
+    Buy: 10000
+    Weight: 400
+    Attack: 17
+    Range: 1
+    Slots: 1
+    WeaponLevel: 1
+    EquipLevelMin: 1
+    Jobs:
+      All: true
+    Locations:
+      Right_Hand: true
+    View: 1
+    AliasName: Knife
+
+  - Id: 31002
+    AegisName: MYGENE_YELLOW_FABRE_CARD
+    Name: Yellow Fabre Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+    AliasName: Fabre_Card
+
+  - Id: 31003
+    AegisName: MYGENE_ATTRACTION_POTION
+    Name: Attraction Potion
+    Type: Usable
+    Buy: 1000
+    Weight: 50
+    AliasName: Concentration_Potion
+    Script: |
+      MYGENE_ATTRACTION_UNTIL = gettimetick(2) + 300;
+      dispbottom "Attraction Potion: 70% enhanced field-monster aggro for 5 minutes.";
