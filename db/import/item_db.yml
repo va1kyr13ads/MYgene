@@ -41,7 +41,7 @@ Body:
     Type: Usable
     Buy: 1000
     Weight: 50
-    AliasName: Concentration_Potion
+    AliasName: Center_Potion
     Script: |
       MYGENE_ATTRACTION_UNTIL = gettimetick(2) + 300;
       dispbottom "Attraction Potion: 70% enhanced field-monster aggro for 5 minutes.";
