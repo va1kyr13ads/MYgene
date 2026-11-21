@@ -1,0 +1,59 @@
+// MYgene Yellow Fabre — standalone server event.
+// 30 kills of base Fabre (1007) on Prontera field prt_fild08 spawn one
+// Yellow Fabre (31050). Global field counter, not a character quest.
+// A Yellow Fabre must be killed before the next 30-kill cycle begins.
+// Custom rewards: exact per-kill chances, independent of 4x global drop rate;
+// vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
+-	script	MYgene_Yellow_Fabre	-1,{
+OnInit:
+    .FabreKills = 0;
+    .YellowActive = 0;
+    .Field$ = "prt_fild08";
+    end;
+
+OnNPCKillEvent:
+    if (killedrid != 1007 || strcharinfo(3) != .Field$ || .YellowActive)
+        end;
+    .FabreKills++;
+    if (.FabreKills < 30)
+        end;
+    .FabreKills = 0;
+    .YellowActive = 1;
+    monster .Field$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
+    mapannounce .Field$,"MYgene: A Yellow Fabre has appeared after 30 Fabre defeats!",bc_map,0xFFFF00;
+    end;
+
+OnYellowFabreDead:
+    .YellowActive = 0;
+    .FabreKills = 0;
+    // An OnMobDeath event carries the killer's RID.
+    // Place rolls on the ground at the killer's position near the fallen mob.
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        end;
+
+    // Fabre Slayer Knife: 11.00% independent roll.
+    if (rand(1000000) < 110000)
+        makeitem 31001,1,.@map$,.@x,.@y;
+
+    // One random Red, Blue, or Yellow Gemstone: 70.00%.
+    if (rand(1000000) < 700000) {
+        switch(rand(3)) {
+        case 0: makeitem 715,1,.@map$,.@x,.@y; break;
+        case 1: makeitem 716,1,.@map$,.@x,.@y; break;
+        default: makeitem 717,1,.@map$,.@x,.@y; break;
+        }
+    }
+
+    // Yellow Fabre Card: precisely 0.01% (one in ten thousand).
+    if (rand(1000000) < 100)
+        makeitem 31002,1,.@map$,.@x,.@y;
+
+    // Gold: 55.00% (existing item 969, not Zeny).
+    if (rand(1000000) < 550000)
+        makeitem 969,1,.@map$,.@x,.@y;
+
+    // Attraction Potion: 0.50% (one in two hundred).
+    if (rand(1000000) < 5000)
+        makeitem 31003,1,.@map$,.@x,.@y;
+    end;
+}
