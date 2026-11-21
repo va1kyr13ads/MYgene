@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -1309,6 +1311,32 @@ int32 mob_target(mob_data *md,block_list *bl,int32 dist)
 }
 
 /*==========================================
+ * MYgene Attraction Potion:
+ * Players with a live 5-minute field-attraction effect have a 70% chance
+ * per passive-monster AI search to draw its aggro. Bosses and summoned mobs
+ * are excluded by the caller. The standard combat/KS safety checks apply.
+ *------------------------------------------*/
+static int32 mob_mygene_attraction_search(block_list *bl, va_list ap) {
+	mob_data *md = va_arg(ap, mob_data *);
+	block_list **target = va_arg(ap, block_list **);
+
+	if (*target != nullptr || bl->type != BL_PC)
+		return 0;
+	map_session_data *sd = BL_CAST(BL_PC, bl);
+	if (pc_readglobalreg(sd, add_str("MYGENE_ATTRACTION_UNTIL")) <= static_cast<int64>(time(nullptr)))
+		return 0;
+	if (rnd() % 100 >= 70)
+		return 0;
+	if (battle_check_target(md, bl, BCT_ENEMY) <= 0 || !status_check_skilluse(md, bl, 0, 0))
+		return 0;
+	if (!mob_can_reach(md, bl, md->db->range3))
+		return 0;
+	(*target) = bl;
+	md->target_id = bl->id;
+	return 1;
+}
+
+/*==========================================
  * The ?? routine of an active monster
  *------------------------------------------*/
 static int32 mob_ai_sub_hard_activesearch(block_list *bl,va_list ap)
@@ -2019,6 +2047,16 @@ static bool mob_ai_sub_hard(mob_data *md, t_tick tick)
 			if (dist > 0)
 				map_foreachinshootrange(mob_ai_sub_hard_lootsearch, md, dist, BL_ITEM, md, &tbl);
 		}
+	}
+
+	// MYgene: field monsters that are normally passive may seek a player
+	// using Attraction Potion, with a 70% roll per AI scan. Never alter
+	// towns, dungeons, PvP areas, bosses, or summoned monsters.
+	if (!(mode & MD_AGGRESSIVE) && (mode & MD_CANATTACK) && tbl == nullptr &&
+		md->master_id == 0 && md->get_bosstype() == BOSSTYPE_NONE &&
+		std::strstr(map_getmapdata(md->m)->name, "_fild") != nullptr &&
+		!map_getmapflag(md->m, MF_PVP) && !map_getmapflag(md->m, MF_GVG)) {
+		map_foreachinallrange(mob_mygene_attraction_search, md, view_range, BL_PC, md, &tbl);
 	}
 
 	if ((mode&MD_AGGRESSIVE && (!tbl || slave_lost_target)) || md->state.skillstate == MSS_FOLLOW)
