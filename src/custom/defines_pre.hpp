@@ -10,5 +10,7 @@
  **/
 
 
+// Rustnarok client test protocol. Do not deploy this branch publicly without a security review.
+#define PACKETVER 20220406
 
 #endif /* CONFIG_CUSTOM_DEFINES_PRE_HPP */
