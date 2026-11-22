@@ -1,0 +1,117 @@
+// MYgene Slayer Series #3: Blue Chon Chon.
+// Eligible normal family only: Chonchon (1011), Steel Chonchon (1042),
+// Hunter Fly (1035). Exclude Dragon Fly (1091, mini-boss) and all boss,
+// MVP, elite and other IDs. Thirty eligible kills on the SAME map spawn
+// one Blue Chon Chon (31052) at the final corpse or killer position.
+// Each map counts independently; an active Blue Chon Chon blocks respawn.
+// Scripted drops use exact independent fixed rates, unaffected by server
+// drop multipliers. Normal Chonchon loot is in db/import/mob_db.yml.
+// Unlabeled GM spawns use OnNPCKillEvent; labeled encounter mobs use
+// OnBlueChonChonDead. Each kill takes ONE reward path, not both.
+-	script	MYgene_Blue_Chon_Chon	-1,{
+OnInit:
+    .MapCount = 0;
+    end;
+
+OnNPCKillEvent:
+    if (killedrid == 31052) {
+        callsub S_BlueRewards;
+        end;
+    }
+    if (killedrid != 1011 && killedrid != 1042 && killedrid != 1035)
+        end;
+    .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        end;
+
+    .@slot = -1;
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .@slot = .@i;
+            break;
+        }
+    }
+    if (.@slot < 0) {
+        .@slot = .MapCount;
+        .MapCount++;
+        .MapName$[.@slot] = .@map$;
+        .KillCount[.@slot] = 0;
+        .BlueActive[.@slot] = 0;
+    }
+    if (.BlueActive[.@slot])
+        end;
+    .KillCount[.@slot]++;
+    if (.KillCount[.@slot] < 30)
+        end;
+
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@mob_data;
+        .@death_map$ = mapid2name(.@mob_data[UMOB_MAPID]);
+        if (.@death_map$ == .@map$ && .@mob_data[UMOB_X] > 0 && .@mob_data[UMOB_Y] > 0) {
+            .@x = .@mob_data[UMOB_X];
+            .@y = .@mob_data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        end;
+
+    .KillCount[.@slot] = 0;
+    .BlueActive[.@slot] = 1;
+    monster .@map$,.@x,.@y,"Blue Chon Chon",31052,1,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead";
+    mapannounce .@map$,"A Blue Chon Chon has appeared!",bc_map,0x3399FF;
+    end;
+
+OnBlueChonChonDead:
+    .@map$ = strcharinfo(3);
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .BlueActive[.@i] = 0;
+            .KillCount[.@i] = 1; // Encounter kill credits the next cycle once.
+            break;
+        }
+    }
+    callsub S_BlueRewards;
+    end;
+
+S_BlueRewards:
+    .@map$ = strcharinfo(3);
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return;
+    .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
+
+    // Chonchon Slayer Bow [1]: 0.05% (1 / 2,000).
+    // Give to the killer; floor-drop at killer tile if overweight.
+    if (.@guaranteed || rand(1000000) < 500) {
+        if (checkweight(31010,1)) {
+            getitem 31010,1;
+            dispbottom "Slayer reward obtained: "+getitemname(31010)+".";
+        } else {
+            makeitem 31010,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(31010)+".";
+        }
+    }
+
+    // One of Red, Blue or Yellow Gemstone: 70%.
+    if (.@guaranteed || rand(1000000) < 700000) {
+        switch(rand(3)) {
+        case 0: makeitem 715,1,.@map$,.@x,.@y; break;
+        case 1: makeitem 716,1,.@map$,.@x,.@y; break;
+        default: makeitem 717,1,.@map$,.@x,.@y; break;
+        }
+    }
+
+    // Blue Chon Chon Card: 0.01% (1 / 10,000).
+    if (.@guaranteed || rand(1000000) < 100)
+        makeitem 31011,1,.@map$,.@x,.@y;
+
+    // Gold item (969), not Zeny: 11%.
+    if (.@guaranteed || rand(1000000) < 110000)
+        makeitem 969,1,.@map$,.@x,.@y;
+
+    // Existing Attraction Potion: 0.5%.
+    if (.@guaranteed || rand(1000000) < 5000)
+        makeitem 31003,1,.@map$,.@x,.@y;
+    return;
+}
