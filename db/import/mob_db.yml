@@ -103,3 +103,53 @@ Body:
       - Item: Thief_Bug_Card
         Rate: 1
         StealProtected: true
+
+  # Slayer Series #3 Blue Chon Chon. It is an ordinary mob, not a boss.
+  # Ordinary drops mirror Chonchon (1011), while the rare MYgene-exclusive
+  # Bow/Card/Gem/Gold/Potion roll once via npc/custom/mygene/blue_chon_chon.txt.
+  - Id: 31052
+    AegisName: MYGENE_BLUE_CHON_CHON
+    Name: Blue Chon Chon
+    Level: 8
+    Hp: 3000
+    BaseExp: 30
+    JobExp: 25
+    Attack: 22
+    Attack2: 30
+    Agi: 5
+    Vit: 8
+    Dex: 10
+    Luk: 7
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Insect
+    Element: Wind
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1076
+    AttackMotion: 576
+    ClientAttackMotion: 288
+    DamageMotion: 480
+    Ai: 01
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Iron
+        Rate: 50
+      - Item: Shell
+        Rate: 6500
+      - Item: Jellopy
+        Rate: 1500
+      - Item: Cutter_
+        Rate: 55
+      - Item: Wing_Of_Fly
+        Rate: 100
+      - Item: Chonchon_Doll
+        Rate: 5
+      - Item: Iron_Ore
+        Rate: 150
+      - Item: Chonchon_Card
+        Rate: 1
+        StealProtected: true
