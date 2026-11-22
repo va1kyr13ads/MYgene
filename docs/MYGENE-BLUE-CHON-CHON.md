@@ -26,8 +26,8 @@ Exactly independent of global 4x/normal multipliers:
 
 | Reward | ID | Chance |
 |---|---:|---:|
-| Chonchon Slayer Bow [1] | 31010 | **0.05%** |
-| Blue Chon Chon Card | 31011 | **0.01%** |
+| Chonchon Slayer Bow [1] | 60010 | **0.05%** |
+| Blue Chon Chon Card | 60011 | **0.01%** |
 | One of Red / Blue / Yellow Gemstone | 715 / 716 / 717 | 70.00% |
 | Gold item | 969 | 11.00% |
 | Existing Attraction Potion | 31003 | 0.50% |
@@ -36,15 +36,15 @@ The Bow is awarded to the killer's inventory when carry weight allows and otherw
 
 ### Weapon and Blue card effects
 
-- **Chonchon Slayer Bow [1]** (`31010`): two-handed Bow; ATK 17, Weight 40, range 5, Weapon Lv. 1, equip Lv. 4, unrefinable. Uses standard RO bow jobs. Requires arrows for ordinary ranged attacks as normal.
+- **Chonchon Slayer Bow [1]** (`60010`): two-handed Bow; ATK 17, Weight 40, range 5, Weapon Lv. 1, equip Lv. 4, unrefinable. Uses standard RO bow jobs. Requires arrows for ordinary ranged attacks as normal.
 - On a **successful basic weapon attack** against mob IDs `1011`, `1042`, `1035` or `31052`: a **50%** chance of lethal execution. No skill attacks, no unrelated monsters, and unconditional rAthena `BOSSTYPE_NONE` protection.
-- **Blue Chon Chon Card** (`31011`): compounded in the Bow's first slot, raises that bow's execution chance to **90%**. No general card-only effect on other weapons.
-- **Perfect Chonchon Slayer Bow (P.C.S.B)** (`31012`): ATK 25, Weapon Lv. 4, equip Lv. 40, Weight 100, range 5, 1 slot, indestructible, unrefinable, same jobs; 90% execution **only when Blue Chon Chon Card remains compounded**. This is **never** a monster drop.
+- **Blue Chon Chon Card** (`60011`): compounded in the Bow's first slot, raises that bow's execution chance to **90%**. No general card-only effect on other weapons.
+- **Perfect Chonchon Slayer Bow (P.C.S.B)** (`60012`): ATK 25, Weapon Lv. 4, equip Lv. 40, Weight 100, range 5, 1 slot, indestructible, unrefinable, same jobs; 90% execution **only when Blue Chon Chon Card remains compounded**. This is **never** a monster drop.
 - **Perfect upgrade access is GM test only (group 99)** at World Relic Keeper in Prontera. It reuses the established equipment-instance revalidation and conversion safety checks. Public crafting, leasing and world supply registry remain disabled.
 
 ## Client support
 
-The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` adds tooltip, name, one-slot and card metadata for item IDs `31010`, `31011` and `31012`. It deliberately borrows standard Bow and Chonchon Card **inventory assets** until the dedicated art is ready. No copyrighted GRF is added to GitHub.
+The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` adds tooltip, name, one-slot and card metadata for item IDs `60010`, `60011` and `60012`. It deliberately borrows standard Bow and Chonchon Card **inventory assets** until the dedicated art is ready. No copyrighted GRF is added to GitHub.
 
 ## Install on development / live Codespace
 
@@ -58,11 +58,11 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 
 ## Live GM verification checklist
 
-- `@item 31010 1`, `@item 31011 1`, `@item 31012 1`, `@item 31009 2` (GM test items), confirm correct name, one slot and bow rendering.
+- `@item 60010 1`, `@item 60011 1`, `@item 60012 1`, `@item 31009 2` (GM test items), confirm correct name, one slot and bow rendering.
 - `@monster 1011 30` on the **same map**; kill 30 normals and check one Blue Chon Chon spawn. Repeat with a mixture of Steel Chonchon `1042` and Hunter Fly `1035`.
 - Verify Dragon Fly `1091` never advances the counter; no boss, elite or MVP is affected by execution. An ordinary 30-kill spawn must be solo on each map.
 - Spawn `@monster 31052 1`, activate `Legendary Bubble Gum`, kill within 15 seconds. Expect Bow and Blue card and auxiliaries; weapon inventory or ground fallback. Repeat without gum to observe ordinary independent probabilities (absence of rare drops is normal).
-- Equip Bow `31010` with arrows; test regular basic attacks versus Chonchon, Steel Chonchon, Hunter Fly and Blue Chon Chon; check approximately 50% execution for attacks that hit. Compound Blue card `31011` and expect approximately 90% over many hits. Test other families, skills, Dragon Fly and elites as negatives.
+- Equip Bow `60010` with arrows; test regular basic attacks versus Chonchon, Steel Chonchon, Hunter Fly and Blue Chon Chon; check approximately 50% execution for attacks that hit. Compound Blue card `60011` and expect approximately 90% over many hits. Test other families, skills, Dragon Fly and elites as negatives.
 - At group 99, verify Perfect Bow conversion on a **backed-up development character** with the carded normal bow equipped, at Level 40+. Negative-test non-GM, uncarded/refined/bound/graded items.
 - Recheck Fabre and Thief Bug weapons, items, drops and card execution; the prior saved milestone remains the rollback point.
 
