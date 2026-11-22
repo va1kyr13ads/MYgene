@@ -10,7 +10,7 @@ Body:
     AegisName: MYGENE_YELLOW_FABRE
     Name: Yellow Fabre
     Level: 8
-    Hp: 1950
+    Hp: 3000
     BaseExp: 30
     JobExp: 25
     Attack: 22
