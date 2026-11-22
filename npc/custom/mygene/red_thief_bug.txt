@@ -4,7 +4,8 @@
 // 30 qualifying kills on ONE map spawn Red Thief Bug at the final kill.
 // Per-map state is independent. An active Red Thief Bug blocks another
 // spawn on that map until killed; its death counts as one next-cycle kill.
-// No exclusive custom rewards yet: loot must be approved separately.
+// Fixed exclusive rewards mirror Yellow Fabre and do not use global drop rates.
+// Normal Thief Bug material drops are in db/import/mob_db.yml.
 -	script	MYgene_Red_Thief_Bug	-1,{
 OnInit:
     .MapCount = 0;
@@ -64,5 +65,35 @@ OnRedThiefBugDead:
             break;
         }
     }
+    // Fixed exclusive drops; separate independent rolls with denominator
+    // 1,000,000 just like the verified Yellow Fabre encounter.
+    // Item drops land by the killing player's location.
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        end;
+
+    // Thief Bug Slayer Sword [1]: 0.05% (1 in 2,000).
+    if (rand(1000000) < 500)
+        makeitem 31006,1,.@map$,.@x,.@y;
+
+    // One random Red / Blue / Yellow Gemstone: 70.00%.
+    if (rand(1000000) < 700000) {
+        switch(rand(3)) {
+        case 0: makeitem 715,1,.@map$,.@x,.@y; break;
+        case 1: makeitem 716,1,.@map$,.@x,.@y; break;
+        default: makeitem 717,1,.@map$,.@x,.@y; break;
+        }
+    }
+
+    // MYgene Red Thief Bug Card: 0.01% (1 in 10,000).
+    if (rand(1000000) < 100)
+        makeitem 31007,1,.@map$,.@x,.@y;
+
+    // Gold item 969, not Zeny: 11.00%.
+    if (rand(1000000) < 110000)
+        makeitem 969,1,.@map$,.@x,.@y;
+
+    // Same Attraction Potion as Yellow Fabre: 0.50%.
+    if (rand(1000000) < 5000)
+        makeitem 31003,1,.@map$,.@x,.@y;
     end;
 }
