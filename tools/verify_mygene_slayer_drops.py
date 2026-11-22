@@ -110,6 +110,28 @@ class SlayerDropWiring(unittest.TestCase):
         self.assertIn("weapon.card[0] == 60011 ? 90", battle)
         self.assertIn("weapon_id == 60010 ? 50 : 0", battle)
 
+    def test_blue_chon_chon_ids_do_not_override_official_items(self):
+        # Official Renewal card IDs 31010-31012 already exist. Our new
+        # Blue-series items must never replace them through db/import.
+        # Check both gameplay modes, not just unused IDs in the custom DB.
+        blue_ids = {60010, 60011, 60012}
+        for mode in ("pre-re", "re"):
+            for kind in ("equip", "usable", "etc"):
+                path = ROOT / "db" / mode / f"item_db_{kind}.yml"
+                contents = path.read_text(encoding="utf-8")
+                official_ids = {
+                    int(m.group(1))
+                    for m in re.finditer(r"(?m)^  - Id: (\\d+)\\s*$", contents)
+                }
+                self.assertFalse(
+                    blue_ids & official_ids,
+                    f"Blue Chon Chon item ID collides with {path}"
+                )
+        for old_id in (31010, 31011, 31012):
+            self.assertNotIn(f"  - Id: {old_id}\\n", ITEM_DB)
+        for new_id in blue_ids:
+            self.assertEqual(ITEM_DB.count(f"  - Id: {new_id}\\n"), 1)
+
     def test_blue_chon_chon_db_and_npc_loader(self):
         npc = (ROOT / "npc/scripts_custom.conf").read_text(encoding="utf-8")
         self.assertIn("npc: npc/custom/mygene/blue_chon_chon.txt", npc)
