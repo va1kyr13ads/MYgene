@@ -4,7 +4,7 @@
 //= Current appearance uses the existing RO "4_M_MINISTER" sprite. It does not
 //= overwrite existing client sprites or require new GRF resources.
 //=
-//= SAFETY: Stage 1 supports a GM-ONLY Perfect knife conversion for testing.
+//= SAFETY: Stage 1 supports GM-ONLY Perfect knife and sword conversions.
 //= The world cap, soul pipeline, lease ledger and renewal are still disabled.
 //= Never open conversion to players before implementing the atomic world cap.
 //= Conversion rejects bound, refined, rental, graded and optioned items; it
@@ -36,6 +36,21 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "Indestructible / No Refine";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
+        mes "^FF5555P.T.B.S^000000";
+        mes "Perfect Thief Bug Slayer Sword";
+        mes "is forged from a Thief Bug";
+        mes "Slayer Sword [1] compounded";
+        mes "with Red Thief Bug Card.";
+        next;
+        mes "ATK: ^3399FF25^000000, Weapon Lv. 4";
+        mes "Required Level: 40";
+        mes "Range: 2, Weight: 100";
+        mes "90% Thief Bug execution";
+        mes "Indestructible / No Refine";
+        mes "Only GM test upgrades";
+        mes "are available for now.";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
         mes "The relic will have a";
         mes "60-day ownership lease.";
         mes "Renewals have no limit.";
@@ -49,6 +64,13 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "Fabre Slayer Knives: ^3399FF"+countitem(31001)+"^000000";
         mes "Yellow Fabre Cards: ^3399FF"+countitem(31002)+"^000000";
         mes "Perfect Knives: ^3399FF"+countitem(31004)+"^000000";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Thief Bug Slayer Swords: ^3399FF"+countitem(31006)+"^000000";
+        mes "Red Thief Bug Cards: ^3399FF"+countitem(31007)+"^000000";
+        mes "Perfect Swords: ^3399FF"+countitem(31008)+"^000000";
+        mes "The card must be compounded";
+        mes "in the equipped sword.";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "Renewal will require";
@@ -393,6 +415,7 @@ OnInit:
     .RenewalWindowDays = 14;
     .GraceDays = 7;
     .PerfectKnifeID = 31004; // Standalone GM test item, no lease/cap.
+    .PerfectSwordID = 31008; // GM-only test upgrade, no lease/cap.
     .SoulItemID = 31005;    // Reserved; not currently in item database.
     end;
 }
