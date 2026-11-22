@@ -54,8 +54,8 @@ Body:
         StealProtected: true
 
   # MYgene Red Thief Bug: new normal monster, using Yellow Fabre's
-  # combat/stat baseline exactly. Drops and kill-count spawning will be
-  # defined separately; do not copy Yellow Fabre's unique economy rewards.
+  # combat/stat baseline exactly. Normal drops mirror Thief Bug (1051);
+  # independent exclusive reward rolls are in npc/custom/mygene/red_thief_bug.txt.
   - Id: 31051
     AegisName: MYGENE_RED_THIEF_BUG
     Name: Red Thief Bug
@@ -84,3 +84,22 @@ Body:
     Ai: 01
     Modes:
       Detector: true
+    # Vanilla Thief Bug (1051) drops from db/pre-re/mob_db.yml.
+    # These use the normal configured server multiplier, unlike special
+    # rewards rolled at fixed rates in red_thief_bug.txt.
+    Drops:
+      - Item: Worm_Peelings
+        Rate: 2500
+      - Item: Leather_Jacket_
+        Rate: 80
+      - Item: Red_Herb
+        Rate: 350
+      - Item: Jellopy
+        Rate: 2000
+      - Item: Leather_Jacket
+        Rate: 120
+      - Item: Iron_Ore
+        Rate: 250
+      - Item: Thief_Bug_Card
+        Rate: 1
+        StealProtected: true
