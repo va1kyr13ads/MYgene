@@ -31,7 +31,7 @@ Body:
   # Only the World Relic Keeper GM-test upgrade currently creates this variant.
   - Id: 31004
     AegisName: MYGENE_PERFECT_FABRE_SLAYER
-    Name: Perfect Fabre Slayer Knife
+    Name: P.F.S.K
     Type: Weapon
     SubType: Dagger
     Buy: 10000
