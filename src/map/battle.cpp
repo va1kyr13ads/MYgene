@@ -7340,22 +7340,23 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 
 	wd = battle_calc_attack(BF_WEAPON, src, target, 0, 0, flag);
 
-	// MYgene: Fabre Slayer Knife (31001), with one Yellow Fabre Card (31002).
-	// 50% normal-attack instant defeat against Fabre (1007), Pupa (1008),
-	// Creamy (1018) and Yellow Fabre (31050); 90% with the card compounded
-	// into this exact knife. Missed/blocked attacks cannot trigger. This does
-	// not affect players, bosses or unrelated insect monsters.
+	// MYgene Fabre execution: legacy base knife 31001 and Perfect knife 31004.
+	// Legacy uncarded knife: 50%. Yellow Fabre Card 31002 in slot 0: 90%.
+	// A Perfect knife with the wrong/missing card has no instant-defeat proc.
+	// Only successful normal attacks against the four Fabre-family IDs count.
 	if (sd && target->type == BL_MOB && wd.damage + wd.damage2 > 0 && (wd.flag & BF_WEAPON)) {
 		const int32 mob_class = reinterpret_cast<mob_data*>(target)->mob_id;
 		if (mob_class == 1007 || mob_class == 1008 || mob_class == 1018 || mob_class == 31050) {
 			const int16 weapon_idx = sd->equip_index[EQI_HAND_R];
-			if (weapon_idx >= 0 && sd->inventory_data[weapon_idx] != nullptr &&
-				sd->inventory_data[weapon_idx]->nameid == 31001) {
-				const struct item& knife = sd->inventory.u.items_inventory[weapon_idx];
-				const int32 chance = knife.card[0] == 31002 ? 90 : 50;
-				if (rnd() % 100 < chance) {
-					wd.damage = std::max<int64>(wd.damage, static_cast<int64>(tstatus->hp));
-					wd.damage2 = 0;
+			if (weapon_idx >= 0 && sd->inventory_data[weapon_idx] != nullptr) {
+				const t_itemid knife_id = sd->inventory_data[weapon_idx]->nameid;
+				if (knife_id == 31001 || knife_id == 31004) {
+					const struct item& knife = sd->inventory.u.items_inventory[weapon_idx];
+					const int32 chance = knife.card[0] == 31002 ? 90 : (knife_id == 31001 ? 50 : 0);
+					if (chance > 0 && rnd() % 100 < chance) {
+						wd.damage = std::max<int64>(wd.damage, static_cast<int64>(tstatus->hp));
+						wd.damage2 = 0;
+					}
 				}
 			}
 		}
