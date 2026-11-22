@@ -1,21 +1,21 @@
 // MYgene Yellow Fabre — standalone server event.
-// 30 Fabre-family kills (Fabre 1007, Pupa 1008, Creamy 1018)
-// on prt_fild01 spawn Yellow Fabre (31050). The Yellow Fabre defeat
-// contributes the first kill toward the NEXT 30-kill cycle. Field-only
-// global counter; the current Yellow Fabre must die before a new one spawns.
+// 30 Fabre-family kills (Fabre 1007, Pupa 1008, Creamy 1018) on ANY map
+// share one server-wide counter for all players. Yellow Fabre (31050)
+// appears on the map of the 30th eligible kill; its own defeat counts as
+// 1 toward the NEXT 30-kill cycle. Only one Yellow Fabre exists at a time.
 // Custom rewards: exact per-kill chances, independent of 4x global drop rate;
 // vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
 -	script	MYgene_Yellow_Fabre	-1,{
 OnInit:
     .FabreKills = 0;
     .YellowActive = 0;
-    .Field$ = "prt_fild01";
     end;
 
 OnNPCKillEvent:
-    if (strcharinfo(3) != .Field$ || .YellowActive)
+    // While Yellow Fabre is alive, further family kills do not advance it.
+    if (.YellowActive)
         end;
-    // Count naturally defeated members of the Fabre family on this field.
+    // Count eligible monster IDs on any map; do not restrict to one field.
     // Yellow Fabre (31050) is credited on OnYellowFabreDead instead.
     if (killedrid != 1007 && killedrid != 1008 && killedrid != 1018)
         end;
@@ -24,8 +24,10 @@ OnNPCKillEvent:
         end;
     .FabreKills = 0;
     .YellowActive = 1;
-    monster .Field$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
-    mapannounce .Field$,"MYgene: A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
+    // Spawn where the world-wide counter hit 30, not at a fixed field.
+    .@map$ = strcharinfo(3);
+    monster .@map$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
+    mapannounce .@map$,"MYgene: A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
     end;
 
 OnYellowFabreDead:
