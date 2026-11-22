@@ -1,0 +1,128 @@
+//===== MYgene World Relic Keeper ============================================
+//= Prontera NPC for MYgene-exclusive world relics.
+//= VISUAL: adjust the map, X/Y, facing and NPC sprite on the next line.
+//= Current appearance uses the existing RO "4_M_MINISTER" sprite. It does not
+//= overwrite existing client sprites or require new GRF resources.
+//=
+//= SAFETY: This is the dialogue / information stage of the relic NPC.
+//= There is no world supply database, soul earn pipeline, upgrade conversion,
+//= unique relic serial, or lease enforcement yet. All mutation menus are
+//= deliberately read-only until the backend provides atomic, tested actions.
+//= Do NOT simply enable delitem/getitem to simulate renewal; that would
+//= consume rare materials without reserving a valid world relic lease.
+//===========================================================================
+
+prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
+    mes "^C9A13C[World Relic Keeper]^000000";
+    mes "A relic's power belongs to";
+    mes "the living world, not to";
+    mes "forgotten vaults.";
+    next;
+
+    switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Leave")) {
+    case 1:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Perfect Fabre Slayer Knife";
+        mes "is a legendary world relic.";
+        mes "It is forged from a Fabre";
+        mes "Slayer Knife and the rare";
+        mes "Yellow Fabre Card.";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Its intended traits are:";
+        mes "^3399FF25 ATK, Weapon Lv. 4^000000";
+        mes "Required Level: 40";
+        mes "Range: 2, Weight: 100";
+        mes "90% Fabre-family execution";
+        mes "Indestructible / No Refine";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "The relic will have a";
+        mes "60-day ownership lease.";
+        mes "Renewals have no limit.";
+        mes "Renew in the last 14 days";
+        mes "or during 7 grace days.";
+        close;
+
+    case 2:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Let me see what you carry.";
+        mes "Fabre Slayer Knives: ^3399FF"+countitem(31001)+"^000000";
+        mes "Yellow Fabre Cards: ^3399FF"+countitem(31002)+"^000000";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Renewal will require";
+        mes "^3399FF"+.SoulCost+" Fabre Family Souls^000000.";
+        mes "The soul material and";
+        mes "live ownership registry";
+        mes "are not active yet.";
+        close;
+
+    case 3:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "I can renew a registered";
+        mes "world relic for 60 days";
+        mes "using 300 Family Souls.";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "^FF6600Renewal is not active yet.^000000";
+        mes "The relic ledger must be";
+        mes "connected first. I will";
+        mes "not take your materials.";
+        close;
+
+    case 4:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "The world relic registry";
+        mes "will show each unique";
+        mes "relic's active status.";
+        mes "Expired leases return";
+        mes "their world slots.";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "^FF6600Registry not online yet.^000000";
+        mes "No maximum supply has";
+        mes "been configured.";
+        close;
+
+    case 5:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Only registered owners";
+        mes "will be able to collect";
+        mes "Fabre Family Souls.";
+        mes "The weapon need not be";
+        mes "equipped for collection.";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Planned souls per kill:";
+        mes "Fabre: ^3399FF1^000000";
+        mes "Pupa: ^3399FF1^000000";
+        mes "Creamy: ^3399FF1^000000";
+        mes "Yellow Fabre: ^3399FF5^000000";
+        next;
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "Only valid field kills";
+        mes "can earn souls. GM and";
+        mes "test spawns do not count.";
+        mes "Gather ^3399FF300 Souls^000000 for";
+        mes "each 60-day renewal.";
+        mes "^FF6600Collection is pending.^000000";
+        close;
+
+    default:
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "May your relic never";
+        mes "fall into silence.";
+        close;
+    }
+
+OnInit:
+    // Preview values. The future backend must enforce these server-side.
+    .SoulCost = 300;
+    .LeaseDays = 60;
+    .RenewalWindowDays = 14;
+    .GraceDays = 7;
+    .PerfectKnifeID = 31004; // Reserved; not currently in item database.
+    .SoulItemID = 31005;    // Reserved; not currently in item database.
+    end;
+}
