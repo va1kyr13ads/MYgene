@@ -21,7 +21,7 @@ The special rewards are each **independent** per Yellow Fabre death. They are sc
 
 | Reward | Item ID | Exact chance per kill |
 |---|---:|---:|
-| Fabre Slayer Knife [1] | 31001 | 11% |
+| Fabre Slayer Knife [1] | 31001 | 0.05% |
 | One random Red/Blue/Yellow Gemstone | 716/717/715 | 70% |
 | Yellow Fabre Card | 31002 | 0.01% |
 | Gold (item, not zeny) | 969 | 55% |
@@ -29,7 +29,7 @@ The special rewards are each **independent** per Yellow Fabre death. They are sc
 
 Standard Fabre drops are **also** defined on Yellow Fabre: Fluff, Feather, Club [3], Azure Jewel, Green Herb, Clover, Club and Fabre Card, with their original Fabre base rates and normal MYgene multiplier.
 
-The scripted rewards are ground drops, not direct inventory grants. Because the script runs with the killer's RID, they appear near the killer's position, not necessarily on the monster corpse. Gold means the normal Gold loot item (969), not zeny.
+Successful special weapon rolls are granted directly to the killer when carry capacity allows, otherwise they become ground drops near the killer. The other scripted rewards are ground drops near the killer, not necessarily on the monster corpse. Gold means the normal Gold loot item (969), not zeny.
 
 ## New items
 
@@ -95,7 +95,7 @@ Observe map-server startup logs for YAML, NPC and C++ errors. Confirm the new it
 
 ## Custom weapon reward delivery (23 Nov 2026)
 
-For the current `feature/yellow-fabre` implementation, the **actual** Fabre Slayer Knife (31001) and Thief Bug Slayer Sword (31006) rates are **0.05% per special encounter kill**, or 1 in 2,000 on average. The earlier 11% knife entry in the original reward table above is historical and is no longer the live script value. A 0.05% rate does not guarantee a drop after 2,000 kills.
+For the current `feature/yellow-fabre` implementation, the **actual** Fabre Slayer Knife (31001) and Thief Bug Slayer Sword (31006) rates are **0.05% per special encounter kill**, or 1 in 2,000 on average. A 0.05% rate does not guarantee a drop after 2,000 kills.
 
 Both special-monster kill handlers now deliver a successful weapon roll directly to the attached killer's inventory when carry capacity allows it. If it cannot be carried, the weapon falls on the ground at the killer's position. Legendary Bubble Gum still guarantees the special weapon roll while active, and all other independently rolled rewards keep their existing chances. The normal encounter must be triggered by 30 eligible family kills; a manually summoned special monster lacks the scripted death callback and will not trigger exclusive rewards.
 
