@@ -1,42 +1,63 @@
 // MYgene Yellow Fabre — standalone server event.
-// 30 Fabre-family kills (Fabre 1007, Pupa 1008, Creamy 1018) on ANY map
-// share one server-wide counter for all players. Yellow Fabre (31050)
-// appears on the map of the 30th eligible kill; its own defeat counts as
-// 1 toward the NEXT 30-kill cycle. Only one Yellow Fabre exists at a time.
+// Each map has its own 30-kill counter for Fabre-family monsters:
+// Fabre (1007), Pupa (1008), Creamy (1018). Players on the SAME map
+// contribute together. Yellow Fabre (31050) spawns on that map when
+// its counter reaches 30. Its defeat counts as 1 toward the next cycle.
+// Multiple maps can have their own Yellow Fabre alive simultaneously.
 // Custom rewards: exact per-kill chances, independent of 4x global drop rate;
 // vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
 -	script	MYgene_Yellow_Fabre	-1,{
 OnInit:
-    .FabreKills = 0;
-    .YellowActive = 0;
+    // Map-specific counters are temporary NPC variables (reset on reload).
+    .MapCount = 0;
     end;
 
 OnNPCKillEvent:
-    // While Yellow Fabre is alive, further family kills do not advance it.
-    if (.YellowActive)
-        end;
-    // Count eligible monster IDs on any map; do not restrict to one field.
-    // Yellow Fabre (31050) is credited on OnYellowFabreDead instead.
+    // Yellow Fabre (31050) gets its next-cycle credit in its death event.
     if (killedrid != 1007 && killedrid != 1008 && killedrid != 1018)
         end;
-    .FabreKills++;
-    if (.FabreKills < 30)
-        end;
-    .FabreKills = 0;
-    .YellowActive = 1;
-    // Spawn where the world-wide counter hit 30, not at a fixed field.
     .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        end;
+
+    // Each distinct map gets its own counter/active flag. No cross-map sum.
+    .@slot = -1;
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .@slot = .@i;
+            break;
+        }
+    }
+    if (.@slot < 0) {
+        .@slot = .MapCount;
+        .MapCount++;
+        .MapName$[.@slot] = .@map$;
+        .KillCount[.@slot] = 0;
+        .YellowActive[.@slot] = 0;
+    }
+    // A map with an active Yellow Fabre waits for that one to be killed.
+    if (.YellowActive[.@slot])
+        end;
+    .KillCount[.@slot]++;
+    if (.KillCount[.@slot] < 30)
+        end;
+    .KillCount[.@slot] = 0;
+    .YellowActive[.@slot] = 1;
     monster .@map$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
-    mapannounce .@map$,"A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
+    mapannounce .@map$,"A Yellow Fabre has appeared",bc_map,0xFFFF00;
     end;
 
 OnYellowFabreDead:
-    .YellowActive = 0;
-    // Yellow Fabre is itself family: its defeat counts as kill 1/30
-    // toward the NEXT cycle, without spawning another Yellow Fabre here.
-    .FabreKills = 1;
-    // An OnMobDeath event carries the killer's RID.
-    // Place rolls on the ground at the killer's position near the fallen mob.
+    // Mob-death callbacks attach the killer; credit the matching map only.
+    .@map$ = strcharinfo(3);
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .YellowActive[.@i] = 0;
+            .KillCount[.@i] = 1;
+            break;
+        }
+    }
+    // Place rewards on the ground at the killer's location.
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
