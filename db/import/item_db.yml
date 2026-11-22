@@ -123,3 +123,24 @@ Body:
     View: 2
     Script: |
       bonus bUnbreakableWeapon;
+
+  # MYgene short-duration drop booster. Same SC_ITEMBOOST effect as
+  # standard Bubble Gum (12210), but only 15 seconds instead of 30 min.
+  # +100% means double normal drop chance, not a guaranteed item drop.
+  - Id: 31009
+    AegisName: MYGENE_LEGENDARY_BUBBLE_GUM
+    Name: Legendary Bubble Gum
+    Type: Usable
+    Buy: 2
+    Weight: 10
+    Trade:
+      NoDrop: true
+      NoTrade: true
+      NoSell: true
+      NoCart: true
+      NoGuildStorage: true
+      NoMail: true
+      NoAuction: true
+    Script: |
+      sc_start SC_ITEMBOOST,15000,100;
+      dispbottom "Legendary Bubble Gum: +100% normal drop rate for 15 seconds.";
