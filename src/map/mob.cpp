@@ -2853,6 +2853,14 @@ void mob_damage(mob_data *md, block_list *src, int32 damage)
  * @param factor: factor which is applied to all multiplicative bonuses and upper bound caps
  * @return Modified drop rate
  */
+// MYgene Legendary Bubble Gum: a 15-second, per-player guaranteed drop
+// window, checked at monster death. All configured entries become certain.
+static bool mygene_legendary_gum_active(map_session_data* sd)
+{
+	return sd != nullptr &&
+		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
+}
+
 int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
 {
 	int32 drop_rate = base_rate;
@@ -3327,7 +3335,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 						//it's positive, then it goes as it is
 						drop_rate = it.rate;
 
-					if (rnd()%10000 >= drop_rate)
+					if (!mygene_legendary_gum_active(sd) && rnd()%10000 >= drop_rate)
 						continue;
 
 					std::shared_ptr<s_mob_drop> mobdrop = std::make_shared<s_mob_drop>();
@@ -3350,13 +3358,14 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			}
 
 			// process script-granted zeny bonus (get_zeny_num) [Skotlex]
-			if( sd->bonus.get_zeny_num && rnd()%100 < sd->bonus.get_zeny_rate ) {
+			if( sd->bonus.get_zeny_num && (mygene_legendary_gum_active(sd) || rnd()%100 < sd->bonus.get_zeny_rate) ) {
 				i = sd->bonus.get_zeny_num > 0 ? sd->bonus.get_zeny_num : -md->level * sd->bonus.get_zeny_num;
 				if (!i) i = 1;
 				pc_getzeny(sd, 1+rnd()%i, LOG_TYPE_PICKDROP_MONSTER);
 			}
 		}
 
+		const bool mygene_guaranteed = mygene_legendary_gum_active(first_sd);
 		// Regular mob drops drop after script-granted drops
 		for( const std::shared_ptr<s_mob_drop>& entry : md->db->dropitem ){
 			if (entry->nameid == 0)
@@ -3369,9 +3378,11 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 
 			drop_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md);
 
-			// attempt to drop the item
-			if (rnd() % 10000 >= drop_rate)
+			// Active Legendary Gum makes every defined normal drop certain.
+			if (!mygene_guaranteed && rnd() % 10000 >= drop_rate)
 				continue;
+			if (mygene_guaranteed)
+				drop_rate = 10000;
 
 			if (first_sd != nullptr && it->type == IT_PETEGG) {
 				pet_create_egg(first_sd, entry->nameid);
@@ -3428,7 +3439,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 					final_rate = it.second->rate;
 				}
 
-				if( rnd_chance( final_rate, 100000u ) ){
+				if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
 					// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 					int32 map_drops_rate = max(1, (final_rate / 10));
 					std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3449,7 +3460,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 						final_rate = it.second->rate;
 					}
 
-					if( rnd_chance( final_rate, 100000u ) ){
+					if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
 						// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 						int32 map_drops_rate = max(1, (final_rate / 10));
 						std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3532,7 +3543,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				temp = cap_value( apply_rate( temp, penalty ), 0, 10000 );
 #endif
 
-				if (temp != 10000) {
+				if (!mygene_legendary_gum_active(mvp_sd) && temp != 10000) {
 					if(temp <= 0 && !battle_config.drop_rate0item)
 						temp = 1;
 					if(rnd()%10000 >= temp) //if ==0, then it doesn't drop
@@ -3566,7 +3577,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				//Logs items, MVP prizes [Lupus]
 				log_pick_mob(md, LOG_TYPE_MVP, -1, &item);
 				//If item_drop_mvp_mode is not 2, then only one item should be granted
-				if(battle_config.item_drop_mvp_mode != 2) {
+				if(battle_config.item_drop_mvp_mode != 2 && !mygene_legendary_gum_active(mvp_sd)) {
 					break;
 				}
 			}
