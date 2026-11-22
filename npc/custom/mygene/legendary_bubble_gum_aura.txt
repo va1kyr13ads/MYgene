@@ -1,0 +1,18 @@
+// MYgene Legendary Bubble Gum visual feedback.
+// 31009's item script starts this player-attached pulse timer.
+// The same character's timer determines both loot eligibility and effects.
+// This NPC never modifies battle stats, monster loot, or other players.
+-	script	MYgene_Legendary_Gum_Aura	-1,{
+OnPulse:
+    // A logout/map script reload or natural buff expiry must stop visuals.
+    if (MYGENE_LEGENDARY_GUM_UNTIL <= gettimetick(2)) {
+        @MYGENE_GUM_AURA_LOOP = 0;
+        end;
+    }
+
+    // Existing Ragnarok animation, with no additional client assets.
+    // Repeats at a restrained interval while the 15-second buff is active.
+    specialeffect2 EF_BLESSING;
+    addtimer 2500,"MYgene_Legendary_Gum_Aura::OnPulse";
+    end;
+}
