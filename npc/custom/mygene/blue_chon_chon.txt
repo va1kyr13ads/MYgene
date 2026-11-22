@@ -84,12 +84,12 @@ S_BlueRewards:
     // Chonchon Slayer Bow [1]: 0.05% (1 / 2,000).
     // Give to the killer; floor-drop at killer tile if overweight.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31010,1)) {
-            getitem 31010,1;
-            dispbottom "Slayer reward obtained: "+getitemname(31010)+".";
+        if (checkweight(60010,1)) {
+            getitem 60010,1;
+            dispbottom "Slayer reward obtained: "+getitemname(60010)+".";
         } else {
-            makeitem 31010,1,.@map$,.@x,.@y;
-            dispbottom "Slayer reward dropped nearby: "+getitemname(31010)+".";
+            makeitem 60010,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(60010)+".";
         }
     }
 
@@ -104,7 +104,7 @@ S_BlueRewards:
 
     // Blue Chon Chon Card: 0.01% (1 / 10,000).
     if (.@guaranteed || rand(1000000) < 100)
-        makeitem 31011,1,.@map$,.@x,.@y;
+        makeitem 60011,1,.@map$,.@x,.@y;
 
     // Gold item (969), not Zeny: 11%.
     if (.@guaranteed || rand(1000000) < 110000)
