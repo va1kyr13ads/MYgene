@@ -85,8 +85,23 @@ OnRedThiefBugDead:
     if (.@gm_debug)
         dispbottom "[MYgene Red Thief Bug DEBUG] Death event reached. Gum="+.@guaranteed+"; remaining="+(MYGENE_LEGENDARY_GUM_UNTIL-gettimetick(2))+"s.";
 
-    // Thief Bug Slayer Sword [1]: 0.05% (1 in 2,000).
-    if (.@guaranteed || rand(1000000) < 500) {
+    // Thief Bug Slayer Sword [1]: 0.05% normally (1 in 2,000).
+    // When Legendary Gum is active, grant it to the attached killer
+    // directly. Merely calling makeitem does not confirm the player
+    // received the ground item (the old debug counter was misleading).
+    // Preserve the normal low-chance floor-drop behavior without Gum.
+    if (.@guaranteed) {
+        if (checkweight(31006,1)) {
+            getitem 31006,1;
+            if (.@gm_debug)
+                dispbottom "[MYgene Red Thief Bug DEBUG] Slayer Sword 31006 given directly; check Equipment inventory.";
+        } else {
+            makeitem 31006,1,.@map$,.@x,.@y;
+            if (.@gm_debug)
+                dispbottom "[MYgene Red Thief Bug DEBUG] Inventory full/overweight; Slayer Sword 31006 placed on ground.";
+        }
+        .@drops++;
+    } else if (rand(1000000) < 500) {
         makeitem 31006,1,.@map$,.@x,.@y;
         .@drops++;
     }
@@ -119,6 +134,6 @@ OnRedThiefBugDead:
         .@drops++;
     }
     if (.@gm_debug)
-        dispbottom "[MYgene Red Thief Bug DEBUG] Scripted rewards created="+.@drops+" (5 when Gum active).";
+        dispbottom "[MYgene Red Thief Bug DEBUG] Scripted reward attempts="+.@drops+" (5 when Gum active).";
     end;
 }
