@@ -7344,8 +7344,10 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 	// only the designated non-boss monster family. Boss/miniboss/MVP
 	// exclusions are unconditional, including custom family variants.
 	// Perfect weapons require their correct compounded family card.
-	if (sd && target->type == BL_MOB && wd.damage + wd.damage2 > 0 &&
-		(wd.flag & BF_WEAPON) && !(flag & BF_SKILL)) {
+	// battle_weapon_attack is the basic-attack entry point: skills are
+	// handled separately. Its caller flag is not a BF_SKILL bitmask, so
+	// masking flag here could suppress every execution roll in-game.
+	if (sd && target->type == BL_MOB && wd.damage + wd.damage2 > 0) {
 		auto* hunted = reinterpret_cast<mob_data*>(target);
 		const int32 mob_class = hunted->mob_id;
 		const bool fabre_family = mob_class == 1007 || mob_class == 1008 ||
