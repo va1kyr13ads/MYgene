@@ -92,3 +92,11 @@ Observe map-server startup logs for YAML, NPC and C++ errors. Confirm the new it
 - The encounter currently targets only `prt_fild01`, not all fields or the entire server.
 - Current potion behavior uses a repeated AI scan chance and should be balanced with real-player testing.
 - Default item IDs are in a custom range (31001–31003). Inspect database conflicts before merging in later custom items.
+
+## Custom weapon reward delivery (23 Nov 2026)
+
+For the current `feature/yellow-fabre` implementation, the **actual** Fabre Slayer Knife (31001) and Thief Bug Slayer Sword (31006) rates are **0.05% per special encounter kill**, or 1 in 2,000 on average. The earlier 11% knife entry in the original reward table above is historical and is no longer the live script value. A 0.05% rate does not guarantee a drop after 2,000 kills.
+
+Both special-monster kill handlers now deliver a successful weapon roll directly to the attached killer's inventory when carry capacity allows it. If it cannot be carried, the weapon falls on the ground at the killer's position. Legendary Bubble Gum still guarantees the special weapon roll while active, and all other independently rolled rewards keep their existing chances. The normal encounter must be triggered by 30 eligible family kills; a manually summoned special monster lacks the scripted death callback and will not trigger exclusive rewards.
+
+**Verification:** rebuild/restart is not necessary for changes limited to these NPC scripts, but the running map-server must load them by restart or deliberate `@reloadscript` (which resets encounter counters). Kill 30 family monsters on one map, activate Legendary Bubble Gum immediately before killing the spawned special monster, then verify the appropriate weapon appears in inventory or as a floor drop if overweight. Repeat for both families. Review map-server logs for script errors. Do not claim an in-game fix until this succeeds on the running server.
