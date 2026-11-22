@@ -7371,8 +7371,8 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 				// A two-handed bow occupies EQI_HAND_R and is rolled only for
 				// successful basic weapon hits (including ordinary ranged arrows).
 				// Perfect variants require the matching family card.
-				if (chonchon_family && (weapon_id == 31010 || weapon_id == 31012))
-					chance = weapon.card[0] == 31011 ? 90 : (weapon_id == 31010 ? 50 : 0);
+				if (chonchon_family && (weapon_id == 60010 || weapon_id == 60012))
+					chance = weapon.card[0] == 60011 ? 90 : (weapon_id == 60010 ? 50 : 0);
 				if (chance > 0) {
 					const int32 roll = rnd() % 100;
 					if (roll < chance) {
