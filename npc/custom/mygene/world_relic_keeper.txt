@@ -246,7 +246,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
 
     default:
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "May your relic never;
+        mes "May your relic never";
         mes "fall into silence.";
         close;
     }
