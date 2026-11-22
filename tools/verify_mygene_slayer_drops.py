@@ -63,7 +63,7 @@ class SlayerDropWiring(unittest.TestCase):
 
     def test_blue_chon_chon_bow(self):
         self.check_family(
-            "blue_chon_chon.txt", 31010, "MYGENE_CHONCHON_SLAYER_BOW",
+            "blue_chon_chon.txt", 60010, "MYGENE_CHONCHON_SLAYER_BOW",
             "Chonchon Slayer Bow", 31052, "OnBlueChonChonDead", "S_BlueRewards"
         )
         script = (ROOT / "npc/custom/mygene/blue_chon_chon.txt").read_text(encoding="utf-8")
@@ -76,14 +76,14 @@ class SlayerDropWiring(unittest.TestCase):
         self.assertNotIn("killedrid == 1091", script)  # Dragon Fly is a mini-boss.
         self.assertIn("MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2)", script)
         self.assertIn("rand(1000000) < 100", script)  # Card: 0.01%.
-        self.assertIn("makeitem 31011,1,", script)
-        self.assertNotIn("makeitem 31012,1,", script)  # Perfect bow never drops.
+        self.assertIn("makeitem 60011,1,", script)
+        self.assertNotIn("makeitem 60012,1,", script)  # Perfect bow never drops.
         self.assertIn("getmapxy(.@map$,.@x,.@y,BL_PC)", script)
 
     def test_blue_chon_chon_bow_is_ranged_and_perfect_is_not_a_drop(self):
-        bow = item_block(31010)
-        card = item_block(31011)
-        perfect = item_block(31012)
+        bow = item_block(60010)
+        card = item_block(60011)
+        perfect = item_block(60012)
         for token in (
             "SubType: Bow", "Range: 5", "Slots: 1", "Refineable: false",
             "Both_Hand: true",
@@ -106,9 +106,9 @@ class SlayerDropWiring(unittest.TestCase):
             "fabre_family || thief_bug_family || chonchon_family", battle
         )
         self.assertIn("hunted->get_bosstype() == BOSSTYPE_NONE", battle)
-        self.assertIn("weapon_id == 31010 || weapon_id == 31012", battle)
-        self.assertIn("weapon.card[0] == 31011 ? 90", battle)
-        self.assertIn("weapon_id == 31010 ? 50 : 0", battle)
+        self.assertIn("weapon_id == 60010 || weapon_id == 60012", battle)
+        self.assertIn("weapon.card[0] == 60011 ? 90", battle)
+        self.assertIn("weapon_id == 60010 ? 50 : 0", battle)
 
     def test_blue_chon_chon_db_and_npc_loader(self):
         npc = (ROOT / "npc/scripts_custom.conf").read_text(encoding="utf-8")
@@ -123,9 +123,9 @@ class SlayerDropWiring(unittest.TestCase):
         self.assertNotIn("Class: Boss", blue_mob.group(1))
         relic = (ROOT / "npc/custom/mygene/world_relic_keeper.txt").read_text(encoding="utf-8")
         self.assertIn("Perfect Bow Upgrade [GM]", relic)
-        self.assertIn("getequipid(EQI_HAND_R) != 31010", relic)
-        self.assertIn("getequipcardid(EQI_HAND_R,0) != 31011", relic)
-        self.assertIn("getitem2 31012,1,1,0,0,31011,0,0,0;", relic)
+        self.assertIn("getequipid(EQI_HAND_R) != 60010", relic)
+        self.assertIn("getequipcardid(EQI_HAND_R,0) != 60011", relic)
+        self.assertIn("getitem2 60012,1,1,0,0,60011,0,0,0;", relic)
 
 
 if __name__ == "__main__":
