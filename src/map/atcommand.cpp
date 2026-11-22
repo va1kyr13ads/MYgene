@@ -8150,7 +8150,10 @@ ACMD_FUNC(mobinfo)
 		clif_displaymessage(fd, atcmd_output);
 #endif
 		// drops
-		clif_displaymessage(fd, msg_txt(sd,1245)); //  Drops:
+		if( mob->id == 31050 )
+			clif_displaymessage(fd, "Normal Drops (monster database):");
+		else
+			clif_displaymessage(fd, msg_txt(sd,1245)); // Drops:
 		strcpy(atcmd_output, " ");
 
 		if( mob->dropitem.empty() ){
@@ -8186,6 +8189,26 @@ ACMD_FUNC(mobinfo)
 			if( j % 3 != 0 ){
 				clif_displaymessage(fd, atcmd_output);
 			}
+		}
+
+		// MYgene Yellow Fabre: extra rewards are rolled by its NPC death
+		// script, not by mob_db. Show the actual independent chances here,
+		// without modifying how drops are generated or scaled.
+		if( mob->id == 31050 ){
+			clif_displaymessage(fd, "MYgene Special Drops (scripted; exact rates):");
+			auto show_special_drop = [&](t_itemid item_id, const char* rate){
+				std::shared_ptr<item_data> item = item_db.find(item_id);
+				if( item != nullptr ){
+					snprintf(atcmd_output2, sizeof(atcmd_output2), " - %s : %s", item_db.create_item_link(item).c_str(), rate);
+					clif_displaymessage(fd, atcmd_output2);
+				}
+			};
+			show_special_drop(31001, "0.05%"); // Fabre Slayer Knife
+			show_special_drop(31002, "0.01%"); // Yellow Fabre Card
+			clif_displaymessage(fd, " - Random Gemstone (Red/Blue/Yellow): 70.00%");
+			clif_displaymessage(fd, "   One color chosen equally (23.33% each)");
+			show_special_drop(969, "11.00%");   // Gold
+			show_special_drop(31003, "0.50%"); // Attraction Potion
 		}
 
 		// mvp
