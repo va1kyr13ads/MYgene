@@ -1,7 +1,8 @@
 // MYgene Yellow Fabre — standalone server event.
-// 30 kills of base Fabre (1007) on Prontera field prt_fild01 spawn one
-// Yellow Fabre (31050). Global field counter, not a character quest.
-// A Yellow Fabre must be killed before the next 30-kill cycle begins.
+// 30 Fabre-family kills (Fabre 1007, Pupa 1008, Creamy 1018)
+// on prt_fild01 spawn Yellow Fabre (31050). The Yellow Fabre defeat
+// contributes the first kill toward the NEXT 30-kill cycle. Field-only
+// global counter; the current Yellow Fabre must die before a new one spawns.
 // Custom rewards: exact per-kill chances, independent of 4x global drop rate;
 // vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
 -	script	MYgene_Yellow_Fabre	-1,{
@@ -12,7 +13,11 @@ OnInit:
     end;
 
 OnNPCKillEvent:
-    if (killedrid != 1007 || strcharinfo(3) != .Field$ || .YellowActive)
+    if (strcharinfo(3) != .Field$ || .YellowActive)
+        end;
+    // Count naturally defeated members of the Fabre family on this field.
+    // Yellow Fabre (31050) is credited on OnYellowFabreDead instead.
+    if (killedrid != 1007 && killedrid != 1008 && killedrid != 1018)
         end;
     .FabreKills++;
     if (.FabreKills < 30)
@@ -20,19 +25,21 @@ OnNPCKillEvent:
     .FabreKills = 0;
     .YellowActive = 1;
     monster .Field$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
-    mapannounce .Field$,"MYgene: A Yellow Fabre has appeared after 30 Fabre defeats!",bc_map,0xFFFF00;
+    mapannounce .Field$,"MYgene: A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
     end;
 
 OnYellowFabreDead:
     .YellowActive = 0;
-    .FabreKills = 0;
+    // Yellow Fabre is itself family: its defeat counts as kill 1/30
+    // toward the NEXT cycle, without spawning another Yellow Fabre here.
+    .FabreKills = 1;
     // An OnMobDeath event carries the killer's RID.
     // Place rolls on the ground at the killer's position near the fallen mob.
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
-    // Fabre Slayer Knife: 11.00% independent roll.
-    if (rand(1000000) < 110000)
+    // Fabre Slayer Knife: exactly 0.05% (500/1,000,000; 1 in 2,000).
+    if (rand(1000000) < 500)
         makeitem 31001,1,.@map$,.@x,.@y;
 
     // One random Red, Blue, or Yellow Gemstone: 70.00%.
