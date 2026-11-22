@@ -14,6 +14,13 @@ OnInit:
     end;
 
 OnNPCKillEvent:
+    // Unlabeled special mobs (for example, @monster 31050) otherwise skip
+    // the encounter-specific death callback. OnNPCKillEvent only runs for
+    // monsters WITHOUT an attached death event, so no double reward roll.
+    if (killedrid == 31050) {
+        callsub S_YellowRewards;
+        end;
+    }
     // Yellow Fabre (31050) gets its next-cycle credit in its death event.
     if (killedrid != 1007 && killedrid != 1008 && killedrid != 1018)
         end;
@@ -75,6 +82,13 @@ OnYellowFabreDead:
             break;
         }
     }
+    callsub S_YellowRewards;
+    end;
+
+S_YellowRewards:
+    // Shared loot logic for normal 30-kill encounters and unlabeled spawns.
+    // Uses the attached killer's map and inventory, not the monster's name.
+    .@map$ = strcharinfo(3);
     // Place rewards on the ground at the killer's location.
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
@@ -114,5 +128,5 @@ OnYellowFabreDead:
     // Attraction Potion: 0.50% (one in two hundred).
     if (.@guaranteed || rand(1000000) < 5000)
         makeitem 31003,1,.@map$,.@x,.@y;
-    end;
+    return;
 }
