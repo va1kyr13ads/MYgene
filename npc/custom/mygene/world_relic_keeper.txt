@@ -51,11 +51,18 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "are available for now.";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "The relic will have a";
-        mes "60-day ownership lease.";
-        mes "Renewals have no limit.";
-        mes "Renew in the last 14 days";
-        mes "or during 7 grace days.";
+        mes "^FF6600Future lease rules (NOT LIVE)^000000";
+        mes "Planned ownership: 60 days.";
+        mes "Renewals: unlimited.";
+        mes "Renew within the final";
+        mes "14 days or 7 grace days.";
+        next;
+        mes "These rules are proposals";
+        mes "until the relic registry";
+        mes "and lease ledger go live.";
+        mes "Current GM-test Perfect";
+        mes "weapons have NO expiry,";
+        mes "lease or world supply cap.";
         close;
 
     case 2:
@@ -73,18 +80,22 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "in the equipped sword.";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "Renewal will require";
+        mes "Fabre relic renewal plan:";
         mes "^3399FF"+.SoulCost+" Fabre Family Souls^000000.";
-        mes "The soul material and";
-        mes "live ownership registry";
-        mes "are not active yet.";
+        mes "Thief Bug relic renewal";
+        mes "material is not set yet.";
+        mes "Neither soul material nor";
+        mes "ownership ledger is live.";
         close;
 
     case 3:
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "I can renew a registered";
-        mes "world relic for 60 days";
-        mes "using 300 Family Souls.";
+        mes "Renewal is planned,";
+        mes "not currently available.";
+        mes "Fabre relic: planned cost";
+        mes "300 Fabre Family Souls.";
+        mes "Thief Bug relic: soul";
+        mes "cost not yet defined.";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "^FF6600Renewal is not active yet.^000000";
@@ -95,10 +106,12 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
 
     case 4:
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "The world relic registry";
-        mes "will show each unique";
-        mes "relic's active status.";
-        mes "Expired leases return";
+        mes "The future relic registry";
+        mes "will track Perfect Fabre";
+        mes "and Thief Bug relics,";
+        mes "their leases and world";
+        mes "supply slots.";
+        mes "Expired leases will return";
         mes "their world slots.";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
@@ -109,9 +122,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
 
     case 5:
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "Only registered owners";
-        mes "will be able to collect";
-        mes "Fabre Family Souls.";
+        mes "Fabre soul collection is";
+        mes "planned for registered";
+        mes "Fabre relic owners.";
         mes "The weapon need not be";
         mes "equipped for collection.";
         next;
@@ -126,8 +139,11 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "Only valid field kills";
         mes "can earn souls. GM and";
         mes "test spawns do not count.";
-        mes "Gather ^3399FF300 Souls^000000 for";
-        mes "each 60-day renewal.";
+        mes "Planned Fabre renewal:";
+        mes "^3399FF300 Fabre Family Souls^000000";
+        mes "per 60-day lease.";
+        mes "Thief Bug soul rules";
+        mes "are not defined yet.";
         mes "^FF6600Collection is pending.^000000";
         close;
 
