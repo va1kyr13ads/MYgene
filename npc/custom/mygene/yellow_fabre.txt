@@ -96,8 +96,8 @@ OnYellowFabreDead:
     if (rand(1000000) < 100)
         makeitem 31002,1,.@map$,.@x,.@y;
 
-    // Gold: 55.00% (existing item 969, not Zeny).
-    if (rand(1000000) < 550000)
+    // Gold: 11.00% (existing item 969, not Zeny).
+    if (rand(1000000) < 110000)
         makeitem 969,1,.@map$,.@x,.@y;
 
     // Attraction Potion: 0.50% (one in two hundred).
