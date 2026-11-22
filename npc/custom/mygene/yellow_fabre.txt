@@ -27,7 +27,7 @@ OnNPCKillEvent:
     // Spawn where the world-wide counter hit 30, not at a fixed field.
     .@map$ = strcharinfo(3);
     monster .@map$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
-    mapannounce .@map$,"MYgene: A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
+    mapannounce .@map$,"A Yellow Fabre has appeared after 30 Fabre-family defeats!",bc_map,0xFFFF00;
     end;
 
 OnYellowFabreDead:
