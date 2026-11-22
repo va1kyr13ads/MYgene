@@ -121,16 +121,16 @@ class SlayerDropWiring(unittest.TestCase):
                 contents = path.read_text(encoding="utf-8")
                 official_ids = {
                     int(m.group(1))
-                    for m in re.finditer(r"(?m)^  - Id: (\\d+)\\s*$", contents)
+                    for m in re.finditer(r"(?m)^  - Id: (\d+)\s*$", contents)
                 }
                 self.assertFalse(
                     blue_ids & official_ids,
                     f"Blue Chon Chon item ID collides with {path}"
                 )
         for old_id in (31010, 31011, 31012):
-            self.assertNotIn(f"  - Id: {old_id}\\n", ITEM_DB)
+            self.assertNotIn(f"  - Id: {old_id}\n", ITEM_DB)
         for new_id in blue_ids:
-            self.assertEqual(ITEM_DB.count(f"  - Id: {new_id}\\n"), 1)
+            self.assertEqual(ITEM_DB.count(f"  - Id: {new_id}\n"), 1)
 
     def test_blue_chon_chon_db_and_npc_loader(self):
         npc = (ROOT / "npc/scripts_custom.conf").read_text(encoding="utf-8")
