@@ -30,9 +30,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-          # The ubuntu-latest label currently points to ubuntu-24.04.
-          # Available: ubuntu-24.04, ubuntu-22.04
-          os: [ubuntu-latest]
+          # Keep rAthena's legacy libpcre3-dev build dependency available.
+          # ubuntu-latest now targets Ubuntu 26.04, where this package is gone.
+          os: [ubuntu-24.04]
           # Only a single version of GCC is required for validating NPC scripts and database changes.
           gcc: ['11']
           # We run build checks for both Renewal and PRE-Renewal
