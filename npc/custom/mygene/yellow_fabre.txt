@@ -4,6 +4,7 @@
 // contribute together. Yellow Fabre (31050) spawns on that map when
 // its counter reaches 30. Its defeat counts as 1 toward the next cycle.
 // Multiple maps can have their own Yellow Fabre alive simultaneously.
+// Yellow Fabre spawns where the 30th eligible monster dies (or by its killer).
 // Custom rewards: exact per-kill chances, independent of 4x global drop rate;
 // vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
 -	script	MYgene_Yellow_Fabre	-1,{
@@ -41,9 +42,26 @@ OnNPCKillEvent:
     .KillCount[.@slot]++;
     if (.KillCount[.@slot] < 30)
         end;
+    // Place the encounter where the 30th family member fell, not randomly
+    // across the map. OnNPCKillEvent provides that slain mob's unique GID.
+    // Prefer its actual tile while rAthena still has the corpse unit.
+    // If the GID is already gone, use the killing player's current tile.
+    .@spawn_map$ = .@map$;
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@mob_data;
+        .@death_map$ = mapid2name(.@mob_data[UMOB_MAPID]);
+        if (.@death_map$ == .@map$ && .@mob_data[UMOB_X] > 0 && .@mob_data[UMOB_Y] > 0) {
+            .@x = .@mob_data[UMOB_X];
+            .@y = .@mob_data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@spawn_map$,.@x,.@y,BL_PC) != 0)
+        end;
     .KillCount[.@slot] = 0;
     .YellowActive[.@slot] = 1;
-    monster .@map$,0,0,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
+    monster .@map$,.@x,.@y,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
     mapannounce .@map$,"A Yellow Fabre has appeared",bc_map,0xFFFF00;
     end;
 
