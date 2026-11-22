@@ -124,9 +124,11 @@ Body:
     Script: |
       bonus bUnbreakableWeapon;
 
-  # MYgene short-duration drop booster. Same SC_ITEMBOOST effect as
-  # standard Bubble Gum (12210), but only 15 seconds instead of 30 min.
-  # +100% means double normal drop chance, not a guaranteed item drop.
+  # MYgene Legendary Bubble Gum: guarantee every eligible drop entry
+  # for the using player on monster kills during a 15-second window.
+  # Includes mob database, map bonus, MVP and MYgene scripted drops.
+  # The script timestamp is checked at monster death; no general rate
+  # bonus is applied and other players' drops are not affected.
   - Id: 31009
     AegisName: MYGENE_LEGENDARY_BUBBLE_GUM
     Name: Legendary Bubble Gum
@@ -142,5 +144,5 @@ Body:
       NoMail: true
       NoAuction: true
     Script: |
-      sc_start SC_ITEMBOOST,15000,100;
-      dispbottom "Legendary Bubble Gum: +100% normal drop rate for 15 seconds.";
+      MYGENE_LEGENDARY_GUM_UNTIL = gettimetick(2) + 15;
+      dispbottom "Legendary Bubble Gum: guaranteed monster drops for 15 seconds.";
