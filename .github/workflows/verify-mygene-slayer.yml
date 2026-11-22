@@ -1,0 +1,35 @@
+name: Verify MYgene Slayer reward wiring
+
+on:
+  push:
+    branches:
+      - feature/yellow-fabre
+      - fix/custom-weapon-drop-delivery-20261123
+    paths:
+      - 'db/import/item_db.yml'
+      - 'db/import/mob_db.yml'
+      - 'npc/custom/mygene/yellow_fabre.txt'
+      - 'npc/custom/mygene/red_thief_bug.txt'
+      - 'tools/verify_mygene_slayer_drops.py'
+      - '.github/workflows/verify-mygene-slayer.yml'
+  pull_request:
+    branches:
+      - feature/yellow-fabre
+    paths:
+      - 'db/import/item_db.yml'
+      - 'db/import/mob_db.yml'
+      - 'npc/custom/mygene/yellow_fabre.txt'
+      - 'npc/custom/mygene/red_thief_bug.txt'
+      - 'tools/verify_mygene_slayer_drops.py'
+      - '.github/workflows/verify-mygene-slayer.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-slayer-ids-and-events:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check ID/name consistency, death-event dispatch, and rates
+        run: python3 -m unittest discover -s tools -p 'verify_mygene_slayer_drops.py' -v
