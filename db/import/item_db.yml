@@ -158,7 +158,7 @@ Body:
   # Slayer Series #3: Blue Chon Chon. A real two-handed ranged bow.
   # Exact execution proc is in src/map/battle.cpp, never the item script.
   # Do not AliasName these items: custom IDs/names/slots must reach the client.
-  - Id: 31010
+  - Id: 60010
     AegisName: MYGENE_CHONCHON_SLAYER_BOW
     Name: Chonchon Slayer Bow
     Type: Weapon
@@ -181,7 +181,7 @@ Body:
       Both_Hand: true
 
   # Blue Chon Chon exclusive card; not the vanilla Chonchon Card.
-  - Id: 31011
+  - Id: 60011
     AegisName: MYGENE_BLUE_CHON_CHON_CARD
     Name: Blue Chon Chon Card
     Type: Card
@@ -193,7 +193,7 @@ Body:
   # Future Perfect World Relic: no world supply, leasing, or public crafting.
   # Obtainable only by GM-controlled test conversion when implemented.
   # Never added to monster drop tables.
-  - Id: 31012
+  - Id: 60012
     AegisName: MYGENE_PERFECT_CHONCHON_SLAYER_BOW
     Name: P.C.S.B
     Type: Weapon
