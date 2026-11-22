@@ -154,3 +154,65 @@ Body:
         @MYGENE_GUM_AURA_LOOP = 1;
         addtimer 2500,"MYgene_Legendary_Gum_Aura::OnPulse";
       }
+
+  # Slayer Series #3: Blue Chon Chon. A real two-handed ranged bow.
+  # Exact execution proc is in src/map/battle.cpp, never the item script.
+  # Do not AliasName these items: custom IDs/names/slots must reach the client.
+  - Id: 31010
+    AegisName: MYGENE_CHONCHON_SLAYER_BOW
+    Name: Chonchon Slayer Bow
+    Type: Weapon
+    SubType: Bow
+    Buy: 10000
+    Weight: 400
+    Attack: 17
+    Range: 5
+    Slots: 1
+    WeaponLevel: 1
+    EquipLevelMin: 4
+    Refineable: false
+    Jobs:
+      Archer: true
+      BardDancer: true
+      Hunter: true
+      Rogue: true
+      Thief: true
+    Locations:
+      Both_Hand: true
+
+  # Blue Chon Chon exclusive card; not the vanilla Chonchon Card.
+  - Id: 31011
+    AegisName: MYGENE_BLUE_CHON_CHON_CARD
+    Name: Blue Chon Chon Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  # Future Perfect World Relic: no world supply, leasing, or public crafting.
+  # Obtainable only by GM-controlled test conversion when implemented.
+  # Never added to monster drop tables.
+  - Id: 31012
+    AegisName: MYGENE_PERFECT_CHONCHON_SLAYER_BOW
+    Name: P.C.S.B
+    Type: Weapon
+    SubType: Bow
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 5
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Archer: true
+      BardDancer: true
+      Hunter: true
+      Rogue: true
+      Thief: true
+    Locations:
+      Both_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
