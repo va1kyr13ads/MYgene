@@ -76,12 +76,12 @@ Body:
     Race: Insect
     Element: Earth
     ElementLevel: 1
-    WalkSpeed: 340
-    AttackDelay: 1672
-    AttackMotion: 672
-    ClientAttackMotion: 192
-    DamageMotion: 480
-    Ai: 01
+    WalkSpeed: 150
+    AttackDelay: 1288
+    AttackMotion: 288
+    ClientAttackMotion: 720
+    DamageMotion: 768
+    Ai: 07
     Modes:
       Detector: true
     # Vanilla Thief Bug (1051) drops from db/pre-re/mob_db.yml.
