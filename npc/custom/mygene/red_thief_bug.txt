@@ -12,6 +12,13 @@ OnInit:
     end;
 
 OnNPCKillEvent:
+    // Unlabeled special mobs (for example, @monster 31051) otherwise skip
+    // the encounter-specific death callback. OnNPCKillEvent only runs for
+    // monsters WITHOUT an attached death event, so no double reward roll.
+    if (killedrid == 31051) {
+        callsub S_RedRewards;
+        end;
+    }
     if (killedrid != 1048 && killedrid != 1051 && killedrid != 1053 && killedrid != 1054)
         end;
     .@map$ = strcharinfo(3);
@@ -65,6 +72,13 @@ OnRedThiefBugDead:
             break;
         }
     }
+    callsub S_RedRewards;
+    end;
+
+S_RedRewards:
+    // Shared loot logic for normal 30-kill encounters and unlabeled spawns.
+    // Uses the attached killer's map and inventory, not the monster's name.
+    .@map$ = strcharinfo(3);
     // Fixed exclusive drops; separate independent rolls with denominator
     // 1,000,000 just like the verified Yellow Fabre encounter.
     // Item drops land by the killing player's location.
@@ -109,5 +123,5 @@ OnRedThiefBugDead:
     if (.@guaranteed || rand(1000000) < 5000) {
         makeitem 31003,1,.@map$,.@x,.@y;
     }
-    end;
+    return;
 }
