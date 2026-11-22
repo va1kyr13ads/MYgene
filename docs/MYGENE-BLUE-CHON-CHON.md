@@ -70,3 +70,11 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 
 `python3 -m unittest discover -s tools -p 'verify_mygene_slayer_drops.py' -v` validates event dispatch, key IDs, Bow equipment type, card logic, and drop percentages. The Windows workflow runs `cargo test --locked` and a Windows release build. These tests are **not a substitute** for compilation and direct testing on the live MYgene Codespace.
 
+## ID collision fix and migration caution
+
+The three **new, unreleased** Blue-series item IDs are now **60010 / 60011 / 60012**. Those numbers are below 65,536 for legacy packet compatibility and have been checked against the tracked official pre-renewal and Renewal item equipment, usable and miscellaneous YAML databases. Do not reuse the original tentative `31010 / 31011 / 31012`: those are official Renewal LoVA cards.
+
+**Legacy issue inherited from the verified Fabre/Thief Bug milestone:** the older MYgene custom item IDs `31001` through `31009` also overlap existing Renewal card IDs. They work in the accepted player environment, but this causes missing official Renewal card-combo references and a failing full Renewal `map-server --run-once` validation. Renumbering any of those **existing live items** without migrating inventories, storage, cards, drops, scripts and client metadata risks corrupting game state; it is deliberately **not** done in the Blue feature. The Pre-Renewal validation succeeded. Schedule an explicitly backed-up legacy-ID migration separately before claiming full Renewal compatibility.
+
+Build CI note: legacy workflows were pinned away from `ubuntu-latest` (Ubuntu 26.04 with removed `libpcre3-dev`/older GCC packages) to Ubuntu 22.04/24.04 appropriate to their compiler matrices.
+
