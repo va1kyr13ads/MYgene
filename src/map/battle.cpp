@@ -7354,7 +7354,11 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 			mob_class == 1018 || mob_class == 31050;
 		const bool thief_bug_family = mob_class == 1048 || mob_class == 1051 ||
 			mob_class == 1053 || mob_class == 1054 || mob_class == 31051;
-		if ((fabre_family || thief_bug_family) && hunted->get_bosstype() == BOSSTYPE_NONE) {
+		// Only the three regular stages and our non-boss special spawn.
+		// Dragon Fly (1091), elite variants and all other mobs are excluded.
+		const bool chonchon_family = mob_class == 1011 || mob_class == 1042 ||
+			mob_class == 1035 || mob_class == 31052;
+		if ((fabre_family || thief_bug_family || chonchon_family) && hunted->get_bosstype() == BOSSTYPE_NONE) {
 			const int16 weapon_idx = sd->equip_index[EQI_HAND_R];
 			if (weapon_idx >= 0 && sd->inventory_data[weapon_idx] != nullptr) {
 				const t_itemid weapon_id = sd->inventory_data[weapon_idx]->nameid;
@@ -7364,6 +7368,11 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 					chance = weapon.card[0] == 31002 ? 90 : (weapon_id == 31001 ? 50 : 0);
 				if (thief_bug_family && (weapon_id == 31006 || weapon_id == 31008))
 					chance = weapon.card[0] == 31007 ? 90 : (weapon_id == 31006 ? 50 : 0);
+				// A two-handed bow occupies EQI_HAND_R and is rolled only for
+				// successful basic weapon hits (including ordinary ranged arrows).
+				// Perfect variants require the matching family card.
+				if (chonchon_family && (weapon_id == 31010 || weapon_id == 31012))
+					chance = weapon.card[0] == 31011 ? 90 : (weapon_id == 31010 ? 50 : 0);
 				if (chance > 0) {
 					const int32 roll = rnd() % 100;
 					if (roll < chance) {
