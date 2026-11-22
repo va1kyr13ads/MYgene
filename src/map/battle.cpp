@@ -7347,26 +7347,6 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 	// battle_weapon_attack is the basic-attack entry point: skills are
 	// handled separately. Its caller flag is not a BF_SKILL bitmask, so
 	// masking flag here could suppress every execution roll in-game.
-	// Diagnostic is deliberately GM-only and only for the Thief Bug
-	// weapon IDs. It confirms the running map-server is new and exposes
-	// the equipment index, target class, damage and boss classification.
-	if (sd && target->type == BL_MOB && pc_get_group_id(sd) == 99) {
-		const int16 idx = sd->equip_index[EQI_HAND_R];
-		if (idx >= 0 && sd->inventory_data[idx] != nullptr) {
-			const t_itemid id = sd->inventory_data[idx]->nameid;
-			if (id == 31006 || id == 31008) {
-				auto* mob = reinterpret_cast<mob_data*>(target);
-				char debug_line[180];
-				snprintf(debug_line, sizeof(debug_line),
-					"MYgene Slayer DEBUG: weapon %u target %d boss %u hit %lld card %u",
-					static_cast<unsigned>(id), mob->mob_id,
-					static_cast<unsigned>(mob->get_bosstype()),
-					static_cast<long long>(wd.damage + wd.damage2),
-					static_cast<unsigned>(sd->inventory.u.items_inventory[idx].card[0]));
-				clif_displaymessage(sd->fd, debug_line);
-			}
-		}
-	}
 	if (sd && target->type == BL_MOB && wd.damage + wd.damage2 > 0) {
 		auto* hunted = reinterpret_cast<mob_data*>(target);
 		const int32 mob_class = hunted->mob_id;
@@ -7386,13 +7366,6 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 					chance = weapon.card[0] == 31007 ? 90 : (weapon_id == 31006 ? 50 : 0);
 				if (chance > 0) {
 					const int32 roll = rnd() % 100;
-					if (pc_get_group_id(sd) == 99 && thief_bug_family) {
-						char debug_line[128];
-						snprintf(debug_line, sizeof(debug_line),
-							"MYgene Slayer ROLL: chance %d roll %d target_hp %lld",
-							chance, roll, static_cast<long long>(tstatus->hp));
-						clif_displaymessage(sd->fd, debug_line);
-					}
 					if (roll < chance) {
 						wd.damage = std::max<int64>(wd.damage, static_cast<int64>(tstatus->hp));
 						wd.damage2 = 0;
