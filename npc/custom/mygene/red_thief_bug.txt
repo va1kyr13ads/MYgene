@@ -71,12 +71,17 @@ OnRedThiefBugDead:
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
+    // Legendary Bubble Gum (31009): for 15 seconds, every defined
+    // special drop succeeds, including the exclusive weapon and card.
+    // Outside that window each independent fixed chance is unchanged.
+    .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
+
     // Thief Bug Slayer Sword [1]: 0.05% (1 in 2,000).
-    if (rand(1000000) < 500)
+    if (.@guaranteed || rand(1000000) < 500)
         makeitem 31006,1,.@map$,.@x,.@y;
 
     // One random Red / Blue / Yellow Gemstone: 70.00%.
-    if (rand(1000000) < 700000) {
+    if (.@guaranteed || rand(1000000) < 700000) {
         switch(rand(3)) {
         case 0: makeitem 715,1,.@map$,.@x,.@y; break;
         case 1: makeitem 716,1,.@map$,.@x,.@y; break;
@@ -85,15 +90,15 @@ OnRedThiefBugDead:
     }
 
     // MYgene Red Thief Bug Card: 0.01% (1 in 10,000).
-    if (rand(1000000) < 100)
+    if (.@guaranteed || rand(1000000) < 100)
         makeitem 31007,1,.@map$,.@x,.@y;
 
     // Gold item 969, not Zeny: 11.00%.
-    if (rand(1000000) < 110000)
+    if (.@guaranteed || rand(1000000) < 110000)
         makeitem 969,1,.@map$,.@x,.@y;
 
     // Same Attraction Potion as Yellow Fabre: 0.50%.
-    if (rand(1000000) < 5000)
+    if (.@guaranteed || rand(1000000) < 5000)
         makeitem 31003,1,.@map$,.@x,.@y;
     end;
 }
