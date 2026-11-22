@@ -21,7 +21,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
     switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Perfect Knife Upgrade [GM]:Perfect Sword Upgrade [GM]:Leave")) {
     case 1:
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "Perfect Fabre Slayer Knife";
+        mes "^FF0000P.F.S.K^000000";
         mes "is a legendary world relic.";
         mes "It is forged from a Fabre";
         mes "Slayer Knife and the rare";
@@ -275,7 +275,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         getitem2 31004,1,1,0,0,31002,0,0,0;
         logmes "MYgene test: converted equipped carded 31001 to 31004 [31002], non-lease.";
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "^3399FFPerfect Fabre Slayer Knife!^000000";
+        mes "^FF0000P.F.S.K!^000000";
         mes "Your original card remains";
         mes "compounded in its slot.";
         mes "This is a TEST relic.";
