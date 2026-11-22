@@ -1,0 +1,21 @@
+name: Check MYgene live backup helper
+on:
+  push:
+    branches:
+      - ops/milestone-live-backup-20261123
+    paths:
+      - 'tools/backup-mygene-live.sh'
+      - '.github/workflows/check-mygene-live-backup.yml'
+  pull_request:
+    paths:
+      - 'tools/backup-mygene-live.sh'
+      - '.github/workflows/check-mygene-live-backup.yml'
+permissions:
+  contents: read
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell syntax without accessing a database
+        run: bash -n tools/backup-mygene-live.sh
