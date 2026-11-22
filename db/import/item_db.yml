@@ -20,11 +20,35 @@ Body:
     Slots: 1
     WeaponLevel: 1
     EquipLevelMin: 1
+    Refineable: false
     Jobs:
       All: true
     Locations:
       Right_Hand: true
     View: 1
+
+  # Stage 1: standalone Perfect knife. World supply and leasing remain OFF.
+  # Only the World Relic Keeper GM-test upgrade currently creates this variant.
+  - Id: 31004
+    AegisName: MYGENE_PERFECT_FABRE_SLAYER
+    Name: Perfect Fabre Slayer Knife
+    Type: Weapon
+    SubType: Dagger
+    Buy: 10000
+    Weight: 1000  # rAthena units: displays Weight 100
+    Attack: 25
+    Range: 2
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      All: true
+    Locations:
+      Right_Hand: true
+    View: 1
+    Script: |
+      bonus bUnbreakableWeapon;
 
   - Id: 31002
     AegisName: MYGENE_YELLOW_FABRE_CARD
