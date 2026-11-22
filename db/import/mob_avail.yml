@@ -1,0 +1,11 @@
+# MYgene special mob visuals: use an official, installed sprite until
+# custom blue artwork exists in the authorized client GRF.
+# Server-side monster ID remains 31052 (Blue Chon Chon); only the sprite
+# appearance is borrowed. This does not alias equipment item IDs.
+Header:
+  Type: MOB_AVAIL_DB
+  Version: 1
+
+Body:
+  - Mob: MYGENE_BLUE_CHON_CHON
+    Sprite: CHONCHON
