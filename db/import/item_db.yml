@@ -68,3 +68,58 @@ Body:
     Script: |
       MYGENE_ATTRACTION_UNTIL = gettimetick(2) + 300;
       dispbottom "Attraction Potion: 70% enhanced field-monster aggro for 5 minutes.";
+
+  # Red Thief Bug Slayer family. The normal weapon exactly mirrors the
+  # Fabre Slayer Knife's numeric item base, except sword weapon subtype.
+  # Server-side execution proc is implemented separately in battle.cpp.
+  - Id: 31006
+    AegisName: MYGENE_THIEF_BUG_SLAYER
+    Name: Thief Bug Slayer Sword
+    Type: Weapon
+    SubType: 1hSword
+    Buy: 10000
+    Weight: 400
+    Attack: 17
+    Range: 1
+    Slots: 1
+    WeaponLevel: 1
+    EquipLevelMin: 1
+    Refineable: false
+    Jobs:
+      All: true
+    Locations:
+      Right_Hand: true
+    View: 2
+
+  # Distinct from the standard vanilla Thief Bug Card.
+  - Id: 31007
+    AegisName: MYGENE_RED_THIEF_BUG_CARD
+    Name: Red Thief Bug Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  # Crafted-only World Relic, not a monster drop. Future registry-gated
+  # creation must follow the Perfect Fabre Slayer Knife safety checks.
+  - Id: 31008
+    AegisName: MYGENE_PERFECT_THIEF_BUG_SLAYER
+    Name: P.T.B.S
+    Type: Weapon
+    SubType: 1hSword
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 2
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      All: true
+    Locations:
+      Right_Hand: true
+    View: 2
+    Script: |
+      bonus bUnbreakableWeapon;
