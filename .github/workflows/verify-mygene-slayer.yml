@@ -5,11 +5,17 @@ on:
     branches:
       - feature/yellow-fabre
       - fix/custom-weapon-drop-delivery-20261123
+      - feature/blue-chon-chon-slayer-20261123
     paths:
       - 'db/import/item_db.yml'
       - 'db/import/mob_db.yml'
       - 'npc/custom/mygene/yellow_fabre.txt'
       - 'npc/custom/mygene/red_thief_bug.txt'
+      - 'npc/custom/mygene/blue_chon_chon.txt'
+      - 'npc/custom/mygene/world_relic_keeper.txt'
+      - 'npc/scripts_custom.conf'
+      - 'src/map/battle.cpp'
+      - 'db/import/mob_avail.yml'
       - 'tools/verify_mygene_slayer_drops.py'
       - '.github/workflows/verify-mygene-slayer.yml'
   pull_request:
@@ -20,6 +26,11 @@ on:
       - 'db/import/mob_db.yml'
       - 'npc/custom/mygene/yellow_fabre.txt'
       - 'npc/custom/mygene/red_thief_bug.txt'
+      - 'npc/custom/mygene/blue_chon_chon.txt'
+      - 'npc/custom/mygene/world_relic_keeper.txt'
+      - 'npc/scripts_custom.conf'
+      - 'src/map/battle.cpp'
+      - 'db/import/mob_avail.yml'
       - 'tools/verify_mygene_slayer_drops.py'
       - '.github/workflows/verify-mygene-slayer.yml'
 
