@@ -68,47 +68,30 @@ OnRedThiefBugDead:
     // Fixed exclusive drops; separate independent rolls with denominator
     // 1,000,000 just like the verified Yellow Fabre encounter.
     // Item drops land by the killing player's location.
-    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0) {
-        // Diagnostic for GM testing: a missing player RID prevents
-        // makeitem from obtaining a valid ground-drop position.
-        if (getgroupid() == 99)
-            dispbottom "[MYgene Red Thief Bug DEBUG] No valid killer position; scripted drops skipped.";
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
-    }
 
     // Legendary Bubble Gum (31009): for 15 seconds, every defined
     // special drop succeeds, including the exclusive weapon and card.
     // Outside that window each independent fixed chance is unchanged.
     .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
-    .@gm_debug = (getgroupid() == 99);
-    .@drops = 0;
-    if (.@gm_debug)
-        dispbottom "[MYgene Red Thief Bug DEBUG] Death event reached. Gum="+.@guaranteed+"; remaining="+(MYGENE_LEGENDARY_GUM_UNTIL-gettimetick(2))+"s.";
 
     // Thief Bug Slayer Sword [1]: 0.05% normally (1 in 2,000).
     // When Legendary Gum is active, grant it to the attached killer
-    // directly. Merely calling makeitem does not confirm the player
-    // received the ground item (the old debug counter was misleading).
+    // directly, with a floor-drop fallback when inventory cannot hold it.
     // Preserve the normal low-chance floor-drop behavior without Gum.
     if (.@guaranteed) {
         if (checkweight(31006,1)) {
             getitem 31006,1;
-            if (.@gm_debug)
-                dispbottom "[MYgene Red Thief Bug DEBUG] Slayer Sword 31006 given directly; check Equipment inventory.";
         } else {
             makeitem 31006,1,.@map$,.@x,.@y;
-            if (.@gm_debug)
-                dispbottom "[MYgene Red Thief Bug DEBUG] Inventory full/overweight; Slayer Sword 31006 placed on ground.";
         }
-        .@drops++;
     } else if (rand(1000000) < 500) {
         makeitem 31006,1,.@map$,.@x,.@y;
-        .@drops++;
     }
 
     // One random Red / Blue / Yellow Gemstone: 70.00%.
     if (.@guaranteed || rand(1000000) < 700000) {
-        .@drops++;
         switch(rand(3)) {
         case 0: makeitem 715,1,.@map$,.@x,.@y; break;
         case 1: makeitem 716,1,.@map$,.@x,.@y; break;
@@ -119,21 +102,16 @@ OnRedThiefBugDead:
     // MYgene Red Thief Bug Card: 0.01% (1 in 10,000).
     if (.@guaranteed || rand(1000000) < 100) {
         makeitem 31007,1,.@map$,.@x,.@y;
-        .@drops++;
     }
 
     // Gold item 969, not Zeny: 11.00%.
     if (.@guaranteed || rand(1000000) < 110000) {
         makeitem 969,1,.@map$,.@x,.@y;
-        .@drops++;
     }
 
     // Same Attraction Potion as Yellow Fabre: 0.50%.
     if (.@guaranteed || rand(1000000) < 5000) {
         makeitem 31003,1,.@map$,.@x,.@y;
-        .@drops++;
     }
-    if (.@gm_debug)
-        dispbottom "[MYgene Red Thief Bug DEBUG] Scripted reward attempts="+.@drops+" (5 when Gum active).";
     end;
 }
