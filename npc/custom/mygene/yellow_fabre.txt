@@ -102,10 +102,13 @@ S_YellowRewards:
     // Deliver successful rolls to the killer so rare weapons are not missed
     // on the ground. Keep a floor-drop fallback for full inventories.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31001,1))
+        if (checkweight(31001,1)) {
             getitem 31001,1;
-        else
+            dispbottom "Slayer reward obtained: "+getitemname(31001)+".";
+        } else {
             makeitem 31001,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(31001)+".";
+        }
     }
 
     // One random Red, Blue, or Yellow Gemstone: 70.00%.
