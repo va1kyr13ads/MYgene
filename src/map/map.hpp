@@ -20,6 +20,7 @@
 #include <common/timer.hpp>
 #include <config/core.hpp>
 
+#include "mygene_rare_loot.hpp"
 #include "navi.hpp"
 #include "script.hpp"
 #include "path.hpp"
@@ -493,6 +494,7 @@ struct flooritem_data : public block_list {
 	t_tick first_get_tick,second_get_tick,third_get_tick;
 	struct item item;
 	uint16 mob_id; ///< ID of monster who dropped it. 0 for non-monster who dropped it.
+	mygene_rare_info mygene_rare; // Only populated for tracked monster drops.
 };
 
 enum _sp {

@@ -1295,7 +1295,7 @@ void party_exp_share(struct party_data* p, block_list* src, t_exp base_exp, t_ex
 }
 
 //Does party loot. first_charid holds the charid of the player who has time priority to take the item.
-int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* item, int32 first_charid)
+int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* item, int32 first_charid, const mygene_rare_info* rare)
 {
 	TBL_PC* target = nullptr;
 	int32 i;
@@ -1355,6 +1355,9 @@ int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* 
 		if ((i = pc_additem(sd,item,item->amount,LOG_TYPE_PICKDROP_PLAYER)))
 			return i;
 	}
+
+	if( rare != nullptr )
+		mygene_rare_obtained(target, item->nameid, *rare);
 
 	if( p && battle_config.party_show_share_picker && battle_config.show_picker_item_type&(1<<itemdb_type(item->nameid)) )
 		clif_party_show_picker(target, item);

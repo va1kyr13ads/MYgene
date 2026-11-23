@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -2575,9 +2576,14 @@ void mob_process_drop_list(std::shared_ptr<s_item_drop_list>& list, bool loot)
 		dir = DIR_NORTH;
 
 	for (std::shared_ptr<s_item_drop>& ditem : list->items) {
-		map_addflooritem(&ditem->item_data, ditem->item_data.amount,
+		int32 floor_gid = map_addflooritem(&ditem->item_data, ditem->item_data.amount,
 			list->m, list->x, list->y,
 			list->first_charid, list->second_charid, list->third_charid, 4, ditem->mob_id, !loot, dir, BL_CHAR|BL_PET);
+		if (floor_gid > 0 && ditem->mygene_rare.base_rate != 0) {
+			flooritem_data* ground = reinterpret_cast<flooritem_data*>(map_id2bl(floor_gid));
+			if (ground != nullptr)
+				ground->mygene_rare = ditem->mygene_rare;
+		}
 		// The drop location loops between three locations: SE -> W -> N -> SE
 		if (dir <= DIR_NORTH)
 			dir = DIR_SOUTHEAST;
@@ -2639,12 +2645,13 @@ static void mob_item_drop(mob_data *md, std::shared_ptr<s_item_drop_list>& dlist
 		struct party_data *p = party_search(sd->status.party_id);
 
 		if ((itemdb_search(ditem->item_data.nameid))->flag.broadcast &&
+			ditem->mygene_rare.base_rate == 0 &&
 			(!p || !(p->party.item & 2)) // Somehow, if party's pickup distribution is 'Even Share', no announcemet
 			)
 			intif_broadcast_obtain_special_item(sd, ditem->item_data.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
 
 		if (party_share_loot(party_search(sd->status.party_id),
-			sd, &ditem->item_data, sd->status.char_id) == 0
+			sd, &ditem->item_data, sd->status.char_id, &ditem->mygene_rare) == 0
 		) {
 			return;
 		}
@@ -2859,6 +2866,128 @@ static bool mygene_legendary_gum_active(map_session_data* sd)
 {
 	return sd != nullptr &&
 		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
+}
+
+// MYgene Rare Loot: aggregate successful receipts from one monster for one player.
+// Timer coalescing covers autoloot, immediate script grants and quick manual pickups.
+// Late floor pickups generate a new batch, since uncollected items must not be announced.
+struct mygene_rare_entry {
+	std::string item_name;
+	uint32 base_rate;
+	uint32 modified_rate;
+	uint8 gum_type;
+};
+
+struct mygene_rare_batch {
+	std::string mob_name;
+	std::string player_name;
+	std::vector<mygene_rare_entry> items;
+};
+
+static std::unordered_map<uint64, mygene_rare_batch> mygene_rare_batches;
+
+static const char* mygene_gum_name(uint8 gum_type)
+{
+	switch (gum_type) {
+		case 1: return "Bubble Gum";
+		case 2: return "HE Bubble Gum";
+		case 3: return "Legendary Bubble Gum";
+		default: return "";
+	}
+}
+
+static uint8 mygene_gum_type(map_session_data* sd)
+{
+	if (mygene_legendary_gum_active(sd))
+		return 3;
+	if (sd == nullptr)
+		return 0;
+	const auto* effect = sd->sc.getSCE(SC_ITEMBOOST);
+	if (effect == nullptr)
+		return 0;
+	return effect->val1 >= 200 ? 2 : 1;
+}
+
+static std::string mygene_rate_bracket(uint32 rate)
+{
+	char part[40];
+	std::snprintf(part, sizeof(part), "[%.2f%%]", static_cast<double>(rate) / 100.0);
+	return part;
+}
+
+static std::string mygene_gum_bracket(uint8 gum_type, uint32 rate)
+{
+	if (gum_type == 0)
+		return "";
+	char part[95];
+	std::snprintf(part, sizeof(part), "[%s: %.2f%%]", mygene_gum_name(gum_type),
+		static_cast<double>(rate) / 100.0);
+	return part;
+}
+
+static TIMER_FUNC(mygene_rare_broadcast_timer)
+{
+	const uint64 key = static_cast<uint64>(data);
+	auto it = mygene_rare_batches.find(key);
+	if (it == mygene_rare_batches.end())
+		return 0;
+	mygene_rare_batch batch = std::move(it->second);
+	mygene_rare_batches.erase(it);
+	if (batch.items.empty())
+		return 0;
+
+	// When every item has the same modifier and resulting rate, show it once.
+	const auto& first = batch.items.front();
+	const bool shared_gum = first.gum_type != 0 && std::all_of(batch.items.begin(),
+		batch.items.end(), [&first](const mygene_rare_entry& item) {
+			return item.gum_type == first.gum_type &&
+				item.modified_rate == first.modified_rate;
+		});
+	std::string message = batch.mob_name + (batch.items.size() > 1 ? " dropped: " : " dropped ");
+	for (size_t i = 0; i < batch.items.size(); ++i) {
+		const auto& item = batch.items[i];
+		if (i != 0)
+			message += " + ";
+		message += item.item_name + " " + mygene_rate_bracket(item.base_rate);
+		if (!shared_gum)
+			message += mygene_gum_bracket(item.gum_type, item.modified_rate);
+	}
+	message += " to " + batch.player_name;
+	if (shared_gum)
+		message += " " + mygene_gum_bracket(first.gum_type, first.modified_rate);
+
+	intif_broadcast(message.c_str(), message.length() + 1, BC_DEFAULT);
+	return 0;
+}
+
+void mygene_rare_obtained(map_session_data* receiver, t_itemid item_id, const mygene_rare_info& info)
+{
+	// Threshold is the MYgene server chance before consumable Gum modifiers.
+	// 1 means 0.01%, 9 means 0.09%; exactly 0.10% does not qualify.
+	if (receiver == nullptr || info.mob_id == 0 || info.base_rate == 0 ||
+		info.base_rate >= 10 || battle_config.rare_drop_announce == 0 ||
+		info.base_rate > static_cast<uint32>(battle_config.rare_drop_announce))
+		return;
+	auto mob = mob_db.find(info.mob_id);
+	auto item = item_db.find(item_id);
+	if (mob == nullptr || item == nullptr)
+		return;
+
+	// Monster GIDs are unique during a kill; the low half isolates recipients.
+	// Scripted kills should pass killedgid. A missing GID uses a short time bucket.
+	const uint32 source = info.source_gid != 0 ? info.source_gid :
+		(static_cast<uint32>(gettick() / 1500) | 0x80000000u);
+	const uint64 key = (static_cast<uint64>(source) << 32) |
+		static_cast<uint32>(receiver->status.char_id);
+	auto it = mygene_rare_batches.find(key);
+	if (it == mygene_rare_batches.end()) {
+		mygene_rare_batch batch;
+		batch.mob_name = mob->name;
+		batch.player_name = receiver->status.name;
+		it = mygene_rare_batches.emplace(key, std::move(batch)).first;
+		add_timer(gettick() + 1500, mygene_rare_broadcast_timer, 0, static_cast<int64>(key));
+	}
+	it->second.items.push_back({ item->ename, info.base_rate, info.modified_rate, info.gum_type });
 }
 
 int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
@@ -3376,6 +3505,10 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			if (it == nullptr)
 				continue;
 
+			// The first bracket is MYgene server chance, not a personal bonus.
+			// Database rates already include the server drop multiplier; a null
+			// source and neutral level modifier exclude VIP, gear and Gum.
+			const int32 mygene_base_rate = mob_getdroprate(nullptr, md->db, entry->rate, 100, md);
 			drop_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md);
 
 			// Active Legendary Gum makes every defined normal drop certain.
@@ -3390,16 +3523,14 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			}
 
 			std::shared_ptr<s_item_drop> ditem = mob_setdropitem(entry, 1, md->mob_id);
-
-			//A Rare Drop Global Announce by Lupus
-			if (first_sd != nullptr && entry->rate <= battle_config.rare_drop_announce) {
-				char message[128];
-				sprintf(message, msg_txt(nullptr, 541), first_sd->status.name, md->name, it->ename.c_str(), (float)drop_rate / 100);
-				//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-				intif_broadcast(message, strlen(message) + 1, BC_DEFAULT);
+			if (mygene_base_rate > 0 && mygene_base_rate < 10) {
+				ditem->mygene_rare.source_gid = md->id;
+				ditem->mygene_rare.mob_id = md->mob_id;
+				ditem->mygene_rare.base_rate = static_cast<uint32>(mygene_base_rate);
+				ditem->mygene_rare.modified_rate = static_cast<uint32>(drop_rate);
+				ditem->mygene_rare.gum_type = mygene_gum_type(first_sd);
 			}
-			// Announce first, or else ditem will be freed. [Lance]
-			// By popular demand, use base drop rate for autoloot code. [Skotlex]
+			// Announce after successful autoloot or manual pickup, not at drop roll.
 			mob_item_drop(md, dlist, ditem, 0, battle_config.autoloot_adjust ? drop_rate : entry->rate, homkillonly || merckillonly);
 		}
 
@@ -3556,22 +3687,35 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				clif_mvp_item(mvp_sd,item.nameid);
 				log_mvp_nameid = item.nameid;
 
-				//A Rare MVP Drop Global Announce by Lupus
-				if(temp<=battle_config.rare_drop_announce) {
-					char message[128];
-					sprintf (message, msg_txt(nullptr,541), mvp_sd->status.name, md->name, i_data->ename.c_str(), temp/100.);
-					//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-					intif_broadcast(message,strlen(message)+1,BC_DEFAULT);
+				// MVP reward chances have already been adjusted by the drop DB
+				// and the optional Renewal level penalty. Preserve this server
+				// chance before Legendary Gum guarantees the roll.
+				mygene_rare_info rare;
+				if (temp > 0 && temp < 10) {
+					rare.source_gid = md->id;
+					rare.mob_id = md->mob_id;
+					rare.base_rate = static_cast<uint32>(temp);
+					rare.modified_rate = mygene_legendary_gum_active(mvp_sd) ? 10000u : static_cast<uint32>(temp);
+					rare.gum_type = mygene_legendary_gum_active(mvp_sd) ? 3 : 0;
 				}
 
 				mob_setdropitem_option( item, entry );
 
 				if((temp = pc_additem(mvp_sd,&item,1,LOG_TYPE_PICKDROP_PLAYER)) != 0) {
 					clif_additem(mvp_sd,0,0,temp);
-					map_addflooritem(&item,1,mvp_sd->m,mvp_sd->x,mvp_sd->y,mvp_sd->status.char_id,(second_sd?second_sd->status.char_id:0),(third_sd?third_sd->status.char_id:0),1,0,true,DIR_CENTER);
+					const int32 floor_gid = map_addflooritem(&item,1,mvp_sd->m,mvp_sd->x,mvp_sd->y,
+						mvp_sd->status.char_id,(second_sd?second_sd->status.char_id:0),
+						(third_sd?third_sd->status.char_id:0),1,md->mob_id,true,DIR_CENTER);
+					if (floor_gid > 0 && rare.base_rate != 0) {
+						flooritem_data* ground = reinterpret_cast<flooritem_data*>(map_id2bl(floor_gid));
+						if (ground != nullptr)
+							ground->mygene_rare = rare;
+					}
+				} else {
+					mygene_rare_obtained(mvp_sd, item.nameid, rare);
 				}
 
-				if (i_data->flag.broadcast)
+				if (i_data->flag.broadcast && rare.base_rate == 0)
 					intif_broadcast_obtain_special_item(mvp_sd, item.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
 
 				//Logs items, MVP prizes [Lupus]

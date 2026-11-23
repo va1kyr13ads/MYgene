@@ -102,13 +102,13 @@ S_YellowRewards:
     // Deliver successful rolls to the killer so rare weapons are not missed
     // on the ground. Keep a floor-drop fallback for full inventories.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31001,1)) {
-            getitem 31001,1;
+        // Preserves 0.05% fixed chance and inventory-first behavior.
+        // The server announces only after successful inventory receipt.
+        .@received = mygene_rare_reward(31001,5,31050,killedgid,.@guaranteed);
+        if (.@received)
             dispbottom "Slayer reward obtained: "+getitemname(31001)+".";
-        } else {
-            makeitem 31001,1,.@map$,.@x,.@y;
+        else
             dispbottom "Slayer reward dropped nearby: "+getitemname(31001)+".";
-        }
     }
 
     // One random Red, Blue, or Yellow Gemstone: 70.00%.
@@ -121,8 +121,10 @@ S_YellowRewards:
     }
 
     // Yellow Fabre Card: precisely 0.01% (one in ten thousand).
-    if (.@guaranteed || rand(1000000) < 100)
-        makeitem 31002,1,.@map$,.@x,.@y;
+    if (.@guaranteed || rand(1000000) < 100) {
+        // Keep the approved card as a floor drop; announce when collected.
+        mygene_rare_reward 31002,1,31050,killedgid,.@guaranteed,1;
+    }
 
     // Gold: 11.00% (existing item 969, not Zeny).
     if (.@guaranteed || rand(1000000) < 110000)

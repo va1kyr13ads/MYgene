@@ -2059,6 +2059,7 @@ int32 map_addflooritem(struct item *item, int32 amount, int16 m, int16 x, int16 
 		fitem->third_get_tick = fitem->second_get_tick + battle_config.item_third_get_time;
 	}
 	fitem->mob_id = mob_id;
+	fitem->mygene_rare = {}; // Non-monster floor items must never inherit rare-loot metadata.
 
 	memcpy(&fitem->item,item,sizeof(*item));
 	fitem->item.amount = amount;

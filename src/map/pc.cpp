@@ -6248,7 +6248,7 @@ bool pc_takeitem(map_session_data *sd,flooritem_data *fitem)
 		return false;
 
 	//This function takes care of giving the item to whoever should have it, considering party-share options.
-	if ((flag = party_share_loot(p,sd,&fitem->item, fitem->first_get_charid))) {
+	if ((flag = party_share_loot(p,sd,&fitem->item, fitem->first_get_charid, &fitem->mygene_rare))) {
 		clif_additem(sd,0,0,flag);
 		return true;
 	}
@@ -6257,7 +6257,7 @@ bool pc_takeitem(map_session_data *sd,flooritem_data *fitem)
 	unit_stop_attack( sd );
 	clif_takeitem(*sd, *fitem);
 
-	if (fitem->mob_id &&
+	if (fitem->mob_id && fitem->mygene_rare.base_rate == 0 &&
 		(itemdb_search(fitem->item.nameid))->flag.broadcast &&
 		(!p || !(p->party.item&2)) // Somehow, if party's pickup distribution is 'Even Share', no announcemet
 		)
