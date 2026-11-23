@@ -7667,6 +7667,69 @@ BUILDIN_FUNC(checkweight2)
  *	3 - Party Bound
  *	4 - Character Bound
  *------------------------------------------*/
+/**
+ * mygene_rare_reward <item ID>,<server rate>,<mob ID>,<killed GID>,<legendary gum>{,<floor only>};
+ *
+ * Deliver MYgene scripted rare loot with provenance. Normal exclusive
+ * weapons go into inventory, falling back to the floor if full; cards keep
+ * their existing ground-drop behavior when floor_only is 1. The receipt
+ * hook runs only after successful inventory delivery or later floor pickup.
+ * Server rates use 1 = 0.01%; only sub-0.10% is eligible for announcement.
+ * Returns 1 when delivered directly into inventory; 0 for floor fallback.
+ */
+BUILDIN_FUNC(mygene_rare_reward)
+{
+	map_session_data* sd;
+	if (!script_rid2sd(sd)) {
+		script_pushint(st, 0);
+		return SCRIPT_CMD_SUCCESS;
+	}
+
+	const t_itemid nameid = script_getnum(st, 2);
+	const int32 rate = script_getnum(st, 3);
+	const int32 mob_id = script_getnum(st, 4);
+	const int32 source_gid = script_getnum(st, 5);
+	const bool legendary = script_getnum(st, 6) != 0;
+	const bool floor_only = script_hasdata(st, 7) && script_getnum(st, 7) != 0;
+	if (!item_db.exists(nameid) || rate <= 0 || rate >= 10 ||
+		mob_db.find(mob_id) == nullptr) {
+		ShowError("mygene_rare_reward: invalid item, mob, or rare chance.\n");
+		script_pushint(st, 0);
+		return SCRIPT_CMD_FAILURE;
+	}
+
+	struct item reward = {};
+	reward.nameid = nameid;
+	reward.amount = 1;
+	reward.identify = itemdb_isidentified(nameid);
+
+	mygene_rare_info rare;
+	rare.source_gid = source_gid > 0 ? static_cast<uint32>(source_gid) : 0;
+	rare.mob_id = static_cast<uint16>(mob_id);
+	rare.base_rate = static_cast<uint32>(rate);
+	rare.modified_rate = legendary ? 10000u : static_cast<uint32>(rate);
+	rare.gum_type = legendary ? 3 : 0;
+
+	if (!floor_only && pc_additem(sd, &reward, 1, LOG_TYPE_SCRIPT) == ADDITEM_SUCCESS) {
+		mygene_rare_obtained(sd, nameid, rare);
+		script_pushint(st, 1);
+		return SCRIPT_CMD_SUCCESS;
+	}
+
+	const int32 floor_gid = map_addflooritem(&reward, 1, sd->m, sd->x, sd->y,
+		sd->status.char_id, 0, 0, 4, rare.mob_id, true);
+	if (floor_gid <= 0) {
+		ShowWarning("mygene_rare_reward: failed to create fallback floor item.\n");
+		script_pushint(st, 0);
+		return SCRIPT_CMD_FAILURE;
+	}
+	flooritem_data* ground = reinterpret_cast<flooritem_data*>(map_id2bl(floor_gid));
+	if (ground != nullptr)
+		ground->mygene_rare = rare;
+	script_pushint(st, 0);
+	return SCRIPT_CMD_SUCCESS;
+}
+
 BUILDIN_FUNC(getitem)
 {
 	int32 get_count, i;
@@ -27968,6 +28031,7 @@ struct script_function buildin_func[] = {
 	BUILDIN_DEF(getitem2,"viiiiiiii?"),
 	BUILDIN_DEF(getnameditem,"vv"),
 	BUILDIN_DEF2(grouprandomitem,"groupranditem","i?"),
+	BUILDIN_DEF(mygene_rare_reward,"iiiii?"),
 	BUILDIN_DEF(makeitem,"visii?"),
 	BUILDIN_DEF(makeitem2,"visiiiiiiiii?"),
 	BUILDIN_DEF(delitem,"vi?"),
