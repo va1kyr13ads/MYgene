@@ -1,0 +1,53 @@
+// MYgene Novice Tower isolated Floor 4 guardian controller.
+// Player-attached addtimer events track each character-owned private arena.
+-	script	MYgene_Tower_Core	-1,{
+
+OnBossPoll:
+	// A stale timer must never affect another player's instance.
+	if (@MYGENE_NT_INSTANCE <= 0 || @MYGENE_NT_BOSS <= 0 ||
+		!unitexists(@MYGENE_NT_BOSS)) {
+		@MYGENE_NT_POLLING = 0;
+		end;
+	}
+	.@map$ = instance_mapname("1@tower", @MYGENE_NT_INSTANCE);
+	if (.@map$ == "" || strcharinfo(3) != .@map$) {
+		@MYGENE_NT_POLLING = 0;
+		end;
+	}
+	if (getcharid(1) != 0) {
+		// Do not continue if the player joins a party mid-encounter.
+		dispbottom "Novice Tower: leave your party to continue solo.";
+		@MYGENE_NT_POLLING = 0;
+		end;
+	}
+	getunitdata @MYGENE_NT_BOSS,.@guardian;
+	if (.@guardian[UMOB_MAXHP] < 1) {
+		@MYGENE_NT_POLLING = 0;
+		end;
+	}
+	.@hp = (.@guardian[UMOB_HP] * 100) / .@guardian[UMOB_MAXHP];
+	setarray .@threshold[0],80,65,50,35,20,10;
+	while (@MYGENE_NT_STAGE < 6 && .@hp <= .@threshold[@MYGENE_NT_STAGE]) {
+		@MYGENE_NT_STAGE++;
+		callfunc("MYgene_Tower_Ally_Arrival",@MYGENE_NT_STAGE,.@map$);
+	}
+	callfunc("MYgene_Tower_Ally_Pulse",@MYGENE_NT_STAGE,@MYGENE_NT_BOSS);
+	addtimer 1500, "MYgene_Tower_Core::OnBossPoll";
+	end;
+
+OnBossDead:
+	// A tracked monster death must be delivered by the instanced owner.
+	if (killedgid != @MYGENE_NT_BOSS || @MYGENE_NT_INSTANCE <= 0)
+		end;
+	.@map$ = instance_mapname("1@tower", @MYGENE_NT_INSTANCE);
+	if (strcharinfo(3) != .@map$)
+		end;
+	if (getcharid(1) != 0)
+		end;
+	MYGENE_NT_TRIAL_FINISHED = 1;
+	@MYGENE_NT_BOSS = 0;
+	@MYGENE_NT_POLLING = 0;
+	mapannounce .@map$,"Novice Tower: "+strcharinfo(0)+" has personally defeated the Tower Guardian!",bc_map;
+	dispbottom "Floor 4 trial completed. Graduation and permanent choice are not yet enabled.";
+	end;
+}
