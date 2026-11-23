@@ -1,0 +1,6 @@
+// MYgene Novice Tower graduation (NOT YET ENABLED).
+// Planned: award "Novice Tower Conqueror" and first-job selection on Floor 5
+// only after verifying the complete solo five-floor quest, re-entry/checkpoints,
+// duplicate reward prevention, map escape rules and choice irreversibility.
+//
+// The trial completion flag MYGENE_NT_TRIAL_FINISHED is not graduation.
