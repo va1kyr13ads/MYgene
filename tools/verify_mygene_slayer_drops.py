@@ -23,7 +23,7 @@ def item_block(item_id: int) -> str:
 
 
 class SlayerDropWiring(unittest.TestCase):
-    def check_family(self, script_name, item_id, aegis, display_name, mob_id, handler, sub):
+    def check_family(self, script_name, item_id, card_id, aegis, display_name, mob_id, handler, sub):
         script = (ROOT / "npc/custom/mygene" / script_name).read_text(encoding="utf-8")
         item = item_block(item_id)
         self.assertIn(f"AegisName: {aegis}", item)
@@ -43,20 +43,30 @@ class SlayerDropWiring(unittest.TestCase):
 
         reward_body = script.split(f"\n{sub}:")[1]
         self.assertIn("rand(1000000) < 500", reward_body)  # 0.05%
-        self.assertEqual(reward_body.count(f"getitem {item_id},1;"), 1)
-        self.assertEqual(reward_body.count(f"makeitem {item_id},1,"), 1)
-        self.assertIn(f"checkweight({item_id},1)", reward_body)
+        self.assertIn(
+            f"mygene_rare_reward({item_id},5,{mob_id},killedgid,.@guaranteed)",
+            reward_body,
+        )
+        self.assertIn(
+            f"mygene_rare_reward {card_id},1,{mob_id},killedgid,.@guaranteed,1;",
+            reward_body,
+        )
+        self.assertIn("if (.@received)", reward_body)
+        # Successful rolls use one receipt-aware delivery path. Cards still
+        # drop on the ground and are announced only if actually collected.
+        self.assertNotIn(f"getitem {item_id},1;", reward_body)
+        self.assertNotIn(f"makeitem {item_id},1,", reward_body)
         self.assertTrue(reward_body.rstrip().endswith("return;\n}"))
 
     def test_fabre_slayer(self):
         self.check_family(
-            "yellow_fabre.txt", 31001, "MYGENE_FABRE_SLAYER",
+            "yellow_fabre.txt", 31001, 31002, "MYGENE_FABRE_SLAYER",
             "Fabre Slayer Knife", 31050, "OnYellowFabreDead", "S_YellowRewards"
         )
 
     def test_thief_bug_slayer(self):
         self.check_family(
-            "red_thief_bug.txt", 31006, "MYGENE_THIEF_BUG_SLAYER",
+            "red_thief_bug.txt", 31006, 31007, "MYGENE_THIEF_BUG_SLAYER",
             "Thief Bug Slayer Sword", 31051, "OnRedThiefBugDead", "S_RedRewards"
         )
 
