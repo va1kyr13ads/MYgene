@@ -3687,19 +3687,32 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				clif_mvp_item(mvp_sd,item.nameid);
 				log_mvp_nameid = item.nameid;
 
-				//A Rare MVP Drop Global Announce by Lupus
-				if(temp<=battle_config.rare_drop_announce) {
-					char message[128];
-					sprintf (message, msg_txt(nullptr,541), mvp_sd->status.name, md->name, i_data->ename.c_str(), temp/100.);
-					//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-					intif_broadcast(message,strlen(message)+1,BC_DEFAULT);
+				// MVP reward chances have already been adjusted by the drop DB
+				// and the optional Renewal level penalty. Preserve this server
+				// chance before Legendary Gum guarantees the roll.
+				mygene_rare_info rare;
+				if (temp > 0 && temp < 10) {
+					rare.source_gid = md->id;
+					rare.mob_id = md->mob_id;
+					rare.base_rate = static_cast<uint32>(temp);
+					rare.modified_rate = mygene_legendary_gum_active(mvp_sd) ? 10000u : static_cast<uint32>(temp);
+					rare.gum_type = mygene_legendary_gum_active(mvp_sd) ? 3 : 0;
 				}
 
 				mob_setdropitem_option( item, entry );
 
 				if((temp = pc_additem(mvp_sd,&item,1,LOG_TYPE_PICKDROP_PLAYER)) != 0) {
 					clif_additem(mvp_sd,0,0,temp);
-					map_addflooritem(&item,1,mvp_sd->m,mvp_sd->x,mvp_sd->y,mvp_sd->status.char_id,(second_sd?second_sd->status.char_id:0),(third_sd?third_sd->status.char_id:0),1,0,true,DIR_CENTER);
+					const int32 floor_gid = map_addflooritem(&item,1,mvp_sd->m,mvp_sd->x,mvp_sd->y,
+						mvp_sd->status.char_id,(second_sd?second_sd->status.char_id:0),
+						(third_sd?third_sd->status.char_id:0),1,md->mob_id,true,DIR_CENTER);
+					if (floor_gid > 0 && rare.base_rate != 0) {
+						flooritem_data* ground = reinterpret_cast<flooritem_data*>(map_id2bl(floor_gid));
+						if (ground != nullptr)
+							ground->mygene_rare = rare;
+					}
+				} else {
+					mygene_rare_obtained(mvp_sd, item.nameid, rare);
 				}
 
 				if (i_data->flag.broadcast)
