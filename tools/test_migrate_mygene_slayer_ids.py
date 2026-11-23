@@ -57,6 +57,12 @@ class MigrationSafety(unittest.TestCase):
         with self.assertRaises(m.MigrationError):
             m.assert_valid_manifest(doc)
 
+    def test_migration_of_item_id_in_primary_key(self):
+        record = {"table": "market", "pk": {"name": "Item Shop", "nameid": 31008}}
+        cells = [{"column": "nameid", "old_id": 31008, "new_id": 60008}]
+        self.assertEqual(m.migrated_pk(record, cells),
+                         {"name": "Item Shop", "nameid": 60008})
+
     def test_nontransactional_tables_refused(self):
         md = self.sample()["catalog"]
         md["inventory"]["engine"] = "MyISAM"
