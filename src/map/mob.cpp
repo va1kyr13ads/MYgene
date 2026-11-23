@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -2575,9 +2576,14 @@ void mob_process_drop_list(std::shared_ptr<s_item_drop_list>& list, bool loot)
 		dir = DIR_NORTH;
 
 	for (std::shared_ptr<s_item_drop>& ditem : list->items) {
-		map_addflooritem(&ditem->item_data, ditem->item_data.amount,
+		int32 floor_gid = map_addflooritem(&ditem->item_data, ditem->item_data.amount,
 			list->m, list->x, list->y,
 			list->first_charid, list->second_charid, list->third_charid, 4, ditem->mob_id, !loot, dir, BL_CHAR|BL_PET);
+		if (floor_gid > 0 && ditem->mygene_rare.base_rate != 0) {
+			flooritem_data* ground = reinterpret_cast<flooritem_data*>(map_id2bl(floor_gid));
+			if (ground != nullptr)
+				ground->mygene_rare = ditem->mygene_rare;
+		}
 		// The drop location loops between three locations: SE -> W -> N -> SE
 		if (dir <= DIR_NORTH)
 			dir = DIR_SOUTHEAST;
@@ -2644,7 +2650,7 @@ static void mob_item_drop(mob_data *md, std::shared_ptr<s_item_drop_list>& dlist
 			intif_broadcast_obtain_special_item(sd, ditem->item_data.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
 
 		if (party_share_loot(party_search(sd->status.party_id),
-			sd, &ditem->item_data, sd->status.char_id) == 0
+			sd, &ditem->item_data, sd->status.char_id, &ditem->mygene_rare) == 0
 		) {
 			return;
 		}
@@ -2861,7 +2867,7 @@ static bool mygene_legendary_gum_active(map_session_data* sd)
 		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
 }
 
-int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
+int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor, bool without_itemboost)
 {
 	int32 drop_rate = base_rate;
 
@@ -2892,7 +2898,7 @@ int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base
 			drop_rate_bonus += sd->indexed_bonus.dropaddclass[mob->status.class_] + sd->indexed_bonus.dropaddclass[CLASS_ALL];
 			drop_rate_bonus += sd->indexed_bonus.dropaddrace[mob->status.race] + sd->indexed_bonus.dropaddrace[RC_ALL];
 
-			if (sd->sc.getSCE(SC_ITEMBOOST))
+			if (!without_itemboost && sd->sc.getSCE(SC_ITEMBOOST))
 				drop_rate_bonus += sd->sc.getSCE(SC_ITEMBOOST)->val1;
 			if (sd->sc.getSCE(SC_PERIOD_RECEIVEITEM_2ND))
 				drop_rate_bonus += sd->sc.getSCE(SC_PERIOD_RECEIVEITEM_2ND)->val1;
