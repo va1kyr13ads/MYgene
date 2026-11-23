@@ -55,7 +55,7 @@ Exactly independent of global 4x/normal multipliers:
 | Gold item | 969 | 11.00% |
 | Existing Attraction Potion | 60003 | 0.50% |
 
-The Bow is awarded to the killer's inventory when carry weight allows and otherwise placed on the ground with a message. Card and auxiliary rewards spawn on the ground at the killer's tile. On a killing player's **15-second Legendary Bubble Gum** window (item `60009`), each eligible special roll succeeds. Drops from labeled NPC encounter mobs and unlabeled `@monster 31052` mobs both call exactly one shared reward routine; no double rolls.
+All five MYgene-exclusive reward rolls (Bow, Blue Card, one random Gemstone, Gold item, Attraction Potion) are delivered directly to the killing player's inventory. Any successful reward that cannot fit is dropped at the killer's tile with an on-screen notice. The same inventory-first/floor-fallback rule applies to Yellow Fabre and Red Thief Bug; their fixed roll probabilities and normal monster drops are unchanged. On a killing player's **15-second Legendary Bubble Gum** window (item `60009`), each eligible special roll succeeds. Drops from labeled NPC encounter mobs and unlabeled `@monster 31052` mobs both call exactly one shared reward routine; no double rolls.
 
 ### Weapon and Blue card effects
 
@@ -85,7 +85,7 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 - `@monster 1011 30` on the **same map**; kill 30 normals and check one Blue Chon Chon spawn. Repeat with a mixture of Steel Chonchon `1042` and Hunter Fly `1035`.
 - Verify Dragon Fly `1091` never advances the counter; no boss, elite or MVP is affected by execution. An ordinary 30-kill spawn must be solo on each map.
 - On a disposable test map, force-remove the labeled Blue Chon Chon with GM/script cleanup and kill another normal Chonchon. Verify the event recovers from the stale active flag without announcing an imaginary spawn or affecting another map's counter. Simulate or test a failed summon, verifying the retry stays at 29/30.
-- Spawn `@monster 31052 1`, activate `Legendary Bubble Gum`, kill within 15 seconds. Expect Bow and Blue card and auxiliaries; weapon inventory or ground fallback. Repeat without gum to observe ordinary independent probabilities (absence of rare drops is normal).
+- Spawn `@monster 31052 1`, activate `Legendary Bubble Gum`, kill within 15 seconds. Expect Bow, Blue Card and auxiliaries to enter the killer's inventory, except any items that cannot fit (ground fallback with notification). Repeat without gum to observe ordinary independent probabilities (absence of rare drops is normal).
 - Equip Bow `60010` with arrows; test regular basic attacks versus Chonchon, Steel Chonchon, Hunter Fly and Blue Chon Chon; check approximately 50% execution for attacks that hit. Compound Blue card `60011` and expect approximately 90% over many hits. Test other families, skills, Dragon Fly and elites as negatives.
 - At group 99, verify Perfect Bow conversion on a **backed-up development character** with the carded normal bow equipped, at Level 40+. Negative-test non-GM, uncarded/refined/bound/graded items.
 - Recheck Fabre and Thief Bug weapons, items, drops and card execution; the prior saved milestone remains the rollback point.
