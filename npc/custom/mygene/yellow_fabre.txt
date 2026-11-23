@@ -93,7 +93,7 @@ S_YellowRewards:
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
-    // Legendary Bubble Gum (31009): for 15 seconds, every defined
+    // Legendary Bubble Gum (60009): for 15 seconds, every defined
     // special drop succeeds, including the exclusive weapon and card.
     // Outside that window each independent fixed chance is unchanged.
     .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
@@ -102,34 +102,63 @@ S_YellowRewards:
     // Deliver successful rolls to the killer so rare weapons are not missed
     // on the ground. Keep a floor-drop fallback for full inventories.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31001,1)) {
-            getitem 31001,1;
-            dispbottom "Slayer reward obtained: "+getitemname(31001)+".";
+        if (checkweight(60001,1)) {
+            getitem 60001,1;
+            dispbottom "Slayer reward obtained: "+getitemname(60001)+".";
         } else {
-            makeitem 31001,1,.@map$,.@x,.@y;
-            dispbottom "Slayer reward dropped nearby: "+getitemname(31001)+".";
+            makeitem 60001,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(60001)+".";
         }
     }
 
-    // One random Red, Blue, or Yellow Gemstone: 70.00%.
+    // All MYgene-exclusive rewards go directly to the killing player.
+    // If inventory cannot hold a successful reward, place it at the
+    // killer's tile instead so the reward does not disappear.
+
+    // One random Red / Blue / Yellow Gemstone: 70.00%.
     if (.@guaranteed || rand(1000000) < 700000) {
         switch(rand(3)) {
-        case 0: makeitem 715,1,.@map$,.@x,.@y; break;
-        case 1: makeitem 716,1,.@map$,.@x,.@y; break;
-        default: makeitem 717,1,.@map$,.@x,.@y; break;
+        case 0: .@gem = 715; break;
+        case 1: .@gem = 716; break;
+        default: .@gem = 717; break;
+        }
+        if (checkweight(.@gem,1)) {
+            getitem .@gem,1;
+        } else {
+            makeitem .@gem,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby (cannot carry): "+getitemname(.@gem)+".";
         }
     }
 
-    // Yellow Fabre Card: precisely 0.01% (one in ten thousand).
-    if (.@guaranteed || rand(1000000) < 100)
-        makeitem 31002,1,.@map$,.@x,.@y;
+    // Yellow Fabre Card: 0.01% (1 / 10,000).
+    if (.@guaranteed || rand(1000000) < 100) {
+        if (checkweight(60002,1)) {
+            getitem 60002,1;
+            dispbottom "Slayer reward obtained: "+getitemname(60002)+".";
+        } else {
+            makeitem 60002,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby (cannot carry): "+getitemname(60002)+".";
+        }
+    }
 
-    // Gold: 11.00% (existing item 969, not Zeny).
-    if (.@guaranteed || rand(1000000) < 110000)
-        makeitem 969,1,.@map$,.@x,.@y;
+    // Gold (item 969, not Zeny): 11.00%.
+    if (.@guaranteed || rand(1000000) < 110000) {
+        if (checkweight(969,1)) {
+            getitem 969,1;
+        } else {
+            makeitem 969,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby (cannot carry): "+getitemname(969)+".";
+        }
+    }
 
-    // Attraction Potion: 0.50% (one in two hundred).
-    if (.@guaranteed || rand(1000000) < 5000)
-        makeitem 31003,1,.@map$,.@x,.@y;
+    // Attraction Potion: 0.50%.
+    if (.@guaranteed || rand(1000000) < 5000) {
+        if (checkweight(60003,1)) {
+            getitem 60003,1;
+        } else {
+            makeitem 60003,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby (cannot carry): "+getitemname(60003)+".";
+        }
+    }
     return;
 }

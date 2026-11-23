@@ -1,5 +1,5 @@
 // MYgene Legendary Bubble Gum visual feedback.
-// 31009's item script starts this player-attached pulse timer.
+// 60009's item script starts this player-attached pulse timer.
 // The same character's timer determines both loot eligibility and effects.
 // This NPC never modifies battle stats, monster loot, or other players.
 -	script	MYgene_Legendary_Gum_Aura	-1,{

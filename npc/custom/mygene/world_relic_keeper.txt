@@ -18,7 +18,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
     mes "forgotten vaults.";
     next;
 
-    switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Perfect Knife Upgrade [GM]:Perfect Sword Upgrade [GM]:Leave")) {
+    switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Perfect Knife Upgrade [GM]:Perfect Sword Upgrade [GM]:Perfect Bow Upgrade [GM]:Leave")) {
     case 1:
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "^FF0000P.F.S.K^000000";
@@ -68,14 +68,14 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
     case 2:
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "Let me see what you carry.";
-        mes "Fabre Slayer Knives: ^3399FF"+countitem(31001)+"^000000";
-        mes "Yellow Fabre Cards: ^3399FF"+countitem(31002)+"^000000";
-        mes "Perfect Knives: ^3399FF"+countitem(31004)+"^000000";
+        mes "Fabre Slayer Knives: ^3399FF"+countitem(60001)+"^000000";
+        mes "Yellow Fabre Cards: ^3399FF"+countitem(60002)+"^000000";
+        mes "Perfect Knives: ^3399FF"+countitem(60004)+"^000000";
         next;
         mes "^C9A13C[World Relic Keeper]^000000";
-        mes "Thief Bug Slayer Swords: ^3399FF"+countitem(31006)+"^000000";
-        mes "Red Thief Bug Cards: ^3399FF"+countitem(31007)+"^000000";
-        mes "Perfect Swords: ^3399FF"+countitem(31008)+"^000000";
+        mes "Thief Bug Slayer Swords: ^3399FF"+countitem(60006)+"^000000";
+        mes "Red Thief Bug Cards: ^3399FF"+countitem(60007)+"^000000";
+        mes "Perfect Swords: ^3399FF"+countitem(60008)+"^000000";
         mes "The card must be compounded";
         mes "in the equipped sword.";
         next;
@@ -164,7 +164,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "current knife until then.";
             close;
         }
-        if (getequipid(EQI_HAND_R) != 31001 || getequipcardid(EQI_HAND_R,0) != 31002) {
+        if (getequipid(EQI_HAND_R) != 60001 || getequipcardid(EQI_HAND_R,0) != 60002) {
             mes "Equip your original";
             mes "Fabre Slayer Knife with";
             mes "Yellow Fabre Card inside";
@@ -178,9 +178,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         .@idx = -1;
         .@special = 0;
         for (.@i = 0; .@i < @inventorylist_count; .@i++) {
-            if (@inventorylist_id[.@i] == 31001 &&
+            if (@inventorylist_id[.@i] == 60001 &&
                 (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
-                @inventorylist_card1[.@i] == 31002) {
+                @inventorylist_card1[.@i] == 60002) {
                 .@idx = @inventorylist_idx[.@i];
                 if (@inventorylist_refine[.@i] != 0 ||
                     @inventorylist_identify[.@i] != 1 ||
@@ -206,7 +206,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "service. No item changed.";
             close;
         }
-        if (!checkweight(31004,1)) {
+        if (!checkweight(60004,1)) {
             mes "Not enough carry weight.";
             mes "Free some weight first.";
             close;
@@ -222,9 +222,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         // Revalidate after player confirmation. The character-level gate
         // above and the GM check both still apply.
         if (getgroupid() != 99 || BaseLevel < 40 ||
-            getequipid(EQI_HAND_R) != 31001 ||
-            getequipcardid(EQI_HAND_R,0) != 31002 ||
-            !checkweight(31004,1)) {
+            getequipid(EQI_HAND_R) != 60001 ||
+            getequipcardid(EQI_HAND_R,0) != 60002 ||
+            !checkweight(60004,1)) {
             mes "Conditions changed.";
             mes "No item was modified.";
             close;
@@ -233,9 +233,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         .@idx = -1;
         .@special = 0;
         for (.@i = 0; .@i < @inventorylist_count; .@i++) {
-            if (@inventorylist_id[.@i] == 31001 &&
+            if (@inventorylist_id[.@i] == 60001 &&
                 (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
-                @inventorylist_card1[.@i] == 31002) {
+                @inventorylist_card1[.@i] == 60002) {
                 .@idx = @inventorylist_idx[.@i];
                 if (@inventorylist_refine[.@i] != 0 ||
                     @inventorylist_identify[.@i] != 1 ||
@@ -272,8 +272,8 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "No upgrade was awarded.";
             close;
         }
-        getitem2 31004,1,1,0,0,31002,0,0,0;
-        logmes "MYgene test: converted equipped carded 31001 to 31004 [31002], non-lease.";
+        getitem2 60004,1,1,0,0,60002,0,0,0;
+        logmes "MYgene test: converted equipped carded 60001 to 60004 [60002], non-lease.";
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "^FF0000P.F.S.K!^000000";
         mes "Your original card remains";
@@ -299,7 +299,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "current sword until then.";
             close;
         }
-        if (getequipid(EQI_HAND_R) != 31006 || getequipcardid(EQI_HAND_R,0) != 31007) {
+        if (getequipid(EQI_HAND_R) != 60006 || getequipcardid(EQI_HAND_R,0) != 60007) {
             mes "Equip your original";
             mes "Thief Bug Slayer Sword with";
             mes "Red Thief Bug Card inside";
@@ -313,9 +313,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         .@idx = -1;
         .@special = 0;
         for (.@i = 0; .@i < @inventorylist_count; .@i++) {
-            if (@inventorylist_id[.@i] == 31006 &&
+            if (@inventorylist_id[.@i] == 60006 &&
                 (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
-                @inventorylist_card1[.@i] == 31007) {
+                @inventorylist_card1[.@i] == 60007) {
                 .@idx = @inventorylist_idx[.@i];
                 if (@inventorylist_refine[.@i] != 0 ||
                     @inventorylist_identify[.@i] != 1 ||
@@ -341,7 +341,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "service. No item changed.";
             close;
         }
-        if (!checkweight(31008,1)) {
+        if (!checkweight(60008,1)) {
             mes "Not enough carry weight.";
             mes "Free some weight first.";
             close;
@@ -357,9 +357,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         // Revalidate after player confirmation. The character-level gate
         // above and the GM check both still apply.
         if (getgroupid() != 99 || BaseLevel < 40 ||
-            getequipid(EQI_HAND_R) != 31006 ||
-            getequipcardid(EQI_HAND_R,0) != 31007 ||
-            !checkweight(31008,1)) {
+            getequipid(EQI_HAND_R) != 60006 ||
+            getequipcardid(EQI_HAND_R,0) != 60007 ||
+            !checkweight(60008,1)) {
             mes "Conditions changed.";
             mes "No item was modified.";
             close;
@@ -368,9 +368,9 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         .@idx = -1;
         .@special = 0;
         for (.@i = 0; .@i < @inventorylist_count; .@i++) {
-            if (@inventorylist_id[.@i] == 31006 &&
+            if (@inventorylist_id[.@i] == 60006 &&
                 (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
-                @inventorylist_card1[.@i] == 31007) {
+                @inventorylist_card1[.@i] == 60007) {
                 .@idx = @inventorylist_idx[.@i];
                 if (@inventorylist_refine[.@i] != 0 ||
                     @inventorylist_identify[.@i] != 1 ||
@@ -407,10 +407,145 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
             mes "No upgrade was awarded.";
             close;
         }
-        getitem2 31008,1,1,0,0,31007,0,0,0;
-        logmes "MYgene test: converted equipped carded 31006 to 31008 [31007], non-lease.";
+        getitem2 60008,1,1,0,0,60007,0,0,0;
+        logmes "MYgene test: converted equipped carded 60006 to 60008 [60007], non-lease.";
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "^3399FFPerfect Thief Bug Slayer Sword!^000000";
+        mes "Your original card remains";
+        mes "compounded in its slot.";
+        mes "This is a TEST relic.";
+        mes "It has no expiry or cap.";
+        close;
+
+    case 8:
+        // This is deliberately NOT a public-world-limited creation flow.
+        // The live registry will replace this controlled test conversion.
+        mes "^C9A13C[World Relic Keeper]^000000";
+        if (getgroupid() != 99) {
+            mes "^FF6600Upgrades are not open yet.^000000";
+            mes "The world relic registry";
+            mes "must be completed first.";
+            close;
+        }
+        if (BaseLevel < 40) {
+            mes "A Perfect weapon requires";
+            mes "^3399FFBase Level 40^000000.";
+            mes "You may keep using your";
+            mes "current bow until then.";
+            close;
+        }
+        if (getequipid(EQI_HAND_R) != 60010 || getequipcardid(EQI_HAND_R,0) != 60011) {
+            mes "Equip your original";
+            mes "Chonchon Slayer Bow with";
+            mes "Blue Chon Chon Card inside";
+            mes "its first slot.";
+            mes "No extra card is needed.";
+            close;
+        }
+        // Locate the exact equipped inventory instance. Refuse special
+        // instances that getitem2 cannot faithfully copy during conversion.
+        getinventorylist;
+        .@idx = -1;
+        .@special = 0;
+        for (.@i = 0; .@i < @inventorylist_count; .@i++) {
+            if (@inventorylist_id[.@i] == 60010 &&
+                (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
+                @inventorylist_card1[.@i] == 60011) {
+                .@idx = @inventorylist_idx[.@i];
+                if (@inventorylist_refine[.@i] != 0 ||
+                    @inventorylist_identify[.@i] != 1 ||
+                    @inventorylist_attribute[.@i] != 0 ||
+                    @inventorylist_bound[.@i] != 0 ||
+                    @inventorylist_expire[.@i] != 0 ||
+                    @inventorylist_enchantgrade[.@i] != 0 ||
+                    @inventorylist_card2[.@i] != 0 ||
+                    @inventorylist_card3[.@i] != 0 ||
+                    @inventorylist_card4[.@i] != 0 ||
+                    @inventorylist_option_id1[.@i] != 0 ||
+                    @inventorylist_option_id2[.@i] != 0 ||
+                    @inventorylist_option_id3[.@i] != 0 ||
+                    @inventorylist_option_id4[.@i] != 0 ||
+                    @inventorylist_option_id5[.@i] != 0)
+                    .@special = 1;
+                break;
+            }
+        }
+        if (.@idx < 0 || .@special) {
+            mes "This bow cannot be";
+            mes "converted by the test";
+            mes "service. No item changed.";
+            close;
+        }
+        if (!checkweight(60012,1)) {
+            mes "Not enough carry weight.";
+            mes "Free some weight first.";
+            close;
+        }
+        mes "Convert this carded bow";
+        mes "to the ^3399FFPerfect^000000 version?";
+        mes "ATK 25 / Weapon Lv. 4";
+        mes "Range 5 / Required Lv. 40";
+        mes "Weight 100 / No Refine";
+        mes "Indestructible / 90%";
+        next;
+        if (select("Upgrade equipped bow:Cancel") != 1) close;
+        // Revalidate after player confirmation. The character-level gate
+        // above and the GM check both still apply.
+        if (getgroupid() != 99 || BaseLevel < 40 ||
+            getequipid(EQI_HAND_R) != 60010 ||
+            getequipcardid(EQI_HAND_R,0) != 60011 ||
+            !checkweight(60012,1)) {
+            mes "Conditions changed.";
+            mes "No item was modified.";
+            close;
+        }
+        getinventorylist;
+        .@idx = -1;
+        .@special = 0;
+        for (.@i = 0; .@i < @inventorylist_count; .@i++) {
+            if (@inventorylist_id[.@i] == 60010 &&
+                (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
+                @inventorylist_card1[.@i] == 60011) {
+                .@idx = @inventorylist_idx[.@i];
+                if (@inventorylist_refine[.@i] != 0 ||
+                    @inventorylist_identify[.@i] != 1 ||
+                    @inventorylist_attribute[.@i] != 0 ||
+                    @inventorylist_bound[.@i] != 0 ||
+                    @inventorylist_expire[.@i] != 0 ||
+                    @inventorylist_enchantgrade[.@i] != 0 ||
+                    @inventorylist_card2[.@i] != 0 ||
+                    @inventorylist_card3[.@i] != 0 ||
+                    @inventorylist_card4[.@i] != 0 ||
+                    @inventorylist_option_id1[.@i] != 0 ||
+                    @inventorylist_option_id2[.@i] != 0 ||
+                    @inventorylist_option_id3[.@i] != 0 ||
+                    @inventorylist_option_id4[.@i] != 0 ||
+                    @inventorylist_option_id5[.@i] != 0)
+                    .@special = 1;
+                break;
+            }
+        }
+        if (.@idx < 0 || .@special) {
+            mes "Bow validation failed.";
+            mes "No item was modified.";
+            close;
+        }
+        // This standalone test conversion is not a SQL transaction. Admins
+        // must back up their test database before using it.
+        if (!unequip(EQI_HAND_R)) {
+            mes "Unable to unequip bow.";
+            mes "No item was consumed.";
+            close;
+        }
+        if (!delitemidx(.@idx,1)) {
+            mes "Could not remove bow.";
+            mes "No upgrade was awarded.";
+            close;
+        }
+        getitem2 60012,1,1,0,0,60011,0,0,0;
+        logmes "MYgene test: converted equipped carded 60010 to 60012 [60011], non-lease.";
+        mes "^C9A13C[World Relic Keeper]^000000";
+        mes "^3399FFPerfect Chonchon Slayer Bow!^000000";
         mes "Your original card remains";
         mes "compounded in its slot.";
         mes "This is a TEST relic.";
@@ -430,8 +565,9 @@ OnInit:
     .LeaseDays = 60;
     .RenewalWindowDays = 14;
     .GraceDays = 7;
-    .PerfectKnifeID = 31004; // Standalone GM test item, no lease/cap.
-    .PerfectSwordID = 31008; // GM-only test upgrade, no lease/cap.
-    .SoulItemID = 31005;    // Reserved; not currently in item database.
+    .PerfectKnifeID = 60004; // Standalone GM test item, no lease/cap.
+    .PerfectSwordID = 60008; // GM-only test upgrade, no lease/cap.
+    .PerfectBowID = 60012;   // Blue Chon Chon GM-only test upgrade.
+    .SoulItemID = 60005;    // Reserved; not currently in item database.
     end;
 }

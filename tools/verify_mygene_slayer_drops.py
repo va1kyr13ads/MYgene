@@ -50,15 +50,267 @@ class SlayerDropWiring(unittest.TestCase):
 
     def test_fabre_slayer(self):
         self.check_family(
-            "yellow_fabre.txt", 31001, "MYGENE_FABRE_SLAYER",
+            "yellow_fabre.txt", 60001, "MYGENE_FABRE_SLAYER",
             "Fabre Slayer Knife", 31050, "OnYellowFabreDead", "S_YellowRewards"
         )
 
     def test_thief_bug_slayer(self):
         self.check_family(
-            "red_thief_bug.txt", 31006, "MYGENE_THIEF_BUG_SLAYER",
+            "red_thief_bug.txt", 60006, "MYGENE_THIEF_BUG_SLAYER",
             "Thief Bug Slayer Sword", 31051, "OnRedThiefBugDead", "S_RedRewards"
         )
+
+
+    def test_all_slayer_exclusive_rewards_go_to_killer_inventory(self):
+        """All three series give scripted loot directly, with floor fallback."""
+        families = (
+            ("yellow_fabre.txt", "S_YellowRewards", 60001, 60002),
+            ("red_thief_bug.txt", "S_RedRewards", 60006, 60007),
+            ("blue_chon_chon.txt", "S_BlueRewards", 60010, 60011),
+        )
+        chances = (500, 700000, 100, 110000, 5000)
+        for script_name, label, weapon, card in families:
+            with self.subTest(family=script_name):
+                script = (ROOT / "npc/custom/mygene" / script_name).read_text(
+                    encoding="utf-8"
+                )
+                body = script.split(f"\n{label}:", 1)[1]
+                self.assertIn("MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2)", body)
+                for chance in chances:
+                    self.assertEqual(
+                        body.count(f"rand(1000000) < {chance})"), 1,
+                        f"{script_name} changed a fixed reward chance",
+                    )
+                for item_id in (weapon, card, 969, 60003):
+                    self.assertEqual(body.count(f"checkweight({item_id},1)"), 1)
+                    self.assertEqual(body.count(f"getitem {item_id},1;"), 1)
+                    self.assertEqual(
+                        body.count(f"makeitem {item_id},1,.@map$,.@x,.@y;"), 1
+                    )
+                self.assertIn("switch(rand(3))", body)
+                for selection in (715, 716, 717):
+                    self.assertIn(f".@gem = {selection};", body)
+                self.assertIn("checkweight(.@gem,1)", body)
+                self.assertIn("getitem .@gem,1;", body)
+                self.assertIn("makeitem .@gem,1,.@map$,.@x,.@y;", body)
+                self.assertIn("getmapxy(.@map$,.@x,.@y,BL_PC)", body)
+                self.assertIn(
+                    "Slayer reward dropped nearby (cannot carry):", body
+                )
+
+    def test_blue_chon_chon_bow(self):
+        self.check_family(
+            "blue_chon_chon.txt", 60010, "MYGENE_CHONCHON_SLAYER_BOW",
+            "Chonchon Slayer Bow", 31052, "OnBlueChonChonDead", "S_BlueRewards"
+        )
+        script = (ROOT / "npc/custom/mygene/blue_chon_chon.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            "killedrid != 1011 && killedrid != 1042 && killedrid != 1035", script
+        )
+        self.assertIn("if (.BlueActive[.@slot])", script)
+        # A removed/GM-cleaned labeled encounter must never permanently
+        # block this map's next 30-kill cycle.
+        self.assertIn(
+            'mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") > 0',
+            script,
+        )
+        self.assertIn(".BlueActive[.@slot] = 0;", script)
+        # A failed summon should not announce a monster that did not exist.
+        self.assertIn(
+            'mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") < 1',
+            script,
+        )
+        self.assertIn(".KillCount[.@slot] = 29;", script)
+        self.assertIn("if (.KillCount[.@slot] < 30)", script)
+        self.assertIn(".KillCount[.@i] = 1;", script)
+        self.assertNotIn("killedrid == 1091", script)  # Dragon Fly is a mini-boss.
+        self.assertIn("MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2)", script)
+        self.assertIn("rand(1000000) < 100", script)  # Card: 0.01%.
+        self.assertIn("makeitem 60011,1,", script)
+        self.assertNotIn("makeitem 60012,1,", script)  # Perfect bow never drops.
+        self.assertIn("getmapxy(.@map$,.@x,.@y,BL_PC)", script)
+
+    def test_blue_chon_chon_aggressive_vanilla_behavior_with_higher_stats(self):
+        """Blue keeps Chonchon's motion, elements, loot and Wind Attack."""
+        vanilla_db = (ROOT / "db/pre-re/mob_db.yml").read_text(encoding="utf-8")
+        vanilla_skills = (ROOT / "db/pre-re/mob_skill_db.txt").read_text(encoding="utf-8")
+        custom_skills = (ROOT / "db/import/mob_skill_db.txt").read_text(encoding="utf-8")
+
+        def mob_block(db, mob_id):
+            found = re.search(
+                rf"(?ms)^  - Id: {mob_id}\s*\n(.*?)(?=^  - Id: |\Z)", db
+            )
+            self.assertIsNotNone(found, f"Missing monster ID {mob_id}")
+            return found.group(1)
+
+        def stat(block, key):
+            found = re.search(rf"(?m)^    {re.escape(key)}: ([^\n]+)$", block)
+            self.assertIsNotNone(found, f"Missing stat {key}")
+            return found.group(1)
+
+        blue = mob_block(MOB_DB, 31052)
+        chonchon = mob_block(vanilla_db, 1011)
+        hunter_fly = mob_block(vanilla_db, 1035)
+
+        self.assertEqual(stat(blue, "Ai"), stat(hunter_fly, "Ai"))
+        self.assertEqual(stat(blue, "Ai"), "04")
+        self.assertEqual(stat(blue, "Level"), "30")
+        self.assertEqual(stat(blue, "Hp"), "3000")
+        self.assertNotIn("Class: Boss", blue)
+        self.assertIn("      Detector: true", blue)
+        for key in ("Level", "Hp", "Attack", "Attack2", "Defense", "Agi",
+                    "Vit", "Dex", "Luk"):
+            self.assertGreater(int(stat(blue, key)), int(stat(chonchon, key)))
+        for key in ("AttackRange", "SkillRange", "ChaseRange", "Size",
+                    "Race", "Element", "ElementLevel", "WalkSpeed",
+                    "AttackDelay", "AttackMotion", "ClientAttackMotion",
+                    "DamageMotion"):
+            self.assertEqual(stat(blue, key), stat(chonchon, key), key)
+        self.assertEqual(
+            blue.split("    Drops:\n", 1)[1].strip(),
+            chonchon.split("    Drops:\n", 1)[1].strip(),
+        )
+        chonchon_wind = next(
+            row for row in vanilla_skills.splitlines()
+            if row.startswith("1011,Chonchon@NPC_WINDATTACK,attack,")
+        )
+        expected_attack = chonchon_wind.replace(
+            "1011,Chonchon@", "31052,Blue Chon Chon@", 1
+        )
+        expected_angry = expected_attack.replace(
+            ",attack,187,", ",angry,187,", 1
+        )
+        custom_rows = [
+            row for row in custom_skills.splitlines()
+            if row.startswith("31052,")
+        ]
+        self.assertEqual(custom_rows, [expected_attack, expected_angry])
+
+    def test_blue_chon_chon_bow_is_ranged_and_perfect_is_not_a_drop(self):
+        bow = item_block(60010)
+        card = item_block(60011)
+        perfect = item_block(60012)
+        for token in (
+            "SubType: Bow", "Range: 5", "Slots: 1", "Refineable: false",
+            "Both_Hand: true",
+        ):
+            self.assertIn(token, bow)
+        self.assertIn("Name: Blue Chon Chon Card", card)
+        self.assertIn("Right_Hand: true", card)
+        self.assertIn("SubType: Bow", perfect)
+        self.assertIn("Name: P.C.S.B", perfect)
+        self.assertIn("WeaponLevel: 4", perfect)
+        self.assertIn("bonus bUnbreakableWeapon;", perfect)
+        battle = (ROOT / "src/map/battle.cpp").read_text(encoding="utf-8")
+        self.assertIn(
+            "mob_class == 1011 || mob_class == 1042 ||", battle
+        )
+        self.assertIn(
+            "mob_class == 1035 || mob_class == 31052;", battle
+        )
+        self.assertIn(
+            "fabre_family || thief_bug_family || chonchon_family", battle
+        )
+        self.assertIn("hunted->get_bosstype() == BOSSTYPE_NONE", battle)
+        self.assertIn("weapon_id == 60010 || weapon_id == 60012", battle)
+        self.assertIn("weapon.card[0] == 60011 ? 90", battle)
+        self.assertIn("weapon_id == 60010 ? 50 : 0", battle)
+
+    def test_blue_chon_chon_ids_do_not_override_official_items(self):
+        # Official Renewal card IDs 31010-31012 already exist. Our new
+        # Blue-series items must never replace them through db/import.
+        # Check both gameplay modes, not just unused IDs in the custom DB.
+        blue_ids = {60010, 60011, 60012}
+        for mode in ("pre-re", "re"):
+            for kind in ("equip", "usable", "etc"):
+                path = ROOT / "db" / mode / f"item_db_{kind}.yml"
+                contents = path.read_text(encoding="utf-8")
+                official_ids = {
+                    int(m.group(1))
+                    for m in re.finditer(r"(?m)^  - Id: (\d+)\s*$", contents)
+                }
+                self.assertFalse(
+                    blue_ids & official_ids,
+                    f"Blue Chon Chon item ID collides with {path}"
+                )
+        for old_id in (31010, 31011, 31012):
+            self.assertNotIn(f"  - Id: {old_id}\n", ITEM_DB)
+        for new_id in blue_ids:
+            self.assertEqual(ITEM_DB.count(f"  - Id: {new_id}\n"), 1)
+
+    def test_blue_chon_chon_db_and_npc_loader(self):
+        npc = (ROOT / "npc/scripts_custom.conf").read_text(encoding="utf-8")
+        self.assertIn("npc: npc/custom/mygene/blue_chon_chon.txt", npc)
+        assert "AegisName: MYGENE_BLUE_CHON_CHON" in MOB_DB
+        alias = (ROOT / "db/import/mob_avail.yml").read_text(encoding="utf-8")
+        self.assertIn("Mob: MYGENE_BLUE_CHON_CHON", alias)
+        self.assertIn("Sprite: CHONCHON", alias)
+        from re import search
+        blue_mob = search(r"(?ms)^  - Id: 31052\s*\n(.*?)(?=^  - Id: |\Z)", MOB_DB)
+        self.assertIsNotNone(blue_mob)
+        self.assertNotIn("Class: Boss", blue_mob.group(1))
+        relic = (ROOT / "npc/custom/mygene/world_relic_keeper.txt").read_text(encoding="utf-8")
+        self.assertIn("Perfect Bow Upgrade [GM]", relic)
+        self.assertIn("getequipid(EQI_HAND_R) != 60010", relic)
+        self.assertIn("getequipcardid(EQI_HAND_R,0) != 60011", relic)
+        self.assertIn("getitem2 60012,1,1,0,0,60011,0,0,0;", relic)
+
+
+    def test_all_slayer_item_ids_are_free_in_official_databases(self):
+        used = {60001, 60002, 60003, 60004, 60006, 60007,
+                60008, 60009, 60010, 60011, 60012}
+        reserved = {60005}
+        for mode in ("pre-re", "re"):
+            for category in ("equip", "usable", "etc"):
+                path = ROOT / "db" / mode / f"item_db_{category}.yml"
+                official = {
+                    int(m.group(1)) for m in re.finditer(
+                        r"(?m)^  - Id: (\d+)\s*$",
+                        path.read_text(encoding="utf-8"),
+                    )
+                }
+                self.assertFalse((used | reserved) & official,
+                                 f"Custom Slayer ID conflicts with {path}")
+        imported = {
+            int(m.group(1)) for m in re.finditer(
+                r"(?m)^  - Id: (\d+)\s*$", ITEM_DB)
+        }
+        self.assertEqual(used, imported)
+        for legacy_id in range(31001, 31010):
+            self.assertNotIn(f"  - Id: {legacy_id}\n", ITEM_DB)
+
+    def test_slayer_monster_ids_are_free_in_both_official_databases(self):
+        custom_monsters = {31050, 31051, 31052}
+        for mode in ("pre-re", "re"):
+            path = ROOT / "db" / mode / "mob_db.yml"
+            official = {
+                int(m.group(1)) for m in re.finditer(
+                    r"(?m)^  - Id: (\d+)\s*$",
+                    path.read_text(encoding="utf-8"),
+                )
+            }
+            self.assertFalse(custom_monsters & official,
+                             f"Custom Slayer mob ID conflicts with {path}")
+        imported = {
+            int(m.group(1)) for m in re.finditer(
+                r"(?m)^  - Id: (\d+)\s*$", MOB_DB)
+        }
+        self.assertTrue(custom_monsters <= imported)
+
+    def test_no_legacy_item_ids_in_slayer_runtime_sources(self):
+        sources = (
+            "db/import/item_db.yml",
+            "npc/custom/mygene/yellow_fabre.txt",
+            "npc/custom/mygene/red_thief_bug.txt",
+            "npc/custom/mygene/blue_chon_chon.txt",
+            "npc/custom/mygene/legendary_bubble_gum_aura.txt",
+            "npc/custom/mygene/world_relic_keeper.txt",
+            "src/map/battle.cpp",
+        )
+        for path in sources:
+            body = (ROOT / path).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"\b3100[1-9]\b", body),
+                              f"Legacy Slayer ID remains in {path}")
 
 
 if __name__ == "__main__":

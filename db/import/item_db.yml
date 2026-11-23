@@ -8,7 +8,7 @@ Header:
   Version: 3
 
 Body:
-  - Id: 31001
+  - Id: 60001
     AegisName: MYGENE_FABRE_SLAYER
     Name: Fabre Slayer Knife
     Type: Weapon
@@ -29,7 +29,7 @@ Body:
 
   # Stage 1: standalone Perfect knife. World supply and leasing remain OFF.
   # Only the World Relic Keeper GM-test upgrade currently creates this variant.
-  - Id: 31004
+  - Id: 60004
     AegisName: MYGENE_PERFECT_FABRE_SLAYER
     Name: P.F.S.K
     Type: Weapon
@@ -50,7 +50,7 @@ Body:
     Script: |
       bonus bUnbreakableWeapon;
 
-  - Id: 31002
+  - Id: 60002
     AegisName: MYGENE_YELLOW_FABRE_CARD
     Name: Yellow Fabre Card
     Type: Card
@@ -59,7 +59,7 @@ Body:
     Locations:
       Right_Hand: true
 
-  - Id: 31003
+  - Id: 60003
     AegisName: MYGENE_ATTRACTION_POTION
     Name: Attraction Potion
     Type: Usable
@@ -72,7 +72,7 @@ Body:
   # Red Thief Bug Slayer family. The normal weapon exactly mirrors the
   # Fabre Slayer Knife's numeric item base, except sword weapon subtype.
   # Server-side execution proc is implemented separately in battle.cpp.
-  - Id: 31006
+  - Id: 60006
     AegisName: MYGENE_THIEF_BUG_SLAYER
     Name: Thief Bug Slayer Sword
     Type: Weapon
@@ -92,7 +92,7 @@ Body:
     View: 2
 
   # Distinct from the standard vanilla Thief Bug Card.
-  - Id: 31007
+  - Id: 60007
     AegisName: MYGENE_RED_THIEF_BUG_CARD
     Name: Red Thief Bug Card
     Type: Card
@@ -103,7 +103,7 @@ Body:
 
   # Crafted-only World Relic, not a monster drop. Future registry-gated
   # creation must follow the Perfect Fabre Slayer Knife safety checks.
-  - Id: 31008
+  - Id: 60008
     AegisName: MYGENE_PERFECT_THIEF_BUG_SLAYER
     Name: P.T.B.S
     Type: Weapon
@@ -129,7 +129,7 @@ Body:
   # Includes mob database, map bonus, MVP and MYgene scripted drops.
   # The script timestamp is checked at monster death; no general rate
   # bonus is applied and other players' drops are not affected.
-  - Id: 31009
+  - Id: 60009
     AegisName: MYGENE_LEGENDARY_BUBBLE_GUM
     Name: Legendary Bubble Gum
     Type: Usable
@@ -154,3 +154,65 @@ Body:
         @MYGENE_GUM_AURA_LOOP = 1;
         addtimer 2500,"MYgene_Legendary_Gum_Aura::OnPulse";
       }
+
+  # Slayer Series #3: Blue Chon Chon. A real two-handed ranged bow.
+  # Exact execution proc is in src/map/battle.cpp, never the item script.
+  # Do not AliasName these items: custom IDs/names/slots must reach the client.
+  - Id: 60010
+    AegisName: MYGENE_CHONCHON_SLAYER_BOW
+    Name: Chonchon Slayer Bow
+    Type: Weapon
+    SubType: Bow
+    Buy: 10000
+    Weight: 400
+    Attack: 17
+    Range: 5
+    Slots: 1
+    WeaponLevel: 1
+    EquipLevelMin: 4
+    Refineable: false
+    Jobs:
+      Archer: true
+      BardDancer: true
+      Hunter: true
+      Rogue: true
+      Thief: true
+    Locations:
+      Both_Hand: true
+
+  # Blue Chon Chon exclusive card; not the vanilla Chonchon Card.
+  - Id: 60011
+    AegisName: MYGENE_BLUE_CHON_CHON_CARD
+    Name: Blue Chon Chon Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  # Future Perfect World Relic: no world supply, leasing, or public crafting.
+  # Obtainable only by GM-controlled test conversion when implemented.
+  # Never added to monster drop tables.
+  - Id: 60012
+    AegisName: MYGENE_PERFECT_CHONCHON_SLAYER_BOW
+    Name: P.C.S.B
+    Type: Weapon
+    SubType: Bow
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 5
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Archer: true
+      BardDancer: true
+      Hunter: true
+      Rogue: true
+      Thief: true
+    Locations:
+      Both_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;

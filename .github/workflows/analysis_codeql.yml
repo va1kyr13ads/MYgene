@@ -28,9 +28,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-          # The ubuntu-latest label currently points to ubuntu-20.04.
-          # Available: ubuntu-24.04, ubuntu-22.04
-          os: [ubuntu-latest]
+          # Pin a supported runner; ubuntu-latest is now Ubuntu 26.04
+          # and lacks the legacy libpcre3-dev / older GCC packages.
+          os: [ubuntu-22.04]
           # Older versions of GCC are not available via unaltered aptitude repo lists.
           gcc: ['10']
           # We run build checks for both Renewal and PRE-Renewal
