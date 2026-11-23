@@ -93,6 +93,62 @@ class SlayerDropWiring(unittest.TestCase):
         self.assertNotIn("makeitem 60012,1,", script)  # Perfect bow never drops.
         self.assertIn("getmapxy(.@map$,.@x,.@y,BL_PC)", script)
 
+    def test_blue_chon_chon_aggressive_vanilla_behavior_with_higher_stats(self):
+        """Blue keeps Chonchon's motion, elements, loot and Wind Attack."""
+        vanilla_db = (ROOT / "db/pre-re/mob_db.yml").read_text(encoding="utf-8")
+        vanilla_skills = (ROOT / "db/pre-re/mob_skill_db.txt").read_text(encoding="utf-8")
+        custom_skills = (ROOT / "db/import/mob_skill_db.txt").read_text(encoding="utf-8")
+
+        def mob_block(db, mob_id):
+            found = re.search(
+                rf"(?ms)^  - Id: {mob_id}\s*\n(.*?)(?=^  - Id: |\Z)", db
+            )
+            self.assertIsNotNone(found, f"Missing monster ID {mob_id}")
+            return found.group(1)
+
+        def stat(block, key):
+            found = re.search(rf"(?m)^    {re.escape(key)}: ([^\n]+)$", block)
+            self.assertIsNotNone(found, f"Missing stat {key}")
+            return found.group(1)
+
+        blue = mob_block(MOB_DB, 31052)
+        chonchon = mob_block(vanilla_db, 1011)
+        hunter_fly = mob_block(vanilla_db, 1035)
+
+        self.assertEqual(stat(blue, "Ai"), stat(hunter_fly, "Ai"))
+        self.assertEqual(stat(blue, "Ai"), "04")
+        self.assertEqual(stat(blue, "Level"), "30")
+        self.assertEqual(stat(blue, "Hp"), "3000")
+        self.assertNotIn("Class: Boss", blue)
+        self.assertIn("      Detector: true", blue)
+        for key in ("Level", "Hp", "Attack", "Attack2", "Defense", "Agi",
+                    "Vit", "Dex", "Luk"):
+            self.assertGreater(int(stat(blue, key)), int(stat(chonchon, key)))
+        for key in ("AttackRange", "SkillRange", "ChaseRange", "Size",
+                    "Race", "Element", "ElementLevel", "WalkSpeed",
+                    "AttackDelay", "AttackMotion", "ClientAttackMotion",
+                    "DamageMotion"):
+            self.assertEqual(stat(blue, key), stat(chonchon, key), key)
+        self.assertEqual(
+            blue.split("    Drops:\n", 1)[1].strip(),
+            chonchon.split("    Drops:\n", 1)[1].strip(),
+        )
+        chonchon_wind = next(
+            row for row in vanilla_skills.splitlines()
+            if row.startswith("1011,Chonchon@NPC_WINDATTACK,attack,")
+        )
+        expected_attack = chonchon_wind.replace(
+            "1011,Chonchon@", "31052,Blue Chon Chon@", 1
+        )
+        expected_angry = expected_attack.replace(
+            ",attack,187,", ",angry,187,", 1
+        )
+        custom_rows = [
+            row for row in custom_skills.splitlines()
+            if row.startswith("31052,")
+        ]
+        self.assertEqual(custom_rows, [expected_attack, expected_angry])
+
     def test_blue_chon_chon_bow_is_ranged_and_perfect_is_not_a_drop(self):
         bow = item_block(60010)
         card = item_block(60011)
