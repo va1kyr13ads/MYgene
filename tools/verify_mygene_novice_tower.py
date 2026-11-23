@@ -52,7 +52,7 @@ class NoviceTowerTrial(unittest.TestCase):
         self.assertIn('"MYgene_Tower_Core::OnBossDead"', boss)
         self.assertIn("unitexists(.@gid)", boss)
         self.assertIn("OnBossDead:", core)
-        self.assertIn("killedgid != @MYGENE_NT_BOSS", core)
+        self.assertIn("killedgid != MYGENE_NT_BOSS", core)
         self.assertIn("strcharinfo(3) != .@map$", core)
         self.assertIn("MYGENE_NT_TRIAL_FINISHED = 1", core)
         self.assertNotIn("jobchange", core)
