@@ -16,7 +16,11 @@ This third family follows the already-accepted Yellow Fabre / Red Thief Bug enco
 | Dragon Fly | 1091 | **No: mini-boss** | No | No |
 | Any summoned/elite/boss variant | Any other ID | No | No | No |
 
-Thirty qualifying kills **on the same map**, aggregated across players on that map, summon Blue Chon Chon at the 30th kill or killer's location. An active encounter blocks spawning another on that map. The normal labeled encounter death resets the active flag and starts the next cycle at 1, mirroring Yellow Fabre and Red Thief Bug. Each map tracks its own progress. The in-memory count resets when NPC scripts reload.
+Thirty qualifying kills **on the same map**, aggregated across players on that map, summon Blue Chon Chon at the 30th kill or killer's location. An active encounter blocks spawning another on that map. The normal labeled encounter death resets the active flag and starts the next cycle at 1, mirroring Yellow Fabre and Red Thief Bug. Each map tracks its own progress. The in-memory count resets when NPC scripts reload. If a GM or another script
+removes the special monster without its death callback, the next normal family
+kill detects that the map has no labeled Blue Chon Chon and recovers the stale
+active flag. A failed summon does not issue a false appearance announcement;
+the encounter remains at 29/30 so the next eligible kill can retry.
 
 The custom special mob `31052` has its own name, Wind/Insect stats, and normal Chonchon drop table. A `db/import/mob_avail.yml` entry aliases its **sprite appearance only** to the vanilla `CHONCHON` sprite so a stock authorized GRF can render it; **blue recolored artwork is not included yet.** This does not change its server ID or name.
 
@@ -61,6 +65,7 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 - `@item 60010 1`, `@item 60011 1`, `@item 60012 1`, `@item 60009 2` (GM test items), confirm correct name, one slot and bow rendering.
 - `@monster 1011 30` on the **same map**; kill 30 normals and check one Blue Chon Chon spawn. Repeat with a mixture of Steel Chonchon `1042` and Hunter Fly `1035`.
 - Verify Dragon Fly `1091` never advances the counter; no boss, elite or MVP is affected by execution. An ordinary 30-kill spawn must be solo on each map.
+- On a disposable test map, force-remove the labeled Blue Chon Chon with GM/script cleanup and kill another normal Chonchon. Verify the event recovers from the stale active flag without announcing an imaginary spawn or affecting another map's counter. Simulate or test a failed summon, verifying the retry stays at 29/30.
 - Spawn `@monster 31052 1`, activate `Legendary Bubble Gum`, kill within 15 seconds. Expect Bow and Blue card and auxiliaries; weapon inventory or ground fallback. Repeat without gum to observe ordinary independent probabilities (absence of rare drops is normal).
 - Equip Bow `60010` with arrows; test regular basic attacks versus Chonchon, Steel Chonchon, Hunter Fly and Blue Chon Chon; check approximately 50% execution for attacks that hit. Compound Blue card `60011` and expect approximately 90% over many hits. Test other families, skills, Dragon Fly and elites as negatives.
 - At group 99, verify Perfect Bow conversion on a **backed-up development character** with the carded normal bow equipped, at Level 40+. Negative-test non-GM, uncarded/refined/bound/graded items.
