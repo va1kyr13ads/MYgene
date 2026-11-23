@@ -29,7 +29,7 @@ All IDs 60001–60012 are free in the tracked official Pre-Renewal and Renewal e
 | 31051 | Red Thief Bug |
 | 31052 | Blue Chon Chon |
 
-The three monster IDs are free in both official \`db/pre-re/mob_db.yml\` and \`db/re/mob_db.yml\`. Custom monster IDs are separate from item IDs. Do not change IDs unnecessarily: the monster and encounter logic already use 31050–31052.
+The three monster IDs are free in both official `db/pre-re/mob_db.yml` and `db/re/mob_db.yml`. Custom monster IDs are separate from item IDs. Do not change IDs unnecessarily: the monster and encounter logic already use 31050–31052.
 
 ## Critical production release blocker
 
@@ -39,17 +39,17 @@ The three monster IDs are free in both official \`db/pre-re/mob_db.yml\` and \`d
 2. Inventory all installed schema tables and columns that store item IDs, equipped items, card socket IDs, cart, character storage, guild storage, mail/auction if present, and relevant logs or delayed deliveries. Inspect the actual schema rather than assuming table names.
 3. Determine **provenance** of each legacy numeric ID instance (creation history/rollout date/logs/previous snapshots/instance attributes). A raw ID cannot distinguish a custom item from a legitimate official Renewal card. **Abort if any instance is ambiguous.**
 4. On the restored isolated copy, prepare an explicit *per-item-instance* migration manifest limited to proven MYgene items. Use reviewed transactions, before/after item-instance totals and checksums, correct card-slot rewrites, and verified rollback. Do not rewrite any official item combos.
-5. Deploy matching source, compiled server, and Windows client together only after passing both Renewal/Pre-Renewal \`map-server --run-once\`, Slayer drop/proc/encounter/GM upgrade tests, Rust Windows tests and release build, and migration data-integrity tests.
+5. Deploy matching source, compiled server, and Windows client together only after passing both Renewal/Pre-Renewal `map-server --run-once`, Slayer drop/proc/encounter/GM upgrade tests, Rust Windows tests and release build, and migration data-integrity tests.
 6. Obtain explicit approval before production SQL migration. If an invariant fails, restore the backup and previous server/client build. No automatic player-item remapping or live deployment is included in this change.
 
 Read-only schema discovery aid:
 
-\`\`\`sql
+```sql
 SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE
 FROM INFORMATION_SCHEMA.COLUMNS
 WHERE TABLE_SCHEMA = DATABASE()
   AND COLUMN_NAME IN ('nameid', 'item_id', 'card0', 'card1', 'card2', 'card3')
 ORDER BY TABLE_NAME, ORDINAL_POSITION;
-\`\`\`
+```
 
 **No live SQL backup, per-instance migration, or deployment has been executed by this source-only update.**
