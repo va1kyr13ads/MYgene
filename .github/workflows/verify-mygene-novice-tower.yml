@@ -1,0 +1,32 @@
+name: Verify MYgene Novice Tower trial
+
+on:
+  push:
+    branches:
+      - feature/novice-tower-solo-v1
+    paths:
+      - 'npc/custom/mygene/novice_tower/**'
+      - 'npc/scripts_custom.conf'
+      - 'db/pre-re/instance_db.yml'
+      - 'db/re/instance_db.yml'
+      - 'tools/verify_mygene_novice_tower.py'
+      - '.github/workflows/verify-mygene-novice-tower.yml'
+  pull_request:
+    paths:
+      - 'npc/custom/mygene/novice_tower/**'
+      - 'npc/scripts_custom.conf'
+      - 'db/pre-re/instance_db.yml'
+      - 'db/re/instance_db.yml'
+      - 'tools/verify_mygene_novice_tower.py'
+      - '.github/workflows/verify-mygene-novice-tower.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  check-novice-tower-prototype:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify instance isolation, boss thresholds, and no early route lock
+        run: python3 -m unittest discover -s tools -p 'verify_mygene_novice_tower.py' -v
