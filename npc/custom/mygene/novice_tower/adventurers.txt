@@ -1,0 +1,58 @@
+// Floor 4 — six scripted first-job support visions.
+// Prototype uses automatic buffs/attacks, not custom visual companion sprites.
+// No ally can kill the Guardian; the player must deliver the final blow.
+function	script	MYgene_Tower_Ally_Arrival	{
+	.@stage = getarg(0);
+	.@map$ = getarg(1);
+	switch (.@stage) {
+	case 1:
+		mapannounce .@map$,"[80%] Swordman: Courage! I'll hold the line!",bc_map;
+		sc_start SC_ENDURE,30000,1;
+		break;
+	case 2:
+		mapannounce .@map$,"[65%] Mage: Knowledge lights the way!",bc_map;
+		break;
+	case 3:
+		mapannounce .@map$,"[50%] Archer: Precision wins every battle!",bc_map;
+		sc_start SC_INCREASEAGI,30000,3;
+		break;
+	case 4:
+		mapannounce .@map$,"[35%] Acolyte: Faith will sustain you!",bc_map;
+		percentheal 20,10;
+		sc_start SC_BLESSING,30000,3;
+		break;
+	case 5:
+		mapannounce .@map$,"[20%] Thief: Step through the shadows!",bc_map;
+		break;
+	case 6:
+		mapannounce .@map$,"[10%] Merchant: Ambition! Finish the fight!",bc_map;
+		sc_start SC_ENDURE,30000,1;
+		break;
+	}
+	return;
+}
+
+// Autonomous scripted helper attacks (1.5 s interval) after Mage arrives.
+// The rate grows as more job visions appear; they cannot take the final HP.
+function	script	MYgene_Tower_Ally_Pulse	{
+	.@stage = getarg(0);
+	.@gid = getarg(1);
+	if (.@stage < 2 || !unitexists(.@gid))
+		return;
+	getunitdata .@gid,.@u;
+	.@damage = 3; // Mage
+	if (.@stage >= 3) .@damage += 3; // Archer
+	if (.@stage >= 5) .@damage += 2; // Thief
+	if (.@stage >= 6) .@damage += 2; // Merchant
+	if (.@u[UMOB_HP] > 1) {
+		.@newhp = .@u[UMOB_HP] - .@damage;
+		if (.@newhp < 1) .@newhp = 1;
+		setunitdata .@gid,UMOB_HP,.@newhp;
+	}
+	// Acolyte periodically restores the solo player's health.
+	if (.@stage >= 4 && gettimetick(2) >= @MYGENE_NT_HEAL_NEXT) {
+		percentheal 8,3;
+		@MYGENE_NT_HEAL_NEXT = gettimetick(2) + 12;
+	}
+	return;
+}
