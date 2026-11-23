@@ -71,6 +71,19 @@ class SlayerDropWiring(unittest.TestCase):
             "killedrid != 1011 && killedrid != 1042 && killedrid != 1035", script
         )
         self.assertIn("if (.BlueActive[.@slot])", script)
+        # A removed/GM-cleaned labeled encounter must never permanently
+        # block this map's next 30-kill cycle.
+        self.assertIn(
+            'mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") > 0',
+            script,
+        )
+        self.assertIn(".BlueActive[.@slot] = 0;", script)
+        # A failed summon should not announce a monster that did not exist.
+        self.assertIn(
+            'mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") < 1',
+            script,
+        )
+        self.assertIn(".KillCount[.@slot] = 29;", script)
         self.assertIn("if (.KillCount[.@slot] < 30)", script)
         self.assertIn(".KillCount[.@i] = 1;", script)
         self.assertNotIn("killedrid == 1091", script)  # Dragon Fly is a mini-boss.
