@@ -4,7 +4,7 @@
 
 World announcements start with the monster name. A **successful** inventory
 receipt for a monster item is eligible when the MYgene server-adjusted chance
-**before Bubble Gum** is strictly lower than 0.10% (1 through 9 in rAthena's
+**before player-specific bonuses and Bubble Gum** is strictly lower than 0.10% (1 through 9 in rAthena's
 1/100-of-a-percent drop units). Exactly 0.10% does not qualify.
 
 - One eligible item: `Red Thief Bug dropped Thief Bug Card [0.04%] to MYgeneNovice01`
@@ -18,8 +18,8 @@ receipt for a monster item is eligible when the MYgene server-adjusted chance
   the affected item instead of falsely advertising a shared rate.
 
 The first bracket contains the **MYgene server-adjusted chance**, including
-the applicable 4x / 3x / 2x item drop server rates, but excluding the active
-Bubble Gum status. The Gum bracket appears only when Gum changes that drop
+the applicable 4x / 3x / 2x item drop server rates, and excluding all player-specific
+bonuses and Bubble Gum status. The Gum bracket appears only when Gum changes that drop
 calculation. MYgene's fixed exclusive Slayer weapon/card chances are not
 multiplied by the global server item rate; Legendary Gum makes their successful
 roll certain for the item's own script, but ordinary/HE Gum do not modify their
