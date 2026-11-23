@@ -2943,9 +2943,7 @@ static TIMER_FUNC(mygene_rare_broadcast_timer)
 			return item.gum_type == first.gum_type &&
 				item.modified_rate == first.modified_rate;
 		});
-	std::string message = batch.mob_name + " dropped ";
-	if (batch.items.size() > 1)
-		message += ": ";
+	std::string message = batch.mob_name + (batch.items.size() > 1 ? " dropped: " : " dropped ");
 	for (size_t i = 0; i < batch.items.size(); ++i) {
 		const auto& item = batch.items[i];
 		if (i != 0)
