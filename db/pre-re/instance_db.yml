@@ -81,3 +81,16 @@ Body:
       Y: 36
     AdditionalMaps:
       2@nyd: true
+
+  # MYgene experimental solo Tower, Floor 4 boss trial only.
+  # Character-owned instance; no copies of existing Endless Tower NPCs.
+  - Id: 9901
+    Name: MYgene Novice Tower Trial
+    TimeLimit: 3600
+    IdleTimeOut: 600
+    NoNpc: true
+    Destroyable: false
+    Enter:
+      Map: 1@tower
+      X: 50
+      Y: 355
