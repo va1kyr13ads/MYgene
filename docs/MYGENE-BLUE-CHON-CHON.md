@@ -24,6 +24,25 @@ the encounter remains at 29/30 so the next eligible kill can retry.
 
 The custom special mob `31052` has its own name, Wind/Insect stats, and normal Chonchon drop table. A `db/import/mob_avail.yml` entry aliases its **sprite appearance only** to the vanilla `CHONCHON` sprite so a stock authorized GRF can render it; **blue recolored artwork is not included yet.** This does not change its server ID or name.
 
+## Blue Chon Chon combat profile (2026-11-23)
+
+Blue Chon Chon is a **stronger normal Chonchon**, not a copy of Hunter Fly's attacks, drops or movement. Its AI has been switched from passive `01` to **aggressive `04` (the same AI as Hunter Fly)**, so it actively acquires and attacks nearby players. It remains **non-boss** and killable by the Slayer Bow.
+
+| Stat | Blue Chon Chon (31052) |
+|---|---:|
+| Level | 30 |
+| HP | 3,000 (unchanged) |
+| Base / Job EXP | 450 / 300 |
+| ATK | 110–145 |
+| DEF / MDEF | 25 / 10 |
+| STR / AGI / VIT | 24 / 55 / 25 |
+| INT / DEX / LUK | 8 / 45 / 12 |
+| AI | 04 (aggressive) |
+
+Normal Chonchon characteristics are deliberately retained: **Small, Insect, Wind Lv. 1; 1-cell attack range, 10 skill range, 12 chase range, 200 walk speed, 1076 attack delay, 576 attack motion, 288 client attack motion, and 480 damage motion**. Detector mode and normal Chonchon drops remain unchanged. The custom `db/import/mob_skill_db.txt` copies normal Chonchon's level-1 **NPC_WINDATTACK** row and uses the same attack in `angry` state for proactive aggression. Do **not** add Hunter Fly teleport, HP drain, combo, extra drops or boss classification.
+
+**Development playtest:** Spawn `@monster 31052 1` on a disposable map and approach without attacking; it must aggro and chase like a Hunter Fly, then perform normal attacks and occasionally level-1 Wind Attack. Check its Level 30 and 3,000 HP, compare its pace/attack animations with Chonchon `1011`, and verify it does not teleport or use Hunter Fly-only skills. Confirm the 30-kill-per-map summon and reward logic still operate unchanged. Full map-server startup is required for updated monster and mob-skill databases.
+
 ## Drops (per special monster kill)
 
 Exactly independent of global 4x/normal multipliers:
