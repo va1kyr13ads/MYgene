@@ -3506,6 +3506,9 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			if (it == nullptr)
 				continue;
 
+			// Preserve the MYgene server chance before the Bubble Gum status
+			// changes it. Other server/character drop modifiers still apply.
+			const int32 mygene_base_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md, 1, true);
 			drop_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md);
 
 			// Active Legendary Gum makes every defined normal drop certain.
@@ -3520,16 +3523,14 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			}
 
 			std::shared_ptr<s_item_drop> ditem = mob_setdropitem(entry, 1, md->mob_id);
-
-			//A Rare Drop Global Announce by Lupus
-			if (first_sd != nullptr && entry->rate <= battle_config.rare_drop_announce) {
-				char message[128];
-				sprintf(message, msg_txt(nullptr, 541), first_sd->status.name, md->name, it->ename.c_str(), (float)drop_rate / 100);
-				//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-				intif_broadcast(message, strlen(message) + 1, BC_DEFAULT);
+			if (mygene_base_rate > 0 && mygene_base_rate < 10) {
+				ditem->mygene_rare.source_gid = md->id;
+				ditem->mygene_rare.mob_id = md->mob_id;
+				ditem->mygene_rare.base_rate = static_cast<uint32>(mygene_base_rate);
+				ditem->mygene_rare.modified_rate = static_cast<uint32>(drop_rate);
+				ditem->mygene_rare.gum_type = mygene_gum_type(first_sd);
 			}
-			// Announce first, or else ditem will be freed. [Lance]
-			// By popular demand, use base drop rate for autoloot code. [Skotlex]
+			// Announce after successful autoloot or manual pickup, not at drop roll.
 			mob_item_drop(md, dlist, ditem, 0, battle_config.autoloot_adjust ? drop_rate : entry->rate, homkillonly || merckillonly);
 		}
 
