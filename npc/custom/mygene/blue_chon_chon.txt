@@ -38,8 +38,15 @@ OnNPCKillEvent:
         .KillCount[.@slot] = 0;
         .BlueActive[.@slot] = 0;
     }
-    if (.BlueActive[.@slot])
-        end;
+    // A GM cleanup, scripted despawn or abnormal removal may bypass the
+    // monster death event, leaving the old active flag stuck forever.
+    // Recover only when this exact map has no labeled Blue Chon Chon.
+    if (.BlueActive[.@slot]) {
+        if (mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") > 0)
+            end;
+        .BlueActive[.@slot] = 0;
+        .KillCount[.@slot] = 0;
+    }
     .KillCount[.@slot]++;
     if (.KillCount[.@slot] < 30)
         end;
@@ -60,6 +67,13 @@ OnNPCKillEvent:
     .KillCount[.@slot] = 0;
     .BlueActive[.@slot] = 1;
     monster .@map$,.@x,.@y,"Blue Chon Chon",31052,1,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead";
+    // Only announce a successful summon. On failure, retain 29/30
+    // so the next eligible kill safely retries on this map.
+    if (mobcount(.@map$,"MYgene_Blue_Chon_Chon::OnBlueChonChonDead") < 1) {
+        .BlueActive[.@slot] = 0;
+        .KillCount[.@slot] = 29;
+        end;
+    }
     mapannounce .@map$,"A Blue Chon Chon has appeared!",bc_map,0x3399FF;
     end;
 
