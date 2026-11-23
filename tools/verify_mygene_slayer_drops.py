@@ -61,6 +61,43 @@ class SlayerDropWiring(unittest.TestCase):
         )
 
 
+    def test_all_slayer_exclusive_rewards_go_to_killer_inventory(self):
+        """All three series give scripted loot directly, with floor fallback."""
+        families = (
+            ("yellow_fabre.txt", "S_YellowRewards", 60001, 60002),
+            ("red_thief_bug.txt", "S_RedRewards", 60006, 60007),
+            ("blue_chon_chon.txt", "S_BlueRewards", 60010, 60011),
+        )
+        chances = (500, 700000, 100, 110000, 5000)
+        for script_name, label, weapon, card in families:
+            with self.subTest(family=script_name):
+                script = (ROOT / "npc/custom/mygene" / script_name).read_text(
+                    encoding="utf-8"
+                )
+                body = script.split(f"\n{label}:", 1)[1]
+                self.assertIn("MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2)", body)
+                for chance in chances:
+                    self.assertEqual(
+                        body.count(f"rand(1000000) < {chance})"), 1,
+                        f"{script_name} changed a fixed reward chance",
+                    )
+                for item_id in (weapon, card, 969, 60003):
+                    self.assertEqual(body.count(f"checkweight({item_id},1)"), 1)
+                    self.assertEqual(body.count(f"getitem {item_id},1;"), 1)
+                    self.assertEqual(
+                        body.count(f"makeitem {item_id},1,.@map$,.@x,.@y;"), 1
+                    )
+                self.assertIn("switch(rand(3))", body)
+                for selection in (715, 716, 717):
+                    self.assertIn(f".@gem = {selection};", body)
+                self.assertIn("checkweight(.@gem,1)", body)
+                self.assertIn("getitem .@gem,1;", body)
+                self.assertIn("makeitem .@gem,1,.@map$,.@x,.@y;", body)
+                self.assertIn("getmapxy(.@map$,.@x,.@y,BL_PC)", body)
+                self.assertIn(
+                    "Slayer reward dropped nearby (cannot carry):", body
+                )
+
     def test_blue_chon_chon_bow(self):
         self.check_family(
             "blue_chon_chon.txt", 60010, "MYGENE_CHONCHON_SLAYER_BOW",
