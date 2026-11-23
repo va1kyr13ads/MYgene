@@ -254,24 +254,39 @@ def assert_transactional(metadata, tables):
             )
 
 
-def select_pk(conn, record, lock=False):
-    keys = record["pk"]
+def migrated_pk(record, cells):
+    """Item IDs sometimes form part of a composite/unique primary key."""
+    result = dict(record["pk"])
+    for cell in cells:
+        if cell["column"] in result:
+            result[cell["column"]] = cell["new_id"]
+    return result
+
+
+def select_pk(conn, record, lock=False, pk_override=None, allow_missing=False):
+    keys = record["pk"] if pk_override is None else pk_override
     criteria = " AND ".join(identifier(k) + " = %s" for k in keys)
     sql = "SELECT * FROM " + identifier(record["table"]) + " WHERE " + criteria
     if lock:
         sql += " FOR UPDATE"
-    return one(conn, sql, tuple(keys.values()))
+    matches = rows(conn, sql, tuple(keys.values()))
+    if not matches and allow_missing:
+        return None
+    if len(matches) != 1:
+        raise MigrationError("Expected one SQL row; got " + str(len(matches)))
+    return matches[0]
 
 
-def execute_update(conn, record, cells, reverse=False):
+def execute_update(conn, record, cells, reverse=False, pk_override=None):
     updates = [(c["column"], c["old_id"] if reverse else c["new_id"]) for c in cells]
     if not updates:
         return
+    keys = record["pk"] if pk_override is None else pk_override
     stmt = ("UPDATE " + identifier(record["table"]) + " SET " +
             ", ".join(identifier(c) + " = %s" for c, _ in updates) +
             " WHERE " +
-            " AND ".join(identifier(k) + " = %s" for k in record["pk"]))
-    args = [v for _, v in updates] + list(record["pk"].values())
+            " AND ".join(identifier(k) + " = %s" for k in keys))
+    args = [v for _, v in updates] + list(keys.values())
     with conn.cursor() as cur:
         count = cur.execute(stmt, args)
         if count != 1:
@@ -367,12 +382,14 @@ def do_apply(args):
                         raise MigrationError("Old-ID mismatch during transaction")
                     changed[c["column"]] = c["new_id"]
                 expected_after = fingerprint(changed)
+                after_pk = migrated_pk(rec, cells)
                 execute_update(conn, rec, cells)
-                if fingerprint(select_pk(conn, rec, lock=True)) != expected_after:
+                if fingerprint(select_pk(conn, rec, lock=True,
+                                         pk_override=after_pk)) != expected_after:
                     raise MigrationError("Post-update checksum mismatch")
                 journal["records"].append({
-                    "table": rec["table"], "pk": rec["pk"], "cells": cells,
-                    "before_sha256": rec["before_sha256"],
+                    "table": rec["table"], "pk": rec["pk"], "after_pk": after_pk,
+                    "cells": cells, "before_sha256": rec["before_sha256"],
                     "after_sha256": expected_after,
                 })
             # Durable write-ahead journal before the database COMMIT. If the
@@ -400,8 +417,15 @@ def do_rollback(args):
         for rec in journal["records"]:
             if rec["table"] not in metadata or sorted(rec["pk"]) != sorted(metadata[rec["table"]]["pk"]):
                 raise MigrationError("Rollback schema mismatch")
-            current = select_pk(conn, rec)
-            if fingerprint(current) not in (rec["before_sha256"], rec["after_sha256"]):
+            after_pk = rec.get("after_pk", migrated_pk(rec, rec["cells"]))
+            old = select_pk(conn, rec, allow_missing=True)
+            new = (old if after_pk == rec["pk"]
+                   else select_pk(conn, rec, pk_override=after_pk, allow_missing=True))
+            if after_pk != rec["pk"] and old is not None and new is not None:
+                raise MigrationError("Rollback PK collision: both original and new row exist")
+            current = new if new is not None else old
+            if current is None or fingerprint(current) not in (
+                    rec["before_sha256"], rec["after_sha256"]):
                 raise MigrationError("Cannot safely roll back modified row: " + str(identity(rec)))
         if not args.execute:
             print("ROLLBACK DRY RUN:", len(journal["records"]),
@@ -410,13 +434,22 @@ def do_rollback(args):
         try:
             conn.begin()
             for rec in journal["records"]:
-                current = select_pk(conn, rec, lock=True)
+                after_pk = rec.get("after_pk", migrated_pk(rec, rec["cells"]))
+                previous = select_pk(conn, rec, lock=True, allow_missing=True)
+                changed = (previous if after_pk == rec["pk"]
+                           else select_pk(conn, rec, lock=True,
+                                          pk_override=after_pk, allow_missing=True))
+                if after_pk != rec["pk"] and previous is not None and changed is not None:
+                    raise MigrationError("Rollback PK collision")
+                current = changed if changed is not None else previous
+                if current is None:
+                    raise MigrationError("Rollback row no longer exists")
                 digest = fingerprint(current)
                 if digest == rec["before_sha256"]:
                     continue  # Already rolled back or transaction never committed.
                 if digest != rec["after_sha256"]:
                     raise MigrationError("Rollback row changed during transaction")
-                execute_update(conn, rec, rec["cells"], reverse=True)
+                execute_update(conn, rec, rec["cells"], reverse=True, pk_override=after_pk)
                 if fingerprint(select_pk(conn, rec, lock=True)) != rec["before_sha256"]:
                     raise MigrationError("Rollback checksum mismatch")
             conn.commit()
