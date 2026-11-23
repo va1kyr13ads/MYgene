@@ -41,13 +41,13 @@ prontera,158,176,5	script	Novice Tower Trial#mygene	4_M_01,{
 		close;
 	}
 
-	if (@MYGENE_NT_INSTANCE != .@instance || !unitexists(@MYGENE_NT_BOSS)) {
-		@MYGENE_NT_INSTANCE = .@instance;
-		@MYGENE_NT_STAGE = 0;
+	if (MYGENE_NT_INSTANCE != .@instance || !unitexists(MYGENE_NT_BOSS)) {
+		MYGENE_NT_INSTANCE = .@instance;
+		MYGENE_NT_STAGE = 0;
 		@MYGENE_NT_HEAL_NEXT = 0;
-		@MYGENE_NT_BOSS = callfunc("MYgene_Tower_Spawn_Guardian", .@arena$);
+		MYGENE_NT_BOSS = callfunc("MYgene_Tower_Spawn_Guardian", .@arena$);
 	}
-	if (@MYGENE_NT_BOSS <= 0) {
+	if (MYGENE_NT_BOSS <= 0) {
 		mes "[Novice Tower Herald]";
 		mes "The Guardian failed to appear.";
 		close;
