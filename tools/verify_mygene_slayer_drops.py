@@ -50,13 +50,13 @@ class SlayerDropWiring(unittest.TestCase):
 
     def test_fabre_slayer(self):
         self.check_family(
-            "yellow_fabre.txt", 31001, "MYGENE_FABRE_SLAYER",
+            "yellow_fabre.txt", 60001, "MYGENE_FABRE_SLAYER",
             "Fabre Slayer Knife", 31050, "OnYellowFabreDead", "S_YellowRewards"
         )
 
     def test_thief_bug_slayer(self):
         self.check_family(
-            "red_thief_bug.txt", 31006, "MYGENE_THIEF_BUG_SLAYER",
+            "red_thief_bug.txt", 60006, "MYGENE_THIEF_BUG_SLAYER",
             "Thief Bug Slayer Sword", 31051, "OnRedThiefBugDead", "S_RedRewards"
         )
 
@@ -148,6 +148,63 @@ class SlayerDropWiring(unittest.TestCase):
         self.assertIn("getequipid(EQI_HAND_R) != 60010", relic)
         self.assertIn("getequipcardid(EQI_HAND_R,0) != 60011", relic)
         self.assertIn("getitem2 60012,1,1,0,0,60011,0,0,0;", relic)
+
+
+    def test_all_slayer_item_ids_are_free_in_official_databases(self):
+        used = {60001, 60002, 60003, 60004, 60006, 60007,
+                60008, 60009, 60010, 60011, 60012}
+        reserved = {60005}
+        for mode in ("pre-re", "re"):
+            for category in ("equip", "usable", "etc"):
+                path = ROOT / "db" / mode / f"item_db_{category}.yml"
+                official = {
+                    int(m.group(1)) for m in re.finditer(
+                        r"(?m)^  - Id: (\d+)\s*$",
+                        path.read_text(encoding="utf-8"),
+                    )
+                }
+                self.assertFalse((used | reserved) & official,
+                                 f"Custom Slayer ID conflicts with {path}")
+        imported = {
+            int(m.group(1)) for m in re.finditer(
+                r"(?m)^  - Id: (\d+)\s*$", ITEM_DB)
+        }
+        self.assertEqual(used, imported)
+        for legacy_id in range(31001, 31010):
+            self.assertNotIn(f"  - Id: {legacy_id}\n", ITEM_DB)
+
+    def test_slayer_monster_ids_are_free_in_both_official_databases(self):
+        custom_monsters = {31050, 31051, 31052}
+        for mode in ("pre-re", "re"):
+            path = ROOT / "db" / mode / "mob_db.yml"
+            official = {
+                int(m.group(1)) for m in re.finditer(
+                    r"(?m)^  - Id: (\d+)\s*$",
+                    path.read_text(encoding="utf-8"),
+                )
+            }
+            self.assertFalse(custom_monsters & official,
+                             f"Custom Slayer mob ID conflicts with {path}")
+        imported = {
+            int(m.group(1)) for m in re.finditer(
+                r"(?m)^  - Id: (\d+)\s*$", MOB_DB)
+        }
+        self.assertTrue(custom_monsters <= imported)
+
+    def test_no_legacy_item_ids_in_slayer_runtime_sources(self):
+        sources = (
+            "db/import/item_db.yml",
+            "npc/custom/mygene/yellow_fabre.txt",
+            "npc/custom/mygene/red_thief_bug.txt",
+            "npc/custom/mygene/blue_chon_chon.txt",
+            "npc/custom/mygene/legendary_bubble_gum_aura.txt",
+            "npc/custom/mygene/world_relic_keeper.txt",
+            "src/map/battle.cpp",
+        )
+        for path in sources:
+            body = (ROOT / path).read_text(encoding="utf-8")
+            self.assertIsNone(re.search(r"\b3100[1-9]\b", body),
+                              f"Legacy Slayer ID remains in {path}")
 
 
 if __name__ == "__main__":

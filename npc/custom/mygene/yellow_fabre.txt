@@ -93,7 +93,7 @@ S_YellowRewards:
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
-    // Legendary Bubble Gum (31009): for 15 seconds, every defined
+    // Legendary Bubble Gum (60009): for 15 seconds, every defined
     // special drop succeeds, including the exclusive weapon and card.
     // Outside that window each independent fixed chance is unchanged.
     .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
@@ -102,12 +102,12 @@ S_YellowRewards:
     // Deliver successful rolls to the killer so rare weapons are not missed
     // on the ground. Keep a floor-drop fallback for full inventories.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31001,1)) {
-            getitem 31001,1;
-            dispbottom "Slayer reward obtained: "+getitemname(31001)+".";
+        if (checkweight(60001,1)) {
+            getitem 60001,1;
+            dispbottom "Slayer reward obtained: "+getitemname(60001)+".";
         } else {
-            makeitem 31001,1,.@map$,.@x,.@y;
-            dispbottom "Slayer reward dropped nearby: "+getitemname(31001)+".";
+            makeitem 60001,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(60001)+".";
         }
     }
 
@@ -122,7 +122,7 @@ S_YellowRewards:
 
     // Yellow Fabre Card: precisely 0.01% (one in ten thousand).
     if (.@guaranteed || rand(1000000) < 100)
-        makeitem 31002,1,.@map$,.@x,.@y;
+        makeitem 60002,1,.@map$,.@x,.@y;
 
     // Gold: 11.00% (existing item 969, not Zeny).
     if (.@guaranteed || rand(1000000) < 110000)
@@ -130,6 +130,6 @@ S_YellowRewards:
 
     // Attraction Potion: 0.50% (one in two hundred).
     if (.@guaranteed || rand(1000000) < 5000)
-        makeitem 31003,1,.@map$,.@x,.@y;
+        makeitem 60003,1,.@map$,.@x,.@y;
     return;
 }

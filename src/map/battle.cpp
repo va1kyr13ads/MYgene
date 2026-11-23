@@ -7364,10 +7364,10 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 				const t_itemid weapon_id = sd->inventory_data[weapon_idx]->nameid;
 				const struct item& weapon = sd->inventory.u.items_inventory[weapon_idx];
 				int32 chance = 0;
-				if (fabre_family && (weapon_id == 31001 || weapon_id == 31004))
-					chance = weapon.card[0] == 31002 ? 90 : (weapon_id == 31001 ? 50 : 0);
-				if (thief_bug_family && (weapon_id == 31006 || weapon_id == 31008))
-					chance = weapon.card[0] == 31007 ? 90 : (weapon_id == 31006 ? 50 : 0);
+				if (fabre_family && (weapon_id == 60001 || weapon_id == 60004))
+					chance = weapon.card[0] == 60002 ? 90 : (weapon_id == 60001 ? 50 : 0);
+				if (thief_bug_family && (weapon_id == 60006 || weapon_id == 60008))
+					chance = weapon.card[0] == 60007 ? 90 : (weapon_id == 60006 ? 50 : 0);
 				// A two-handed bow occupies EQI_HAND_R and is rolled only for
 				// successful basic weapon hits (including ordinary ranged arrows).
 				// Perfect variants require the matching family card.

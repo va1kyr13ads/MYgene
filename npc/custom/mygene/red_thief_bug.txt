@@ -85,7 +85,7 @@ S_RedRewards:
     if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
         end;
 
-    // Legendary Bubble Gum (31009): for 15 seconds, every defined
+    // Legendary Bubble Gum (60009): for 15 seconds, every defined
     // special drop succeeds, including the exclusive weapon and card.
     // Outside that window each independent fixed chance is unchanged.
     .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
@@ -94,12 +94,12 @@ S_RedRewards:
     // Deliver successful rolls to the killer, with a floor-drop fallback
     // when inventory cannot hold the item. Gum still guarantees the roll.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31006,1)) {
-            getitem 31006,1;
-            dispbottom "Slayer reward obtained: "+getitemname(31006)+".";
+        if (checkweight(60006,1)) {
+            getitem 60006,1;
+            dispbottom "Slayer reward obtained: "+getitemname(60006)+".";
         } else {
-            makeitem 31006,1,.@map$,.@x,.@y;
-            dispbottom "Slayer reward dropped nearby: "+getitemname(31006)+".";
+            makeitem 60006,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(60006)+".";
         }
     }
 
@@ -114,7 +114,7 @@ S_RedRewards:
 
     // MYgene Red Thief Bug Card: 0.01% (1 in 10,000).
     if (.@guaranteed || rand(1000000) < 100) {
-        makeitem 31007,1,.@map$,.@x,.@y;
+        makeitem 60007,1,.@map$,.@x,.@y;
     }
 
     // Gold item 969, not Zeny: 11.00%.
@@ -124,7 +124,7 @@ S_RedRewards:
 
     // Same Attraction Potion as Yellow Fabre: 0.50%.
     if (.@guaranteed || rand(1000000) < 5000) {
-        makeitem 31003,1,.@map$,.@x,.@y;
+        makeitem 60003,1,.@map$,.@x,.@y;
     }
     return;
 }

@@ -112,6 +112,6 @@ S_BlueRewards:
 
     // Existing Attraction Potion: 0.5%.
     if (.@guaranteed || rand(1000000) < 5000)
-        makeitem 31003,1,.@map$,.@x,.@y;
+        makeitem 60003,1,.@map$,.@x,.@y;
     return;
 }

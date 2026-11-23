@@ -30,9 +30,9 @@ Exactly independent of global 4x/normal multipliers:
 | Blue Chon Chon Card | 60011 | **0.01%** |
 | One of Red / Blue / Yellow Gemstone | 715 / 716 / 717 | 70.00% |
 | Gold item | 969 | 11.00% |
-| Existing Attraction Potion | 31003 | 0.50% |
+| Existing Attraction Potion | 60003 | 0.50% |
 
-The Bow is awarded to the killer's inventory when carry weight allows and otherwise placed on the ground with a message. Card and auxiliary rewards spawn on the ground at the killer's tile. On a killing player's **15-second Legendary Bubble Gum** window (item `31009`), each eligible special roll succeeds. Drops from labeled NPC encounter mobs and unlabeled `@monster 31052` mobs both call exactly one shared reward routine; no double rolls.
+The Bow is awarded to the killer's inventory when carry weight allows and otherwise placed on the ground with a message. Card and auxiliary rewards spawn on the ground at the killer's tile. On a killing player's **15-second Legendary Bubble Gum** window (item `60009`), each eligible special roll succeeds. Drops from labeled NPC encounter mobs and unlabeled `@monster 31052` mobs both call exactly one shared reward routine; no double rolls.
 
 ### Weapon and Blue card effects
 
@@ -58,7 +58,7 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 
 ## Live GM verification checklist
 
-- `@item 60010 1`, `@item 60011 1`, `@item 60012 1`, `@item 31009 2` (GM test items), confirm correct name, one slot and bow rendering.
+- `@item 60010 1`, `@item 60011 1`, `@item 60012 1`, `@item 60009 2` (GM test items), confirm correct name, one slot and bow rendering.
 - `@monster 1011 30` on the **same map**; kill 30 normals and check one Blue Chon Chon spawn. Repeat with a mixture of Steel Chonchon `1042` and Hunter Fly `1035`.
 - Verify Dragon Fly `1091` never advances the counter; no boss, elite or MVP is affected by execution. An ordinary 30-kill spawn must be solo on each map.
 - Spawn `@monster 31052 1`, activate `Legendary Bubble Gum`, kill within 15 seconds. Expect Bow and Blue card and auxiliaries; weapon inventory or ground fallback. Repeat without gum to observe ordinary independent probabilities (absence of rare drops is normal).
@@ -74,7 +74,7 @@ The parallel `rustnarok-client` branch `feature/blue-chon-chon-slayer-20261123` 
 
 The three **new, unreleased** Blue-series item IDs are now **60010 / 60011 / 60012**. Those numbers are below 65,536 for legacy packet compatibility and have been checked against the tracked official pre-renewal and Renewal item equipment, usable and miscellaneous YAML databases. Do not reuse the original tentative `31010 / 31011 / 31012`: those are official Renewal LoVA cards.
 
-**Legacy issue inherited from the verified Fabre/Thief Bug milestone:** the older MYgene custom item IDs `31001` through `31009` also overlap existing Renewal card IDs. They work in the accepted player environment, but this causes missing official Renewal card-combo references and a failing full Renewal `map-server --run-once` validation. Renumbering any of those **existing live items** without migrating inventories, storage, cards, drops, scripts and client metadata risks corrupting game state; it is deliberately **not** done in the Blue feature. The Pre-Renewal validation succeeded. Schedule an explicitly backed-up legacy-ID migration separately before claiming full Renewal compatibility.
+**Legacy ID source refactor, deployment still blocked:** Old Fabre/Thief Bug custom item IDs \`31001–31009\` are reassigned in this **feature branch's source** to \`60001–60009\` (\`60005\` reserved), alongside Blue items \`60010–60012\`. All \`60001–60012\` were found free against official item DBs in both modes. Monster IDs \`31050–31052\` are unchanged and do not conflict with official monsters. This does **not** migrate any persisted player items. The legacy IDs overlap official Renewal cards; deployment to a populated server is unsafe without an audited, unambiguous, backup-verified per-instance SQL migration and matching client update. Follow \`docs/MYGENE-SLAYER-ID-MIGRATION.md\`. Recheck Renewal startup CI.
 
-Build CI note: legacy workflows were pinned away from `ubuntu-latest` (Ubuntu 26.04 with removed `libpcre3-dev`/older GCC packages) to Ubuntu 22.04/24.04 appropriate to their compiler matrices.
+Build CI note: legacy workflows were pinned to Ubuntu 22.04/24.04 as appropriate.
 
