@@ -40,7 +40,9 @@ behavior are still to be developed.
 - Entrance is the temporary **Novice Tower Trial** herald in Prontera at
   `158,176`. It only accepts Novices **not in a party**.
 - The controlling script is attached to each player's RID and tracks their
-  own boss unique GID, instance ID, stage and time-based support effects.
+  own boss unique GID, instance ID and stage in character-scoped state so
+  reconnects do not silently spawn another boss; short-lived poll timers
+  and healing cooldowns remain session-scoped.
 - A successful boss kill is only recorded when the character's tracked
   Guardian was defeated and that character is in the associated map and
   unpartied. It sets `MYGENE_NT_TRIAL_FINISHED` as a **trial-only** flag.
