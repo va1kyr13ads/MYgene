@@ -2990,7 +2990,7 @@ void mygene_rare_obtained(map_session_data* receiver, t_itemid item_id, const my
 	it->second.items.push_back({ item->ename, info.base_rate, info.modified_rate, info.gum_type });
 }
 
-int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor, bool without_itemboost)
+int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
 {
 	int32 drop_rate = base_rate;
 
@@ -3021,7 +3021,7 @@ int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base
 			drop_rate_bonus += sd->indexed_bonus.dropaddclass[mob->status.class_] + sd->indexed_bonus.dropaddclass[CLASS_ALL];
 			drop_rate_bonus += sd->indexed_bonus.dropaddrace[mob->status.race] + sd->indexed_bonus.dropaddrace[RC_ALL];
 
-			if (!without_itemboost && sd->sc.getSCE(SC_ITEMBOOST))
+			if (sd->sc.getSCE(SC_ITEMBOOST))
 				drop_rate_bonus += sd->sc.getSCE(SC_ITEMBOOST)->val1;
 			if (sd->sc.getSCE(SC_PERIOD_RECEIVEITEM_2ND))
 				drop_rate_bonus += sd->sc.getSCE(SC_PERIOD_RECEIVEITEM_2ND)->val1;
@@ -3505,9 +3505,10 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			if (it == nullptr)
 				continue;
 
-			// Preserve the MYgene server chance before the Bubble Gum status
-			// changes it. Other server/character drop modifiers still apply.
-			const int32 mygene_base_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md, 1, true);
+			// The first bracket is MYgene server chance, not a personal bonus.
+			// Database rates already include the server drop multiplier; a null
+			// source and neutral level modifier exclude VIP, gear and Gum.
+			const int32 mygene_base_rate = mob_getdroprate(nullptr, md->db, entry->rate, 100, md);
 			drop_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md);
 
 			// Active Legendary Gum makes every defined normal drop certain.
