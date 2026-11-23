@@ -1,0 +1,7 @@
+// MYgene Slayer Series #3 — Blue Chon Chon (31052).
+// Match the vanilla Chonchon Wind Attack (1011) without copying Hunter Fly's
+// teleport, drain, combo or emote skills. The second row enables that same
+// Wind Attack while the monster is aggressive and has not yet been hit.
+// Keep ordinary mob AI, attacks, motion and drops in db/import/mob_db.yml.
+31052,Blue Chon Chon@NPC_WINDATTACK,attack,187,1,2000,0,5000,yes,target,always,0,,,,,,,
+31052,Blue Chon Chon@NPC_WINDATTACK,angry,187,1,2000,0,5000,yes,target,always,0,,,,,,,
