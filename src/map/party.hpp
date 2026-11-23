@@ -12,6 +12,7 @@ struct block_list;
 class map_session_data;
 struct party;
 struct item;
+struct mygene_rare_info;
 
 #define MAX_PARTY_BOOKING_JOBS 6
 #define MAX_PARTY_BOOKING_RESULTS 10
