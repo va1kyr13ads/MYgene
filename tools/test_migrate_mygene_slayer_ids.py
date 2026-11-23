@@ -63,6 +63,15 @@ class MigrationSafety(unittest.TestCase):
         self.assertEqual(m.migrated_pk(record, cells),
                          {"name": "Item Shop", "nameid": 60008})
 
+    def test_historical_log_exemption_restricted(self):
+        doc = self.sample()
+        doc["candidates"][0]["cells"][1]["decision"] = m.KEEP_HISTORICAL
+        with self.assertRaises(m.MigrationError):
+            m.assert_valid_manifest(doc)
+        doc["candidates"][0]["table"] = "picklog"
+        doc["catalog"] = {"picklog": doc["catalog"]["inventory"]}
+        self.assertEqual(m.assert_valid_manifest(doc), 1)
+
     def test_nontransactional_tables_refused(self):
         md = self.sample()["catalog"]
         md["inventory"]["engine"] = "MyISAM"
