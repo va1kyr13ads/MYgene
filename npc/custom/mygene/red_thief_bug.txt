@@ -94,13 +94,13 @@ S_RedRewards:
     // Deliver successful rolls to the killer, with a floor-drop fallback
     // when inventory cannot hold the item. Gum still guarantees the roll.
     if (.@guaranteed || rand(1000000) < 500) {
-        if (checkweight(31006,1)) {
-            getitem 31006,1;
+        // Preserves 0.05% fixed chance and inventory-first behavior.
+        // The server announces only after successful inventory receipt.
+        .@received = mygene_rare_reward(31006,5,31051,killedgid,.@guaranteed);
+        if (.@received)
             dispbottom "Slayer reward obtained: "+getitemname(31006)+".";
-        } else {
-            makeitem 31006,1,.@map$,.@x,.@y;
+        else
             dispbottom "Slayer reward dropped nearby: "+getitemname(31006)+".";
-        }
     }
 
     // One random Red / Blue / Yellow Gemstone: 70.00%.
@@ -114,7 +114,8 @@ S_RedRewards:
 
     // MYgene Red Thief Bug Card: 0.01% (1 in 10,000).
     if (.@guaranteed || rand(1000000) < 100) {
-        makeitem 31007,1,.@map$,.@x,.@y;
+        // Keep the approved card as a floor drop; announce when collected.
+        mygene_rare_reward 31007,1,31051,killedgid,.@guaranteed,1;
     }
 
     // Gold item 969, not Zeny: 11.00%.
