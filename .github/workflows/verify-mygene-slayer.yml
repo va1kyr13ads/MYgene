@@ -17,6 +17,8 @@ on:
       - 'src/map/battle.cpp'
       - 'db/import/mob_avail.yml'
       - 'tools/verify_mygene_slayer_drops.py'
+      - 'tools/migrate_mygene_slayer_ids.py'
+      - 'tools/test_migrate_mygene_slayer_ids.py'
       - '.github/workflows/verify-mygene-slayer.yml'
   pull_request:
     branches:
@@ -32,6 +34,8 @@ on:
       - 'src/map/battle.cpp'
       - 'db/import/mob_avail.yml'
       - 'tools/verify_mygene_slayer_drops.py'
+      - 'tools/migrate_mygene_slayer_ids.py'
+      - 'tools/test_migrate_mygene_slayer_ids.py'
       - '.github/workflows/verify-mygene-slayer.yml'
 
 permissions:
@@ -44,3 +48,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check ID/name consistency, death-event dispatch, and rates
         run: python3 -m unittest discover -s tools -p 'verify_mygene_slayer_drops.py' -v
+
+      - name: Check fail-closed legacy Slayer database migration safety
+        run: python3 -m unittest discover -s tools -p 'test_migrate_mygene_slayer_ids.py' -v
