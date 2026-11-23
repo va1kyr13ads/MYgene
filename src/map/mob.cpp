@@ -2645,6 +2645,7 @@ static void mob_item_drop(mob_data *md, std::shared_ptr<s_item_drop_list>& dlist
 		struct party_data *p = party_search(sd->status.party_id);
 
 		if ((itemdb_search(ditem->item_data.nameid))->flag.broadcast &&
+			ditem->mygene_rare.base_rate == 0 &&
 			(!p || !(p->party.item & 2)) // Somehow, if party's pickup distribution is 'Even Share', no announcemet
 			)
 			intif_broadcast_obtain_special_item(sd, ditem->item_data.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
@@ -3715,7 +3716,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 					mygene_rare_obtained(mvp_sd, item.nameid, rare);
 				}
 
-				if (i_data->flag.broadcast)
+				if (i_data->flag.broadcast && rare.base_rate == 0)
 					intif_broadcast_obtain_special_item(mvp_sd, item.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
 
 				//Logs items, MVP prizes [Lupus]
