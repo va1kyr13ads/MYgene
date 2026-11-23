@@ -9,7 +9,7 @@ receipt for a monster item is eligible when the MYgene server-adjusted chance
 
 - One eligible item: `Red Thief Bug dropped Thief Bug Card [0.04%] to MYgeneNovice01`
 - Multiple from a kill, one receiver:
-  `Red Thief Bug dropped : Thief Bug Card [0.04%] + Red Thief Bug Card [0.01%] to MYgeneNovice01`
+  `Red Thief Bug dropped: Thief Bug Card [0.04%] + Red Thief Bug Card [0.01%] to MYgeneNovice01`
 - Legendary Bubble Gum:
   `Red Thief Bug dropped Thief Bug Card [0.04%] to MYgeneNovice01 [Legendary Bubble Gum: 100.00%]`
 - Bubble Gum and HE Bubble Gum:
