@@ -2867,6 +2867,130 @@ static bool mygene_legendary_gum_active(map_session_data* sd)
 		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
 }
 
+// MYgene Rare Loot: aggregate successful receipts from one monster for one player.
+// Timer coalescing covers autoloot, immediate script grants and quick manual pickups.
+// Late floor pickups generate a new batch, since uncollected items must not be announced.
+struct mygene_rare_entry {
+	std::string item_name;
+	uint32 base_rate;
+	uint32 modified_rate;
+	uint8 gum_type;
+};
+
+struct mygene_rare_batch {
+	std::string mob_name;
+	std::string player_name;
+	std::vector<mygene_rare_entry> items;
+};
+
+static std::unordered_map<uint64, mygene_rare_batch> mygene_rare_batches;
+
+static const char* mygene_gum_name(uint8 gum_type)
+{
+	switch (gum_type) {
+		case 1: return "Bubble Gum";
+		case 2: return "HE Bubble Gum";
+		case 3: return "Legendary Bubble Gum";
+		default: return "";
+	}
+}
+
+static uint8 mygene_gum_type(map_session_data* sd)
+{
+	if (mygene_legendary_gum_active(sd))
+		return 3;
+	if (sd == nullptr)
+		return 0;
+	const auto* effect = sd->sc.getSCE(SC_ITEMBOOST);
+	if (effect == nullptr)
+		return 0;
+	return effect->val1 >= 200 ? 2 : 1;
+}
+
+static std::string mygene_rate_bracket(uint32 rate)
+{
+	char part[40];
+	std::snprintf(part, sizeof(part), "[%.2f%%]", static_cast<double>(rate) / 100.0);
+	return part;
+}
+
+static std::string mygene_gum_bracket(uint8 gum_type, uint32 rate)
+{
+	if (gum_type == 0)
+		return "";
+	char part[95];
+	std::snprintf(part, sizeof(part), "[%s: %.2f%%]", mygene_gum_name(gum_type),
+		static_cast<double>(rate) / 100.0);
+	return part;
+}
+
+static TIMER_FUNC(mygene_rare_broadcast_timer)
+{
+	const uint64 key = static_cast<uint64>(data);
+	auto it = mygene_rare_batches.find(key);
+	if (it == mygene_rare_batches.end())
+		return 0;
+	mygene_rare_batch batch = std::move(it->second);
+	mygene_rare_batches.erase(it);
+	if (batch.items.empty())
+		return 0;
+
+	// When every item has the same modifier and resulting rate, show it once.
+	const auto& first = batch.items.front();
+	const bool shared_gum = first.gum_type != 0 && std::all_of(batch.items.begin(),
+		batch.items.end(), [&first](const mygene_rare_entry& item) {
+			return item.gum_type == first.gum_type &&
+				item.modified_rate == first.modified_rate;
+		});
+	std::string message = batch.mob_name + " dropped ";
+	if (batch.items.size() > 1)
+		message += ": ";
+	for (size_t i = 0; i < batch.items.size(); ++i) {
+		const auto& item = batch.items[i];
+		if (i != 0)
+			message += " + ";
+		message += item.item_name + " " + mygene_rate_bracket(item.base_rate);
+		if (!shared_gum)
+			message += mygene_gum_bracket(item.gum_type, item.modified_rate);
+	}
+	message += " to " + batch.player_name;
+	if (shared_gum)
+		message += " " + mygene_gum_bracket(first.gum_type, first.modified_rate);
+
+	intif_broadcast(message.c_str(), message.length() + 1, BC_DEFAULT);
+	return 0;
+}
+
+void mygene_rare_obtained(map_session_data* receiver, t_itemid item_id, const mygene_rare_info& info)
+{
+	// Threshold is the MYgene server chance before consumable Gum modifiers.
+	// 1 means 0.01%, 9 means 0.09%; exactly 0.10% does not qualify.
+	if (receiver == nullptr || info.mob_id == 0 || info.base_rate == 0 ||
+		info.base_rate >= 10 || battle_config.rare_drop_announce == 0 ||
+		info.base_rate > static_cast<uint32>(battle_config.rare_drop_announce))
+		return;
+	auto mob = mob_db.find(info.mob_id);
+	auto item = item_db.find(item_id);
+	if (mob == nullptr || item == nullptr)
+		return;
+
+	// Monster GIDs are unique during a kill; the low half isolates recipients.
+	// Scripted kills should pass killedgid. A missing GID uses a short time bucket.
+	const uint32 source = info.source_gid != 0 ? info.source_gid :
+		(static_cast<uint32>(gettick() / 1500) | 0x80000000u);
+	const uint64 key = (static_cast<uint64>(source) << 32) |
+		static_cast<uint32>(receiver->status.char_id);
+	auto it = mygene_rare_batches.find(key);
+	if (it == mygene_rare_batches.end()) {
+		mygene_rare_batch batch;
+		batch.mob_name = mob->name;
+		batch.player_name = receiver->status.name;
+		it = mygene_rare_batches.emplace(key, std::move(batch)).first;
+		add_timer(gettick() + 1500, mygene_rare_broadcast_timer, 0, static_cast<int64>(key));
+	}
+	it->second.items.push_back({ item->ename, info.base_rate, info.modified_rate, info.gum_type });
+}
+
 int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor, bool without_itemboost)
 {
 	int32 drop_rate = base_rate;
