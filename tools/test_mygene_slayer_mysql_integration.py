@@ -65,6 +65,9 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                         cur.execute("""CREATE TABLE picklog (
                             id INT PRIMARY KEY, nameid INT, card0 INT)
                             ENGINE=MyISAM""")
+                        cur.execute("""CREATE TABLE market (
+                            name VARCHAR(50), nameid INT,
+                            PRIMARY KEY (name, nameid)) ENGINE=InnoDB""")
                         cur.execute("""INSERT INTO inventory VALUES
                             (1,31001,31002,0,0,0,1,111),
                             (2,31001,0,0,0,0,1,222)""")
@@ -74,12 +77,14 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                             (4,31006,31007,0,0,0,1)""")
                         cur.execute("""INSERT INTO picklog VALUES
                             (5,31002,0)""")
+                        cur.execute("""INSERT INTO market VALUES
+                            ('TEST_MARKET',31008)""")
                     conn.commit()
 
                 m.do_audit(argparse.Namespace(config=str(config_path),
                                               output=str(manifest_path)))
                 manifest = m.load_json(manifest_path)
-                self.assertEqual(len(manifest["candidates"]), 5)
+                self.assertEqual(len(manifest["candidates"]), 6)
                 for rec in manifest["candidates"]:
                     for cell in rec["cells"]:
                         # Inventory id=2 and historical official-card log id=5
@@ -92,7 +97,7 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                             if keep else
                             "Verified preexisting MYgene item and card fixture")
                 m.write_private(manifest_path, manifest, replace=True)
-                self.assertEqual(m.assert_valid_manifest(manifest), 5)
+                self.assertEqual(m.assert_valid_manifest(manifest), 6)
 
                 def apply_args(execute):
                     return argparse.Namespace(
@@ -121,7 +126,7 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                             "Official item verified in isolated database fixture"
                             if keep else "Custom Slayer source verified in isolated fixture")
                 m.write_private(manifest_path, newer, replace=True)
-                self.assertEqual(m.assert_valid_manifest(newer), 5)
+                self.assertEqual(m.assert_valid_manifest(newer), 6)
                 m.do_apply(apply_args(False))
                 self.assertFalse(journal_path.exists())
                 # Read/write drift between audit and apply is caught:
@@ -154,6 +159,9 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                     self.assertEqual((item("guild_storage", 4)["nameid"],
                                       item("guild_storage", 4)["card0"]), (60006, 60007))
                     self.assertEqual(item("picklog", 5)["nameid"], 31002)
+                    market = m.one(conn, "SELECT * FROM market WHERE name=%s",
+                                   ("TEST_MARKET",))
+                    self.assertEqual(market["nameid"], 60008)
 
                 rollback_args = argparse.Namespace(
                     config=str(config_path), journal=str(journal_path),
@@ -171,6 +179,9 @@ class MigrationMariaDBIntegration(unittest.TestCase):
                     restored = m.one(conn, "SELECT * FROM guild_storage WHERE id=4")
                     self.assertEqual((restored["nameid"], restored["card0"]),
                                      (31006, 31007))
+                    restored = m.one(conn, "SELECT * FROM market WHERE name=%s",
+                                     ("TEST_MARKET",))
+                    self.assertEqual(restored["nameid"], 31008)
             finally:
                 with root.cursor() as cur:
                     cur.execute("DROP DATABASE IF EXISTS " + m.identifier(database))
