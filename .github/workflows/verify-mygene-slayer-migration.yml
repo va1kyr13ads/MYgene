@@ -1,0 +1,52 @@
+name: MYgene Slayer ID Migration Rehearsal
+
+on:
+  push:
+    branches:
+      - feature/blue-chon-chon-slayer-20261123
+    paths:
+      - 'tools/migrate_mygene_slayer_ids.py'
+      - 'tools/test_migrate_mygene_slayer_ids.py'
+      - 'tools/test_mygene_slayer_mysql_integration.py'
+      - '.github/workflows/verify-mygene-slayer-migration.yml'
+  pull_request:
+    branches:
+      - feature/yellow-fabre
+    paths:
+      - 'tools/migrate_mygene_slayer_ids.py'
+      - 'tools/test_migrate_mygene_slayer_ids.py'
+      - 'tools/test_mygene_slayer_mysql_integration.py'
+      - '.github/workflows/verify-mygene-slayer-migration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migration-rehearsal:
+    runs-on: ubuntu-22.04
+    services:
+      mariadb:
+        image: mariadb:11.4
+        ports:
+          - 3306:3306
+        env:
+          MARIADB_ROOT_PASSWORD: migration-test-only
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+    env:
+      MYGENE_MIGRATION_MYSQL_TEST: "1"
+      MYSQL_TEST_HOST: "127.0.0.1"
+      MYSQL_TEST_PORT: "3306"
+      MYSQL_TEST_USER: "root"
+      MYSQL_TEST_PASSWORD: "migration-test-only"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install test-only PyMySQL
+        run: python3 -m pip install --user "pymysql==1.1.1"
+      - name: Unit tests for fail-closed migration validation
+        run: python3 -m unittest discover -s tools -p 'test_migrate_mygene_slayer_ids.py' -v
+      - name: Rehearse audit / MyISAM refusal / reviewed conversion / rollback
+        run: python3 -m unittest discover -s tools -p 'test_mygene_slayer_mysql_integration.py' -v
