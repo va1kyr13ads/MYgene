@@ -6257,7 +6257,7 @@ bool pc_takeitem(map_session_data *sd,flooritem_data *fitem)
 	unit_stop_attack( sd );
 	clif_takeitem(*sd, *fitem);
 
-	if (fitem->mob_id &&
+	if (fitem->mob_id && fitem->mygene_rare.base_rate == 0 &&
 		(itemdb_search(fitem->item.nameid))->flag.broadcast &&
 		(!p || !(p->party.item&2)) // Somehow, if party's pickup distribution is 'Even Share', no announcemet
 		)
