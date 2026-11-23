@@ -10,6 +10,8 @@ Every old MYgene item ID is *also an official Renewal card ID*. `31001` may desc
 
 The stock rAthena schema also defines `inventory`, `cart_inventory`, `storage`, `guild_storage`, `auction`, `picklog`, etc. with **MyISAM** storage engines. MyISAM does **not** support rollback; even `START TRANSACTION` does not make writes safe. The tool categorically refuses writes to affected non-InnoDB tables. Converting engines must be done separately in a documented offline rehearsal and maintenance window (never automatically by this tool).
 
+Archived logs containing historical MYgene records may be explicitly marked `keep_historical` with evidence; this decision is only allowed for tables with names ending in `log`, not active inventories. Such retained log IDs preserve past source events rather than live item identities. Never mark active custom items `keep_official`.
+
 The schema audit dynamically discovers all SQL tables with `nameid`, `item_id`, `itemid`, or `card0`–`card3`. It includes character inventory, cart, personal/guild/VIP storage, auction, mail attachments, picklog, guild-storage log, market, sales, roulette, buying-store items, feedinglog and any other installed tables with those columns. The audit is read-only, uses the installed table schema and primary keys, and emits local *sensitive* records for review. Genuine historical-log entries should normally be marked `keep_official` only when proven official; historical entries representing MYgene items can be explicitly migrated after reviewing whether log rewriting is desirable. Never hide or omit unresolved candidates.
 
 ## Prerequisites
@@ -38,7 +40,7 @@ python3 tools/migrate_mygene_slayer_ids.py audit \
   --output /secure/slayer-review-manifest.json
 ```
 
-Open the generated manifest in a secure editor. For every `candidates[].cells[]`, change `"decision": "unreviewed"` to either `"migrate"` or `"keep_official"` and add a specific `"evidence"` statement (at least 12 characters). A multi-carded weapon is reviewed **per cell**, not per row. No bulk selection by ID is supported.
+Open the generated manifest in a secure editor. For every `candidates[].cells[]`, change `"decision": "unreviewed"` to either `"migrate"` or `"keep_official"` (or `"keep_historical"` for archival log tables only) and add a specific `"evidence"` statement (at least 12 characters). A multi-carded weapon is reviewed **per cell**, not per row. No bulk selection by ID is supported.
 
 ```bash
 python3 tools/migrate_mygene_slayer_ids.py validate \
