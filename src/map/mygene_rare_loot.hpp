@@ -12,7 +12,7 @@ struct map_session_data;
 struct mygene_rare_info {
 	uint32 source_gid = 0;    // Individual monster death (not mob class).
 	uint16 mob_id = 0;        // Monster database ID for the announcement.
-	uint32 base_rate = 0;     // MYgene server chance before Bubble Gum.
+	uint32 base_rate = 0;     // MYgene server chance before personal/Gum bonuses.
 	uint32 modified_rate = 0; // Chance with the active Bubble Gum, if any.
 	uint8 gum_type = 0;      // 0: none, 1: Bubble Gum, 2: HE, 3: Legendary.
 };
