@@ -1,0 +1,66 @@
+// MYgene Novice Tower — isolated Floor 4 trial entry.
+// This is a DEVELOPMENT PROTOTYPE. It does not select the permanent
+// Vanilla/Tower route, change character jobs, or grant final rewards.
+// The solo arena is a character-owned instance (IM_CHAR).
+prontera,158,176,5	script	Novice Tower Trial#mygene	4_M_01,{
+	mes "[Novice Tower Herald]";
+	mes "This is a private practice of Floor 4: Conquest.";
+	mes "The full Novice Tower path is still under construction.";
+	next;
+	if (Class != Job_Novice) {
+		mes "[Novice Tower Herald]";
+		mes "Only Novices may enter the Tower trial.";
+		close;
+	}
+	if (getcharid(1) != 0) {
+		mes "[Novice Tower Herald]";
+		mes "Solo conquest means no real-player party assistance.";
+		mes "Please leave your party before attempting the trial.";
+		close;
+	}
+	mes "[Novice Tower Herald]";
+	mes "The Guardian begins as a solo fight. Six visions of the";
+	mes "first jobs offer support as its HP falls.";
+	mes "You must deliver the final blow yourself.";
+	next;
+	if (select("Enter the solo trial:Not now") == 2)
+		close;
+
+	.@instance = instance_id(IM_CHAR);
+	if (.@instance <= 0)
+		.@instance = instance_create("MYgene Novice Tower Trial", IM_CHAR);
+	if (.@instance <= 0) {
+		mes "[Novice Tower Herald]";
+		mes "The trial instance could not be created. Try again later.";
+		close;
+	}
+	.@arena$ = instance_mapname("1@tower", .@instance);
+	if (.@arena$ == "") {
+		mes "[Novice Tower Herald]";
+		mes "The Tower arena is unavailable.";
+		close;
+	}
+
+	if (@MYGENE_NT_INSTANCE != .@instance || !unitexists(@MYGENE_NT_BOSS)) {
+		@MYGENE_NT_INSTANCE = .@instance;
+		@MYGENE_NT_STAGE = 0;
+		@MYGENE_NT_HEAL_NEXT = 0;
+		@MYGENE_NT_BOSS = callfunc("MYgene_Tower_Spawn_Guardian", .@arena$);
+	}
+	if (@MYGENE_NT_BOSS <= 0) {
+		mes "[Novice Tower Herald]";
+		mes "The Guardian failed to appear.";
+		close;
+	}
+	.@result = instance_enter("MYgene Novice Tower Trial", -1, -1, getcharid(0), .@instance);
+	if (.@result != IE_OK) {
+		mes "[Novice Tower Herald]";
+		mes "You could not enter the private arena.";
+		close;
+	}
+	if (!@MYGENE_NT_POLLING) {
+		@MYGENE_NT_POLLING = 1;
+		addtimer 2500, "MYgene_Tower_Core::OnBossPoll";
+	}
+	close;
+}
