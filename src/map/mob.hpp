@@ -11,6 +11,7 @@
 #include <common/mmo.hpp> // struct item
 #include <common/timer.hpp>
 
+#include "mygene_rare_loot.hpp"
 #include "status.hpp" // struct status data, struct status_change
 #include "unit.hpp" // unit_stop_walking(), unit_stop_attack()
 
@@ -486,6 +487,7 @@ struct s_item_drop{
 	struct item item_data;
 	uint16 mob_id;
 	enum bl_type src_type;
+	mygene_rare_info mygene_rare;
 };
 
 struct s_item_drop_list{
@@ -572,7 +574,7 @@ void mob_add_spawn(uint16 mob_id, const struct spawn_info& new_spawn);
 const std::vector<spawn_info> mob_get_spawns(uint16 mob_id);
 bool mob_has_spawn(uint16 mob_id);
 
-int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md = nullptr, int32 factor = 1);
+int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md = nullptr, int32 factor = 1, bool without_itemboost = false);
 
 // MvP Tomb System
 int32 mvptomb_setdelayspawn(npc_data *nd);
