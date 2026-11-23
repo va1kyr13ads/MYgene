@@ -22,6 +22,7 @@ OLD_TO_NEW = {n: n + 29000 for n in range(31001, 31010)}
 ITEM_COLUMNS = ("nameid", "item_id", "itemid", "card0", "card1", "card2", "card3")
 MIGRATE = "migrate"
 KEEP = "keep_official"
+KEEP_HISTORICAL = "keep_historical"
 VERSION = 1
 
 
@@ -204,8 +205,10 @@ def assert_valid_manifest(manifest):
             columns.add(col)
             if OLD_TO_NEW.get(old) != new:
                 raise MigrationError("Invalid legacy ID mapping")
-            if cell["decision"] not in (MIGRATE, KEEP):
+            if cell["decision"] not in (MIGRATE, KEEP, KEEP_HISTORICAL):
                 raise MigrationError("Unreviewed/invalid decision: " + str(key) + " " + col)
+            if cell["decision"] == KEEP_HISTORICAL and not record["table"].lower().endswith("log"):
+                raise MigrationError("keep_historical is only allowed for archival log tables")
             if len(str(cell.get("evidence", "")).strip()) < 12:
                 raise MigrationError("Missing specific per-cell provenance evidence: " + str(key))
             changes += cell["decision"] == MIGRATE
@@ -327,7 +330,7 @@ def do_audit(args):
         print("Read-only audit saved:", args.output,
               "records:", len(found),
               "cells:", sum(len(r["cells"]) for r in found),
-              "review ALL cells as migrate or keep_official with evidence.")
+              "review ALL cells as migrate, keep_official, or keep_historical (logs only), with evidence.")
 
 
 def do_validate(args):
