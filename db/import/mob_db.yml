@@ -103,3 +103,156 @@ Body:
       - Item: Thief_Bug_Card
         Rate: 1
         StealProtected: true
+
+  # MYgene Slayer Series 4: Purple Willow; ordinary non-boss, HP 3,000.
+  # Custom exclusives are rolled independently by slayer_series_456.txt.
+  - Id: 31053
+    AegisName: MYGENE_PURPLE_WILLOW
+    Name: Purple Willow
+    Level: 20
+    Hp: 3000
+    BaseExp: 163
+    JobExp: 101
+    Attack: 58
+    Attack2: 70
+    Str: 12
+    Agi: 20
+    Vit: 25
+    Int: 35
+    Dex: 38
+    Luk: 30
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Medium
+    Race: Plant
+    Element: Earth
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1672
+    AttackMotion: 672
+    ClientAttackMotion: 288
+    DamageMotion: 432
+    Ai: 01
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Tree_Root
+        Rate: 9000
+      - Item: Wooden_Block
+        Rate: 100
+      - Item: Resin
+        Rate: 1500
+      - Item: Sweet_Potato
+        Rate: 700
+      - Item: Tree_Of_Archer_3
+        Rate: 3500
+      - Item: Tree_Of_Archer_2
+        Rate: 2000
+      - Item: Tree_Of_Archer_1
+        Rate: 1000
+      - Item: Wilow_Card
+        Rate: 1
+        StealProtected: true
+
+  # MYgene Slayer Series 5: Orange Rideword; ordinary non-boss, HP 3,000.
+  # Custom exclusives are rolled independently by slayer_series_456.txt.
+  - Id: 31054
+    AegisName: MYGENE_ORANGE_RIDEWORD
+    Name: Orange Rideword
+    Level: 43
+    Hp: 3000
+    BaseExp: 1155
+    JobExp: 1320
+    Attack: 160
+    Attack2: 220
+    Str: 48
+    Agi: 75
+    Vit: 10
+    Int: 20
+    Dex: 120
+    Luk: 45
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Formless
+    Element: Neutral
+    ElementLevel: 1
+    WalkSpeed: 150
+    AttackDelay: 864
+    AttackMotion: 500
+    ClientAttackMotion: 468
+    DamageMotion: 192
+    Ai: 21
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Worn_Out_Page
+        Rate: 4850
+      - Item: Book_Of_Billows
+        Rate: 4
+      - Item: Book_Of_Mother_Earth
+        Rate: 4
+      - Item: Book_Of_Blazing_Sun
+        Rate: 2
+      - Item: Book_Of_Gust_Of_Wind
+        Rate: 2
+      - Item: Bookclip_In_Memory
+        Rate: 300
+      - Item: Old_Magic_Book
+        Rate: 20
+      - Item: Rideword_Card
+        Rate: 1
+        StealProtected: true
+
+  # MYgene Slayer Series 6: Dark Orc; ordinary non-boss, HP 3,000.
+  # Custom exclusives are rolled independently by slayer_series_456.txt.
+  - Id: 31055
+    AegisName: MYGENE_DARK_ORC
+    Name: Dark Orc
+    Level: 30
+    Hp: 3000
+    BaseExp: 450
+    JobExp: 300
+    Attack: 110
+    Attack2: 145
+    Str: 35
+    Agi: 24
+    Vit: 48
+    Int: 25
+    Dex: 34
+    Luk: 10
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Medium
+    Race: Demihuman
+    Element: Dark
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1864
+    AttackMotion: 864
+    ClientAttackMotion: 672
+    DamageMotion: 288
+    Ai: 04
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Iron
+        Rate: 210
+      - Item: Orcish_Voucher
+        Rate: 9000
+      - Item: Oridecon_Stone
+        Rate: 40
+      - Item: Cigar
+        Rate: 3
+      - Item: Battle_Axe_
+        Rate: 10
+      - Item: Orcish_Axe
+        Rate: 5
+      - Item: Axe
+        Rate: 100
+      - Item: Orc_Warrior_Card
+        Rate: 1
+        StealProtected: true
