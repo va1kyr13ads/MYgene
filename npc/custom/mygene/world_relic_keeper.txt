@@ -18,7 +18,7 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
     mes "forgotten vaults.";
     next;
 
-    switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Perfect Knife Upgrade [GM]:Perfect Sword Upgrade [GM]:Leave")) {
+    switch(select("About World Relics:Check My Materials:Renew a World Relic:World Relic Registry:Soul Hunting Rules:Perfect Knife Upgrade [GM]:Perfect Sword Upgrade [GM]:Perfect Rod Upgrade [GM]:Perfect Book Upgrade [GM]:Perfect Axe Upgrade [GM]:Leave")) {
     case 1:
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "^FF0000P.F.S.K^000000";
@@ -417,6 +417,18 @@ prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
         mes "It has no expiry or cap.";
         close;
 
+    case 8: // Purple Willow Rod, staff/rod physical-hit relic.
+        callsub S_ConvertAdditionalRelic,60013,60014,60015,"P.W.S.R";
+        close;
+
+    case 9: // Orange Rideword Book.
+        callsub S_ConvertAdditionalRelic,60016,60017,60018,"P.R.S.B";
+        close;
+
+    case 10: // Dark Orc Axe.
+        callsub S_ConvertAdditionalRelic,60019,60020,60021,"P.O.S.A";
+        close;
+
     default:
         mes "^C9A13C[World Relic Keeper]^000000";
         mes "May your relic never";
@@ -434,4 +446,120 @@ OnInit:
     .PerfectSwordID = 31008; // GM-only test upgrade, no lease/cap.
     .SoulItemID = 31005;    // Reserved; not currently in item database.
     end;
+S_ConvertAdditionalRelic:
+    // GM-only test conversion: no public crafting, lease, cap or renewal.
+    // Input is one carded, equipped, plain/unbound base weapon.
+    .@base = getarg(0);
+    .@card = getarg(1);
+    .@perfect = getarg(2);
+    .@relic$ = getarg(3);
+    mes "^C9A13C[World Relic Keeper]^000000";
+    if (getgroupid() != 99) {
+        mes "Perfect upgrades remain GM-only.";
+        close;
+    }
+    if (BaseLevel < 40) {
+        mes "You need Base Level 40.";
+        close;
+    }
+    if (getequipid(EQI_HAND_R) != .@base ||
+        getequipcardid(EQI_HAND_R,0) != .@card) {
+        mes "Equip the matching Slayer";
+        mes "weapon with its exclusive";
+        mes "card in the first slot.";
+        close;
+    }
+    getinventorylist;
+    .@idx = -1;
+    .@special = 0;
+    for (.@i = 0; .@i < @inventorylist_count; .@i++) {
+        if (@inventorylist_id[.@i] == .@base &&
+            (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
+            @inventorylist_card1[.@i] == .@card) {
+            .@idx = @inventorylist_idx[.@i];
+            if (@inventorylist_refine[.@i] != 0 ||
+                @inventorylist_identify[.@i] != 1 ||
+                @inventorylist_attribute[.@i] != 0 ||
+                @inventorylist_bound[.@i] != 0 ||
+                @inventorylist_expire[.@i] != 0 ||
+                @inventorylist_enchantgrade[.@i] != 0 ||
+                @inventorylist_card2[.@i] != 0 ||
+                @inventorylist_card3[.@i] != 0 ||
+                @inventorylist_card4[.@i] != 0 ||
+                @inventorylist_option_id1[.@i] != 0 ||
+                @inventorylist_option_id2[.@i] != 0 ||
+                @inventorylist_option_id3[.@i] != 0 ||
+                @inventorylist_option_id4[.@i] != 0 ||
+                @inventorylist_option_id5[.@i] != 0)
+                .@special = 1;
+            break;
+        }
+    }
+    if (.@idx < 0 || .@special || !checkweight(.@perfect,1)) {
+        mes "Conversion unavailable.";
+        mes "Check the exact item and weight.";
+        close;
+    }
+    mes "Convert to "+.@relic$+"?";
+    mes "Weapon Lv 4 / ATK 25";
+    mes "Indestructible / No refine";
+    mes "Matching card is retained.";
+    next;
+    if (select("Upgrade equipped weapon:Cancel") != 1)
+        close;
+    // Recheck all item metadata after the confirmation click.
+    if (getgroupid() != 99 || BaseLevel < 40 ||
+        getequipid(EQI_HAND_R) != .@base ||
+        getequipcardid(EQI_HAND_R,0) != .@card ||
+        !checkweight(.@perfect,1)) {
+        mes "Conditions changed. Cancelled.";
+        close;
+    }
+    getinventorylist;
+    .@idx = -1;
+    .@special = 0;
+    for (.@i = 0; .@i < @inventorylist_count; .@i++) {
+        if (@inventorylist_id[.@i] == .@base &&
+            (@inventorylist_equip[.@i] & EQP_HAND_R) != 0 &&
+            @inventorylist_card1[.@i] == .@card) {
+            .@idx = @inventorylist_idx[.@i];
+            if (@inventorylist_refine[.@i] != 0 ||
+                @inventorylist_identify[.@i] != 1 ||
+                @inventorylist_attribute[.@i] != 0 ||
+                @inventorylist_bound[.@i] != 0 ||
+                @inventorylist_expire[.@i] != 0 ||
+                @inventorylist_enchantgrade[.@i] != 0 ||
+                @inventorylist_card2[.@i] != 0 ||
+                @inventorylist_card3[.@i] != 0 ||
+                @inventorylist_card4[.@i] != 0 ||
+                @inventorylist_option_id1[.@i] != 0 ||
+                @inventorylist_option_id2[.@i] != 0 ||
+                @inventorylist_option_id3[.@i] != 0 ||
+                @inventorylist_option_id4[.@i] != 0 ||
+                @inventorylist_option_id5[.@i] != 0)
+                .@special = 1;
+            break;
+        }
+    }
+    if (.@idx < 0 || .@special) {
+        mes "The equipped item changed.";
+        close;
+    }
+    if (!unequip(EQI_HAND_R)) {
+        mes "Unable to unequip the weapon.";
+        close;
+    }
+    // Same non-atomic GM-only test workflow as the existing Keeper.
+    // Back up the dev character DB before making test conversions.
+    if (!delitemidx(.@idx,1)) {
+        mes "Could not remove base item.";
+        close;
+    }
+    getitem2 .@perfect,1,1,0,0,.@card,0,0,0;
+    logmes "MYgene GM-only test upgraded "+.@relic$;
+    mes "Created "+.@relic$+".";
+    mes "The card remains compounded.";
+    mes "This test relic has no lease.";
+    return;
+
 }
