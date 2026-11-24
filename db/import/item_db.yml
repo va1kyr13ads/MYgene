@@ -154,3 +154,201 @@ Body:
         @MYGENE_GUM_AURA_LOOP = 1;
         addtimer 2500,"MYgene_Legendary_Gum_Aura::OnPulse";
       }
+
+  # MYgene Slayer Series 4: Purple Willow; normal-hit only.
+  # Perfect is GM test-crafted (not a drop); the matching card must remain
+  # in slot 1. Do not alias these item IDs (custom client metadata owns art).
+  - Id: 60013
+    AegisName: MYGENE_WILLOW_SLAYER_ROD
+    Name: Willow Slayer Rod
+    Type: Weapon
+    SubType: Staff
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 2
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Acolyte: true
+      Mage: true
+      Monk: true
+      Novice: true
+      Priest: true
+      Sage: true
+      SoulLinker: true
+      SuperNovice: true
+      Wizard: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
+
+  - Id: 60014
+    AegisName: MYGENE_PURPLE_WILLOW_CARD
+    Name: Purple Willow Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  - Id: 60015
+    AegisName: MYGENE_PERFECT_WILLOW_SLAYER_ROD
+    Name: P.W.S.R
+    Type: Weapon
+    SubType: Staff
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Acolyte: true
+      Mage: true
+      Monk: true
+      Novice: true
+      Priest: true
+      Sage: true
+      SoulLinker: true
+      SuperNovice: true
+      Wizard: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
+
+
+  # MYgene Slayer Series 5: Orange Rideword; normal-hit only.
+  # Perfect is GM test-crafted (not a drop); the matching card must remain
+  # in slot 1. Do not alias these item IDs (custom client metadata owns art).
+  - Id: 60016
+    AegisName: MYGENE_RIDEWORD_SLAYER_BOOK
+    Name: Rideword Slayer Book
+    Type: Weapon
+    SubType: Book
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 2
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Priest: true
+      Sage: true
+      StarGladiator: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
+
+  - Id: 60017
+    AegisName: MYGENE_ORANGE_RIDEWORD_CARD
+    Name: Orange Rideword Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  - Id: 60018
+    AegisName: MYGENE_PERFECT_RIDEWORD_SLAYER_BOOK
+    Name: P.R.S.B
+    Type: Weapon
+    SubType: Book
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Priest: true
+      Sage: true
+      StarGladiator: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
+
+
+  # MYgene Slayer Series 6: Dark Orc; normal-hit only.
+  # Perfect is GM test-crafted (not a drop); the matching card must remain
+  # in slot 1. Do not alias these item IDs (custom client metadata owns art).
+  - Id: 60019
+    AegisName: MYGENE_ORC_SLAYER_AXE
+    Name: Orc Slayer Axe
+    Type: Weapon
+    SubType: 1hAxe
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 2
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Alchemist: true
+      Assassin: true
+      Blacksmith: true
+      Crusader: true
+      Knight: true
+      Merchant: true
+      Novice: true
+      Rogue: true
+      SuperNovice: true
+      Swordman: true
+      Thief: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;
+
+  - Id: 60020
+    AegisName: MYGENE_DARK_ORC_CARD
+    Name: Dark Orc Card
+    Type: Card
+    Buy: 20
+    Weight: 10
+    Locations:
+      Right_Hand: true
+
+  - Id: 60021
+    AegisName: MYGENE_PERFECT_ORC_SLAYER_AXE
+    Name: P.O.S.A
+    Type: Weapon
+    SubType: 1hAxe
+    Buy: 10000
+    Weight: 1000
+    Attack: 25
+    Range: 1
+    Slots: 1
+    WeaponLevel: 4
+    EquipLevelMin: 40
+    Refineable: false
+    Jobs:
+      Alchemist: true
+      Assassin: true
+      Blacksmith: true
+      Crusader: true
+      Knight: true
+      Merchant: true
+      Novice: true
+      Rogue: true
+      SuperNovice: true
+      Swordman: true
+      Thief: true
+    Locations:
+      Right_Hand: true
+    Script: |
+      bonus bUnbreakableWeapon;

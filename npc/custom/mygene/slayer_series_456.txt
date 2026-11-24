@@ -1,0 +1,166 @@
+// MYgene Slayer Series #4-6: Purple Willow / Orange Rideword / Dark Orc.
+// Minimum three existing normal monsters in each thematic family.
+// 30 kills per map and family; one live encounter per (map, family).
+// The special monster counts as the first kill of the following cycle.
+// No MVP/mini-boss IDs are eligible. Exact special rates are independent
+// of standard server drop multipliers. Normal drops stay in mob_db.yml.
+-	script	MYgene_Slayer_Series_456	-1,{
+OnInit:
+    .PairCount = 0;
+    .MonsterID[0] = 31053; .MonsterName$[0] = "Purple Willow";
+    .DeathEvent$[0] = "MYgene_Slayer_Series_456::OnPurpleWillowDead";
+    .WeaponID[0] = 60013; .CardID[0] = 60014; .NoticeColor[0] = 0xA855F7;
+    .MonsterID[1] = 31054; .MonsterName$[1] = "Orange Rideword";
+    .DeathEvent$[1] = "MYgene_Slayer_Series_456::OnOrangeRidewordDead";
+    .WeaponID[1] = 60016; .CardID[1] = 60017; .NoticeColor[1] = 0xFF9911;
+    .MonsterID[2] = 31055; .MonsterName$[2] = "Dark Orc";
+    .DeathEvent$[2] = "MYgene_Slayer_Series_456::OnDarkOrcDead";
+    .WeaponID[2] = 60019; .CardID[2] = 60020; .NoticeColor[2] = 0x6A4C93;
+    .AttractionPotionID = 31003; // Existing MYgene import ID.
+    end;
+
+OnNPCKillEvent:
+    // Direct GM spawns without a death callback still award exclusive loot.
+    // Labelled spawns take only their dedicated On...Dead reward path.
+    if (killedrid == 31053) { callsub S_Rewards,0; end; }
+    if (killedrid == 31054) { callsub S_Rewards,1; end; }
+    if (killedrid == 31055) { callsub S_Rewards,2; end; }
+
+    .@series = -1;
+    if (killedrid == 1010 || killedrid == 1033 || killedrid == 1497)
+        .@series = 0; // Willow, Elder Willow, Wooden Golem.
+    else if (killedrid == 1281 || killedrid == 1195 || killedrid == 1698)
+        .@series = 1; // Sage Worm, Rideword, Death Word.
+    else if (killedrid == 1686 || killedrid == 1023 ||
+             killedrid == 1273 || killedrid == 1213)
+        .@series = 2; // Orc Baby, Orc Warrior, Orc Lady, High Orc.
+    if (.@series < 0)
+        end;
+
+    callsub S_FamilyKill,.@series;
+    end;
+
+OnPurpleWillowDead:
+    callsub S_SpecialDead,0;
+    end;
+
+OnOrangeRidewordDead:
+    callsub S_SpecialDead,1;
+    end;
+
+OnDarkOrcDead:
+    callsub S_SpecialDead,2;
+    end;
+
+S_FindSlot:
+    // One independent counter and active flag for every map+family pair.
+    .@map$ = getarg(0);
+    .@family = getarg(1);
+    for (.@i = 0; .@i < .PairCount; .@i++)
+        if (.MapName$[.@i] == .@map$ && .Family[.@i] == .@family)
+            return .@i;
+    .@slot = .PairCount;
+    .PairCount++;
+    .MapName$[.@slot] = .@map$;
+    .Family[.@slot] = .@family;
+    .Kills[.@slot] = 0;
+    .Active[.@slot] = 0;
+    return .@slot;
+
+S_FamilyKill:
+    .@family = getarg(0);
+    .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        return;
+    .@slot = callsub(S_FindSlot,.@map$,.@family);
+
+    // Recover from GM cleanup/reload/despawn without multiplying spawns.
+    if (.Active[.@slot]) {
+        if (mobcount(.@map$,.DeathEvent$[.@family]) > 0)
+            return;
+        .Active[.@slot] = 0;
+        .Kills[.@slot] = 0;
+    }
+    .Kills[.@slot]++;
+    if (.Kills[.@slot] < 30)
+        return;
+
+    // Prefer position of the actual 30th mob death.
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@data;
+        .@corpse_map$ = mapid2name(.@data[UMOB_MAPID]);
+        if (.@corpse_map$ == .@map$ &&
+            .@data[UMOB_X] > 0 && .@data[UMOB_Y] > 0) {
+            .@x = .@data[UMOB_X];
+            .@y = .@data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return;
+
+    .Kills[.@slot] = 0;
+    .Active[.@slot] = 1;
+    monster .@map$,.@x,.@y,.MonsterName$[.@family],
+            .MonsterID[.@family],1,.DeathEvent$[.@family];
+    if (mobcount(.@map$,.DeathEvent$[.@family]) < 1) {
+        .Active[.@slot] = 0;
+        .Kills[.@slot] = 29; // Retry next eligible kill.
+        return;
+    }
+    mapannounce .@map$,"A "+.MonsterName$[.@family]+" has appeared.",
+                bc_map,.NoticeColor[.@family];
+    return;
+
+S_SpecialDead:
+    .@family = getarg(0);
+    .@map$ = strcharinfo(3);
+    if (.@map$ != "") {
+        .@slot = callsub(S_FindSlot,.@map$,.@family);
+        .Active[.@slot] = 0;
+        .Kills[.@slot] = 1;
+    }
+    callsub S_Rewards,.@family;
+    return;
+
+S_Give:
+    // .@local variables are shared through callsub on this event stack.
+    .@item = getarg(0);
+    .@map$ = strcharinfo(3);
+    if (checkweight(.@item,1)) {
+        getitem .@item,1;
+    } else {
+        if (getmapxy(.@map$,.@x,.@y,BL_PC) == 0) {
+            makeitem .@item,1,.@map$,.@x,.@y;
+            dispbottom "Slayer reward dropped nearby: "+getitemname(.@item)+".";
+        }
+    }
+    return;
+
+S_Rewards:
+    .@family = getarg(0);
+    if (strcharinfo(3) == "")
+        return;
+    .@guaranteed = (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
+    // Fixed weapon chance 0.05%; guaranteed under Legendary Bubble Gum.
+    if (.@guaranteed || rand(1000000) < 500) {
+        callsub S_Give,.WeaponID[.@family];
+        dispbottom "Slayer weapon reward roll succeeded.";
+    }
+    // Exact exclusive card chance 0.01%.
+    if (.@guaranteed || rand(1000000) < 100) {
+        callsub S_Give,.CardID[.@family];
+        dispbottom "Slayer card reward roll succeeded.";
+    }
+    // Random Red/Blue/Yellow Gemstone 70.00%.
+    if (.@guaranteed || rand(1000000) < 700000)
+        callsub S_Give,715+rand(3);
+    // Gold item ID 969, not Zeny, 11%.
+    if (.@guaranteed || rand(1000000) < 110000)
+        callsub S_Give,969;
+    // Attraction Potion (shared existing MYgene item) 0.50%.
+    if (.@guaranteed || rand(1000000) < 5000)
+        callsub S_Give,.AttractionPotionID;
+    return;
+}
