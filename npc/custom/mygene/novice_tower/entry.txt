@@ -3,6 +3,19 @@
 // Vanilla/Tower route, change character jobs, or grant final rewards.
 // The solo arena is a character-owned instance (IM_CHAR).
 prontera,158,176,5	script	Novice Tower Trial#mygene	4_M_01,{
+	// Keep the existing trial unchanged for normal players.
+	if (getgmlevel() && Class == Job_Novice) {
+		mes "[Novice Tower Herald]";
+		mes "Development tools available.";
+		next;
+		switch (select("Floor 4 trial:Route and checkpoint staging:Cancel")) {
+		case 2:
+			callfunc "MYgene_NT_Stage_Menu";
+			close;
+		case 3:
+			close;
+		}
+	}
 	mes "[Novice Tower Herald]";
 	mes "This is a private practice of Floor 4: Conquest.";
 	mes "The full Novice Tower path is still under construction.";

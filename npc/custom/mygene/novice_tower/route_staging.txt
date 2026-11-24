@@ -1,0 +1,110 @@
+// MYgene Novice Tower: GM-only route/checkpoint staging.
+// This is NOT the permanent first-login route or live floor gameplay.
+// Character registry variables intentionally use DEV_ names so testing
+// cannot commit a real route, job change, title, or reward.
+//
+// Route: 0 unselected, 1 Vanilla, 2 Tower.
+// Cleared: 0..5; 0 resumes Awakening, 5 is staged completion.
+function	script	MYgene_NT_Stage_NextFloor	{
+	.@route = getarg(0);
+	.@cleared = getarg(1);
+	if (.@route != 2 || .@cleared < 0 || .@cleared > 5)
+		return 0;
+	if (.@cleared == 5)
+		return 0;
+	return .@cleared + 1;
+}
+
+function	script	MYgene_NT_Stage_CanClear	{
+	.@next = callfunc("MYgene_NT_Stage_NextFloor",getarg(0),getarg(1));
+	return (.@next != 0 && .@next == getarg(2));
+}
+
+function	script	MYgene_NT_Stage_FloorName	{
+	setarray .@names$[0],"Complete","Awakening","Survival","Wisdom","Conquest","Destiny";
+	.@floor = getarg(0);
+	if (.@floor < 0 || .@floor > 5)
+		return "Invalid";
+	return .@names$[.@floor];
+}
+
+function	script	MYgene_NT_Stage_Menu	{
+	// Only GMs on Novices may write development state.
+	if (!getgmlevel() || Class != Job_Novice)
+		return;
+	if (MYGENE_NT_DEV_ROUTE < 0 || MYGENE_NT_DEV_ROUTE > 2 ||
+		MYGENE_NT_DEV_CLEARED < 0 || MYGENE_NT_DEV_CLEARED > 5 ||
+		(MYGENE_NT_DEV_ROUTE != 2 && MYGENE_NT_DEV_CLEARED != 0)) {
+		mes "[Tower Staging]";
+		mes "Invalid checkpoint. No changes made.";
+		return;
+	}
+	if (MYGENE_NT_DEV_ROUTE == 0) {
+		mes "[Choose your path]";
+		mes "Vanilla: Start with the classic beginner route.";
+		mes "Tower: Climb five floors and choose your first job.";
+		next;
+		switch (select("Vanilla Path:Tower Path:Back")) {
+		case 1:
+			MYGENE_NT_DEV_ROUTE = 1;
+			mes "[Tower Staging]";
+			mes "Vanilla selected. Normal start is unchanged.";
+			return;
+		case 2:
+			mes "[Enter Tower?]";
+			mes "Finish all five floors to leave. You can log out and resume.";
+			next;
+			if (select("Enter Tower:Back") != 1) {
+				mes "[Tower Staging]";
+				mes "No route saved.";
+				return;
+			}
+			MYGENE_NT_DEV_ROUTE = 2;
+			MYGENE_NT_DEV_CLEARED = 0;
+			break;
+		default:
+			mes "[Tower Staging]";
+			mes "No route saved.";
+			return;
+		}
+	}
+	while (1) {
+		mes "[Tower Staging]";
+		if (MYGENE_NT_DEV_ROUTE == 1)
+			mes "Saved route: Vanilla Path";
+		else {
+			.@floor = callfunc("MYgene_NT_Stage_NextFloor",MYGENE_NT_DEV_ROUTE,MYGENE_NT_DEV_CLEARED);
+			mes "Saved route: Tower Path";
+			mes "Cleared: "+MYGENE_NT_DEV_CLEARED+"/5";
+			if (.@floor)
+				mes "Resume: "+.@floor+"F - "+callfunc("MYgene_NT_Stage_FloorName",.@floor);
+			else
+				mes "Staged completion. No graduation awarded.";
+		}
+		mes "Development state only. No EXP or rewards.";
+		next;
+		if (MYGENE_NT_DEV_ROUTE == 2 && MYGENE_NT_DEV_CLEARED < 5) {
+			.@action = select("Simulate current floor clear:Reset staging data:Close");
+			if (.@action == 1) {
+				if (callfunc("MYgene_NT_Stage_CanClear",MYGENE_NT_DEV_ROUTE,MYGENE_NT_DEV_CLEARED,.@floor))
+					MYGENE_NT_DEV_CLEARED = .@floor;
+				continue;
+			}
+			if (.@action == 3) break;
+		} else if (select("Reset staging data:Close") == 2)
+			break;
+		mes "[Tower Staging]";
+		mes "Reset only this character's development route?";
+		next;
+		if (select("Reset:Cancel") == 1) {
+			MYGENE_NT_DEV_CLEARED = 0;
+			MYGENE_NT_DEV_ROUTE = 0;
+			mes "[Tower Staging]";
+			mes "Staging data reset.";
+			return;
+		}
+	}
+	mes "[Tower Staging]";
+	mes "Progress saved.";
+	return;
+}
