@@ -1,0 +1,19 @@
+// Floor 4: Conquest — guardian trial encounter.
+// The temporary Wolf sprite is available in the stock pre-Renewal client.
+// It can be replaced with an approved MYgene Guardian sprite later.
+function	script	MYgene_Tower_Spawn_Guardian	{
+	.@map$ = getarg(0);
+	if (.@map$ == "")
+		return 0;
+	// 1@tower entrance is (50,355); summon inside the initial chamber.
+	monster .@map$,50,348,"Tower Guardian (Trial)",1013,1,"MYgene_Tower_Core::OnBossDead";
+	.@gid = $@mobid[0];
+	if (.@gid > 0 && unitexists(.@gid)) {
+		setunitdata .@gid,UMOB_MAXHP,1200;
+		setunitdata .@gid,UMOB_HP,1200;
+		setunitdata .@gid,UMOB_LEVEL,10;
+		setunitdata .@gid,UMOB_ATKMIN,8;
+		setunitdata .@gid,UMOB_ATKMAX,12;
+	}
+	return .@gid;
+}

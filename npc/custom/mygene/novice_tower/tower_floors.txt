@@ -1,0 +1,9 @@
+// MYgene Novice Tower planned floor progression.
+// Floor 1: Awakening — basic movement and skills.
+// Floor 2: Survival — player survival and supplies.
+// Floor 3: Wisdom — first-job discovery and puzzles.
+// Floor 4: Conquest — see guardian_boss.txt, adventurers.txt and tower_core.txt.
+// Floor 5: Destiny — first-job graduation and player choice.
+//
+// This file documents future floors only. Do not enable permanent route
+// commitment or claim the full 5-floor dungeon is playable from this trial.
