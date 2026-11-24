@@ -48,6 +48,21 @@ Body:
     Commands:
       changedress: true
       resurrect: true
+      # MYgene: limited low-rate player quality-of-life commands
+      commands: true
+      help: true
+      rates: true
+      mobinfo: true
+      iteminfo: true
+      whodrops: true
+      whereis: true
+      showexp: true
+      showzeny: true
+      exp: true
+      refresh: true
+      noask: true
+      noks: true
+      servertime: true
     Permissions:
       # without this basic permissions regular players could not trade or party
       can_trade: true
