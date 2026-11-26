@@ -3109,6 +3109,39 @@ static bool mygene_legendary_gum_active(map_session_data* sd)
 		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
 }
 
+// MYgene rare discoveries use the unscaled configured rate, not the effective roll.
+// Announce the discovery once at generation, before autoloot/party distribution.
+// The displayed multiplier is derived from the actual roll after caps and rounding.
+static void mygene_rare_discovery(map_session_data* owner, mob_data* md, t_itemid id,
+    uint32 base, uint32 actual, uint32 scale, bool legendary, block_list* modifier_src)
+{
+    if (owner == nullptr || base == 0 || base > scale / 1000)
+        return;
+    auto item = item_db.find(id);
+    if (item == nullptr)
+        return;
+    const double base_percent = base * 100.0 / scale;
+    const double actual_percent = actual * 100.0 / scale;
+    const int precision = scale == 100000 ? 3 : 2;
+    char modifier[80] = "";
+    if (legendary) {
+        snprintf(modifier, sizeof(modifier), "Legendary Bubble Gum");
+    } else {
+        auto* player = BL_CAST(BL_PC, modifier_src);
+        const auto* boost = player ? player->sc.getSCE(SC_ITEMBOOST) : nullptr;
+        if (boost != nullptr && boost->val1 > 0)
+            snprintf(modifier, sizeof(modifier), "%.2gx total, Gum +%d%%", static_cast<double>(actual) / base, static_cast<int>(boost->val1));
+        else
+            snprintf(modifier, sizeof(modifier), "%.2gx total", static_cast<double>(actual) / base);
+    }
+    char message[256];
+    snprintf(message, sizeof(message), "[%s] %s: %s [%u] from %s | %.*f%% -> %.*f%% (%s)",
+        legendary ? "Legendary Drop" : "Rare Drop", owner->status.name,
+        item->ename.c_str(), static_cast<unsigned>(id), md->name,
+        precision, base_percent, precision, actual_percent, modifier);
+    intif_broadcast2(message, strlen(message) + 1, legendary ? 0xC084FC : 0xFFD700, 0x190, 12, 0, 0);
+}
+
 int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
 {
 	int32 drop_rate = base_rate;
@@ -3632,6 +3665,9 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			if (mygene_guaranteed)
 				drop_rate = 10000;
 
+			mygene_rare_discovery(first_sd, md, entry->nameid, entry->mygene_base_rate,
+			    drop_rate, 10000, mygene_guaranteed, src);
+
 			if (first_sd != nullptr && it->type == IT_PETEGG) {
 				pet_create_egg(first_sd, entry->nameid);
 				continue;
@@ -3639,13 +3675,6 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 
 			std::shared_ptr<s_item_drop> ditem = mob_setdropitem(entry, 1, md->mob_id);
 
-			//A Rare Drop Global Announce by Lupus
-			if (first_sd != nullptr && entry->rate <= battle_config.rare_drop_announce) {
-				char message[128];
-				sprintf(message, msg_txt(nullptr, 541), first_sd->status.name, md->name, it->ename.c_str(), (float)drop_rate / 100);
-				//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-				intif_broadcast(message, strlen(message) + 1, BC_DEFAULT);
-			}
 			// Announce first, or else ditem will be freed. [Lance]
 			// By popular demand, use base drop rate for autoloot code. [Skotlex]
 			mob_item_drop(md, dlist, ditem, 0, battle_config.autoloot_adjust ? drop_rate : entry->rate, homkillonly || merckillonly);
@@ -3688,6 +3717,9 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				}
 
 				if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
+					mygene_rare_discovery(first_sd, md, it.second->nameid, it.second->rate,
+					    mygene_guaranteed ? 100000 : final_rate, 100000, mygene_guaranteed,
+					    battle_config.enable_bonus_map_drops ? first_sd : nullptr);
 					// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 					int32 map_drops_rate = max(1, (final_rate / 10));
 					std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3709,6 +3741,9 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 					}
 
 					if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
+					mygene_rare_discovery(first_sd, md, it.second->nameid, it.second->rate,
+					    mygene_guaranteed ? 100000 : final_rate, 100000, mygene_guaranteed,
+					    battle_config.enable_bonus_map_drops ? first_sd : nullptr);
 						// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 						int32 map_drops_rate = max(1, (final_rate / 10));
 						std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3804,13 +3839,10 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				clif_mvp_item(mvp_sd,item.nameid);
 				log_mvp_nameid = item.nameid;
 
-				//A Rare MVP Drop Global Announce by Lupus
-				if(temp<=battle_config.rare_drop_announce) {
-					char message[128];
-					sprintf (message, msg_txt(nullptr,541), mvp_sd->status.name, md->name, i_data->ename.c_str(), temp/100.);
-					//MSG: "'%s' won %s's %s (chance: %0.02f%%)"
-					intif_broadcast(message,strlen(message)+1,BC_DEFAULT);
-				}
+				// MVP rewards have their own roll; ordinary Gum is not used by this path.
+				const bool legendary_mvp = mygene_legendary_gum_active(mvp_sd);
+				mygene_rare_discovery(mvp_sd, md, entry->nameid, entry->mygene_base_rate,
+				    legendary_mvp ? 10000 : temp, 10000, legendary_mvp, nullptr);
 
 				mob_setdropitem_option( item, entry );
 
@@ -5806,6 +5838,7 @@ bool MobDatabase::parseDropNode( std::string nodeName, const ryml::NodeRef& node
 
 		drop->nameid = item->nameid;
 		drop->rate = rate;
+		drop->mygene_base_rate = rate;
 		drop->steal_protected = steal;
 		drop->randomopt_group = group;
 
