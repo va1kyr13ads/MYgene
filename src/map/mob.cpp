@@ -3129,8 +3129,14 @@ static void mygene_rare_discovery(map_session_data* owner, mob_data* md, t_itemi
     } else {
         auto* player = BL_CAST(BL_PC, modifier_src);
         const auto* boost = player ? player->sc.getSCE(SC_ITEMBOOST) : nullptr;
-        if (boost != nullptr && boost->val1 > 0)
-            snprintf(modifier, sizeof(modifier), "%.2gx total, Gum +%d%%", static_cast<double>(actual) / base, static_cast<int>(boost->val1));
+        // Both items use SC_ITEMBOOST; the status strength distinguishes the
+        // standard and HE effects, rather than assuming an inventory item was used.
+        if (boost != nullptr && boost->val1 == 100)
+            snprintf(modifier, sizeof(modifier), "%.2gx, Bubble Gum", static_cast<double>(actual) / base);
+        else if (boost != nullptr && boost->val1 == 200)
+            snprintf(modifier, sizeof(modifier), "%.2gx, HE Bubble Gum", static_cast<double>(actual) / base);
+        else if (boost != nullptr && boost->val1 > 0)
+            snprintf(modifier, sizeof(modifier), "%.2gx, Item Boost +%d%%", static_cast<double>(actual) / base, static_cast<int>(boost->val1));
         else
             snprintf(modifier, sizeof(modifier), "%.2gx total", static_cast<double>(actual) / base);
     }
