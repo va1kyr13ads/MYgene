@@ -1,3 +1,61 @@
+# MYgene Ragnarok Online
+
+**Pre-Renewal • Episode 11 content restrictions • Beta 1.0 source release**
+
+<img src="client/rustnarok/src/ui/mygene_tower_emblem.png" alt="MYgene Novice Tower emblem" width="112" />
+
+MYgene is a customized rAthena server with a companion Rustnarok client, focused on classic Ragnarok Online progression, rare equipment and a guided introduction for new players.
+
+> **Release status:** The Windows x64 server and Rustnarok release builds passed in local staging. A fresh-install runtime test is still required. This is a source release, not a ready-to-play distribution.
+
+## Features
+
+| System | Version / scope |
+| --- | --- |
+| Server | Pre-Renewal, Episode 11 restrictions |
+| Rates | 7× base and job EXP; 4× ordinary item drops; 3× boss and 2× MVP-category rates |
+| Slayer Series | V10.11.1 — six weapon families, matching cards and Perfect awakening |
+| Novice Tower | Beta 1.0 RC1.1 — private character-owned five-floor tutorial |
+| Guardian of Time | V1.3.5 — inactivity warnings and safe exit with completed checkpoints preserved |
+| Rustnarok client | Tower V61, based on v0.4.0 |
+| Achievements | Novice Tower Conqueror and hidden achievement support |
+| Quality of life | Player autoloot, item-specific autoloot, autotrade and Space Box |
+
+### Novice Tower
+
+Players choose the Vanilla Path or Tower Path. The optional Tower guides novices through five floors:
+
+1. **Awakening** — movement, stats, targeting and weapon choice.
+2. **Survival** — recovery, combat and inventory basics.
+3. **Wisdom** — six first-job mentors, skills and elemental training.
+4. **Conquest** — guardian encounter with AI companions.
+5. **Destiny** — first-job selection, graduation and optional recommended stats.
+
+### Slayer Series
+
+Yellow Fabre (knife), Red Thief Bug (sword), Blue Chon Chon (bow), Purple Willow (rod), Orange Rideword (book) and Dark Orc (axe). All twelve base and Perfect weapons are available to all jobs, subject to their equipment-level requirements.
+
+## Build and deploy
+
+- [Build and deployment guide](docs/mygene/BUILD-AND-DEPLOY.md)
+- [MYgene release overview](docs/mygene/MYgene-Beta.md)
+- [Custom database imports](db/import/)
+- [Novice Tower scripts](npc/custom/mygene/novice_tower/)
+- [Rustnarok client source](client/rustnarok/)
+- [Releases](https://github.com/va1kyr13ads/MYgene/releases)
+
+Use Visual Studio C++ / MSBuild to build the Windows server in Release x64 and Cargo to build the client. Configure an independent SQL database locally. Supply or generate a compatible Pre-Renewal map cache, including the Tower map, and obtain authorized game assets separately.
+
+Do not use production credentials or player data in a public repository. Packet obfuscation is disabled for client compatibility; review security before Internet-facing deployment. No production runtime validation is claimed for a fresh clone.
+
+## Credits and licenses
+
+MYgene is based on [rAthena](https://github.com/rathena/rathena) (GNU GPL v3; see the upstream license notices). The Rustnarok client retains its [MIT](client/rustnarok/LICENSE-MIT) and [Apache-2.0](client/rustnarok/LICENSE-APACHE) licenses. Ragnarok Online and its proprietary game assets belong to their respective rights holders; this source repository does not grant rights to distribute them.
+
+---
+
+## Upstream rAthena documentation
+
 <img src="doc/logo.png" align="right" height="90" />
 
 # rAthena
