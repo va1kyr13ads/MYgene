@@ -1,0 +1,7847 @@
+//! Clean-room native Ragnarok Online client. Assets come from the user's own data.grf at runtime.
+//!
+//! README.md says what it does so far and how to set it up.
+//!
+//! Dev switches: `RUSTNAROK_CLIENT_GRF` (data.grf path, or a client folder's DATA.INI), `RUSTNAROK_CLIENT_SERVER` (login server, over the data folder's
+//! clientinfo.xml and the default 127.0.0.1:6900),
+//! `RUSTNAROK_CLIENT_LOGIN=user:password` (fill in and submit on start), `RUSTNAROK_CLIENT_AUTOSTART=<slot>` (then pick the saved
+//! server, or the first, and play that slot; any other value stops at character select), `RUSTNAROK_CLIENT_PIN=<4 digits>` (enter that PIN when
+//! the char server asks), `RUSTNAROK_CLIENT_WALK=x,y` (walk there a second after entering the map),
+//! `RUSTNAROK_CLIENT_TALK=<name>[:<n>]` (talk to that NPC, pressing "next" or "close" up to n times), `RUSTNAROK_CLIENT_ATTACK=1` (attack the
+//! nearest monster in view), `RUSTNAROK_CLIENT_SAY=<text>[|<text>...]` (type each into the chat a second after entering, e.g.
+//! GM commands or /organize; `RUSTNAROK_CLIENT_SAY_AT` seconds in instead),
+//! `RUSTNAROK_CLIENT_PICKUP=1` (pick up the nearest item once one lies around), `RUSTNAROK_CLIENT_INVENTORY=1` (open the inventory),
+//! `RUSTNAROK_CLIENT_CURSOR=x,y` (where the pointer starts, to see hover labels in screenshots),
+//! `RUSTNAROK_CLIENT_CAMERA=yaw,pitch,zoom` (the camera turned, in degrees and zoom units, on every map),
+//! `RUSTNAROK_CLIENT_WEAR=1` (put on every piece of equipment carried, once the inventory is in), `RUSTNAROK_CLIENT_EQUIPMENT=1` (open
+//! the equipment window), `RUSTNAROK_CLIENT_SHOT_LOADING=1` (screenshot the loading screen instead of the game),
+//! `RUSTNAROK_CLIENT_ATTENDANCE=<file>` (the attendance check's event from that Lua file, not the data's CheckAttendance.lub),
+//! `RUSTNAROK_CLIENT_PACKAGES=<file>` (the package boxes from that Lua file, not the data's SelectPackageItem_Cln.lub),
+//! `RUSTNAROK_CLIENT_WINDOW=<width>x<height>` (the window's size at start in points, which is also the canvas, e.g. 1365x768 for 16:9),
+//! `RUSTNAROK_CLIENT_SKILLS=1` (open the skill window), `RUSTNAROK_CLIENT_SKILL=<id>:<level>` (use a skill 3 seconds in, on oneself
+//! if it needs a target), `RUSTNAROK_CLIENT_HOTKEYS=<slot>[,<slot>...]` (press those hotkeys, one a second from 3 seconds in),
+//! `RUSTNAROK_CLIENT_DEAL=buy|sell[:<row>:<amount>]` (answer a shop's question at once, and make that deal),
+//! `RUSTNAROK_CLIENT_MENU=<n>[,<n>...]` (pick those NPC menu items, counting from 1, as menus come up),
+//! `RUSTNAROK_CLIENT_STORE=put|take:<item>:<amount>` (once storage opens, move that much of an item in or out),
+//! `RUSTNAROK_CLIENT_TRADE=ask:<name>|accept` (ask that player for a deal, or take the first one asked),
+//! `RUSTNAROK_CLIENT_TRADE_GIVE=<item>:<amount>[,...][,z<zeny>]` (once a deal opens, put those in, lock and exchange),
+//! `RUSTNAROK_CLIENT_ROOM=window|make:<title>` (open the chat room maker with that title, or make the room),
+//! `RUSTNAROK_CLIENT_KEEP_WINDOWS=1` (under the test driver, keep the basic info and chat windows between runs as a player's are),
+//! `RUSTNAROK_CLIENT_STATUS=1` (open the status window), `RUSTNAROK_CLIENT_CART=1` (open the cart),
+//! `RUSTNAROK_CLIENT_VEND=<name>:<price>` (when the vending skill goes off, sell the whole cart at that price),
+//! `RUSTNAROK_CLIENT_FRIEND=accept` (befriend whoever asks), `RUSTNAROK_CLIENT_GUILD=accept,window` (join the first guild that invites, open the guild window),
+//! `RUSTNAROK_CLIENT_PARTY=accept,window,friends` (join the first party that invites, open the party window),
+//! `RUSTNAROK_CLIENT_WHISPER=<name>|<text>[;...]` (whisper those a second in, through the chat's name box),
+//! `RUSTNAROK_CLIENT_CONTROL=<socket>` (take commands from a test driver on that Unix socket; see control.rs),
+//! `RUSTNAROK_CLIENT_CONTROL_SHARED=1` (with it: the player plays too, and the chat has an MCP tab),
+//! `RUSTNAROK_CLIENT_PLAY=fair|assist|all` (what the control socket allows: only what a player has, also assists, or everything; see
+//! play.rs),
+//! `RUSTNAROK_CLIENT_CLICKS=[r]x,y[>x,y][;...]` (click, or drag, one a second from `RUSTNAROK_CLIENT_CLICKS_AT` seconds in, 4 by
+//! default; `r` for the right button),
+//! `RUSTNAROK_CLIENT_MAKE=<slot>[:<name>]` (open character creation on that slot; with a name, make it),
+//! `RUSTNAROK_CLIENT_DELETE=<slot>:<reserve|cancel|ask|prompt|birthdate>` (reserve, cancel, show the questions of, or complete
+//! that slot's deletion; `-` is an empty birthdate),
+//! `RUSTNAROK_CLIENT_DATA=<folder>` (where the loose `data` and `System` folders that go before data.grf are; `.` by default,
+//! `none` for the archive alone),
+//! `RUSTNAROK_CLIENT_SCREENSHOT=out.png` (save a settled frame and quit; in the game after `RUSTNAROK_CLIENT_SHOT_DELAY` seconds, 2 by default),
+//! `RUSTNAROK_CLIENT_PACKETVER=20250402` (speak a newer rathena; 20220406 by default).
+
+// The control socket's game state is one json! literal deeper than the macro's default limit.
+#![cfg_attr(windows, windows_subsystem = "windows")]
+#![recursion_limit = "512"]
+
+// Windows live in src/ui/ and map effects in src/fx/; the globs keep their paths `crate::<module>`.
+mod fx;
+mod ui;
+use fx::*;
+use ui::*;
+mod actor;
+mod addon;
+mod ambient;
+mod autohunt;
+mod battle_mode;
+mod battleground;
+mod control;
+mod draw;
+mod emotion;
+mod events;
+mod game;
+use game::Top;
+mod head_marks;
+mod input;
+mod mcp;
+mod names;
+mod navigation;
+mod overhead;
+mod picking;
+mod props;
+mod render;
+mod screenshot;
+mod shortcuts;
+mod skill_motions;
+mod sound;
+mod talk;
+mod tick;
+mod versus;
+mod world;
+
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
+
+use actor::{Actor, Digits, Look, SpriteSet, Timing};
+use basic_info::BasicInfo;
+use equipment::Equipment;
+use image::{Rgba, RgbaImage};
+use inventory::Inventory;
+use render::{Gpu, Sprite, Texture};
+use rustnarok_client::booking;
+use rustnarok_client::grf::Grf;
+use rustnarok_client::lua::{self, ItemInfo, LookTables, SkillInfo, SkillTrees};
+use rustnarok_client::messages;
+use rustnarok_client::net::{self, CharEvent, CharSession, Character, LoginAccepted, LoginError, MapEvent, MapSession, MapTicket, NAME_LENGTH};
+use rustnarok_client::text;
+use rustnarok_client::text::Font;
+use window::TitleHit;
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, PhysicalKey};
+use winit::window::{Window, WindowId};
+use world::{Billboard, Camera, DepthLayer, World, WorldFrame};
+
+/// The canvas the client lays out and renders in, in logical pixels: the window's own size, so a bigger window shows
+/// more room around the same-sized HUD instead of stretching it (the world's 3D view scales with the window's height).
+pub fn screen() -> [f32; 2] {
+    [f32::from_bits(SCREEN[0].load(Ordering::Relaxed)), f32::from_bits(SCREEN[1].load(Ordering::Relaxed))]
+}
+
+/// Window pixels per canvas pixel.
+pub fn screen_scale() -> f32 {
+    f32::from_bits(SCREEN[2].load(Ordering::Relaxed))
+}
+
+// ponytail: one global for the one window, read in over a hundred places that would otherwise all take it as an argument.
+static SCREEN: [AtomicU32; 3] = [AtomicU32::new(1024f32.to_bits()), AtomicU32::new(768f32.to_bits()), AtomicU32::new(1f32.to_bits())];
+
+/// The Extras' UI scale (`GraphicsSettings::ui_rows`: its size's rows, 0 when off), as the canvas was last fitted for;
+/// `redraw` keeps it up.
+static UI_ROWS: AtomicU32 = AtomicU32::new(0);
+
+pub fn ui_rows() -> Option<f32> {
+    Some(UI_ROWS.load(Ordering::Relaxed)).filter(|&rows| rows > 0).map(|rows| rows as f32)
+}
+
+pub fn set_ui_rows(rows: Option<f32>) {
+    UI_ROWS.store(rows.map_or(0, |rows| rows as u32), Ordering::Relaxed);
+}
+
+/// The canvas for a window of `size` pixels on a display of `scale_factor` pixels a point, and window pixels per canvas
+/// pixel: a whole number (the display's own, 2 on Retina) so UI pictures stay sharp, unless the window is smaller than
+/// the classic 1024×768; then it shrinks to fit that. With the Extras' UI scale it's the most a 4:3 screen of the
+/// size's `rows` fits at, however big the window: at the classic 768 the canvas stays 768 rows (1024 columns in a
+/// narrow window), at 960 it stays 960, and the interface grows with the window, as the world's 3D view does. It's
+/// never under the display's own scale (a window too small for the size is as without it) nor over what 1024×768 fits at.
+fn canvas([width, height]: [u32; 2], scale_factor: f64, rows: Option<f32>) -> ([f32; 2], f32) {
+    let [width, height] = [width.max(1) as f32, height.max(1) as f32];
+    let most = (width / 1024.0).min(height / 768.0);
+    let own = most.min(scale_factor.round().max(1.0) as f32);
+    let scale = rows.map_or(own, |rows| (width / (rows * 4.0 / 3.0)).min(height / rows).clamp(own, most));
+    // ponytail: the nudge keeps 1000 / (1000 / 1024) from flooring to 1023.
+    ([(width / scale + 1e-3).floor(), (height / scale + 1e-3).floor()], scale)
+}
+
+/// Where a full-screen 4:3 picture (the login background, a loading screen) goes: as high as the canvas, centered.
+fn picture_place() -> ([f32; 2], [f32; 2]) {
+    let [width, height] = screen();
+    let size = [(height * 4.0 / 3.0).round(), height];
+    ([((width - size[0]) / 2.0).floor(), 0.0], size)
+}
+
+/// Fits the canvas to a window of `size` pixels.
+pub fn fit_screen(size: [u32; 2], scale_factor: f64) {
+    let ([width, height], scale) = canvas(size, scale_factor, ui_rows());
+    for (slot, value) in SCREEN.iter().zip([width, height, scale]) {
+        slot.store(value.to_bits(), Ordering::Relaxed);
+    }
+}
+
+const UI: &str = "data\\texture\\유저인터페이스\\";
+const DEFAULT_SERVER: &str = "127.0.0.1:6900";
+const CARET_BLINK: Duration = Duration::from_millis(500);
+const TEXT_COLOR: [u8; 3] = [0, 0, 0];
+const FRAME_TIME: Duration = Duration::from_millis(16);
+/// Chat colors: others, our own, item messages, errors.
+const CHAT_WHITE: [u8; 3] = [255, 255, 255];
+const CHAT_SELF: [u8; 3] = [0x00, 0xFF, 0x00];
+const CHAT_ITEM: [u8; 3] = [0x00, 0xFF, 0xFF];
+const CHAT_ERROR: [u8; 3] = [0xFF, 0x00, 0x00];
+// ponytail: the two announcement shades are guesses; calibrate them against the real client.
+const CHAT_BROADCAST: [u8; 3] = [0xFF, 0xFF, 0x00];
+const CHAT_REFINE_ANNOUNCEMENT: [u8; 3] = [0xFF, 0xB0, 0x62];
+/// What a navigation says.
+const CHAT_NAVIGATION: [u8; 3] = [0xFF, 0xB0, 0x62];
+/// Messages that come with a skill's name, "[Name] message" (rathena's notes give 0xCDCDFF).
+const CHAT_SKILL_MESSAGE: [u8; 3] = [0xCD, 0xCD, 0xFF];
+/// ZC_SKILLMSG's lines (Gospel's effects).
+const CHAT_SKILL_MSG: [u8; 3] = [0xFF, 0x9B, 0x9B];
+
+/// ZC_SKILLMSG's message id to its msgstringtable line: Gospel's 0x15–0x19 and 0x1c–0x20, and 0x28; others print nothing.
+fn skill_message(id: u32) -> Option<usize> {
+    let id = id as usize;
+    match id {
+        0x15..=0x19 => Some(id - 0x15 + 889),
+        0x1C..=0x20 => Some(id - 0x1C + 894),
+        0x28 => Some(915),
+        _ => None,
+    }
+}
+/// The battle messages (msgstringtable): "Someone", and the four damage lines: on you, a party member attacked by someone, a
+/// receiver of damage, a party member attacking.
+const BATTLE_SOMEONE: usize = 1604;
+const BATTLE_ON_YOU: usize = 1605;
+const BATTLE_ATTACKED_BY: usize = 1606;
+const BATTLE_RECEIVES: usize = 1607;
+const BATTLE_ATTACKS: usize = 1608;
+/// Out of ammunition, too heavy, ammunition equipped (ZC_ACTION_FAILURE).
+const ACTION_FAILURES: [usize; 4] = [242, 243, 244, 245];
+/// ZC_ACK_ADDITEM_TO_CART's results 0 (too heavy) and 1 (too many kinds); others say nothing.
+const CART_ADD_FAILURES: [usize; 2] = [56, 221];
+/// Saving a memo point: saved, Warp Portal's level too low, not learned.
+const MEMO_RESULTS: [usize; 3] = [217, 214, 216];
+/// Item news for everyone: a box's or a monster's special item, an NPC's, a high refine that took or didn't. rathena's
+/// notes name the lines after the first two; these are the ones whose words fit.
+const ITEM_FROM_BOX: usize = 1628;
+const ITEM_FROM_NPC: usize = 1868;
+const REFINE_SUCCEEDED: usize = 3271;
+const REFINE_FAILED: usize = 3272;
+/// The MVP's reward lines: before and after the item's name, before and after the EXP, and the too-heavy one.
+const MVP_ITEM: [usize; 2] = [143, 144];
+const MVP_EXP: [usize; 2] = [145, 146];
+const MVP_OVERWEIGHT: usize = 147;
+/// The bank's refusals: unavailable, not enough zeny carried, the bank can't hold more, not enough in the bank.
+const BANK_DOWN: usize = 2454;
+const BANK_NO_ZENY: usize = 2456;
+const BANK_OVERFLOW: usize = 2465;
+const BANK_SHORT: usize = 2455;
+/// Pick lists' titles: a Magnifier's, a card's.
+const ITEM_APPRAISAL: usize = 521;
+const INSERT_CARD: usize = 522;
+/// A card put in, or not.
+const CARD_DONE: usize = 493;
+const CARD_FAILED: usize = 494;
+/// The refine window's lines: nothing to refine with; the results (done, broken, lowered, failed).
+/// The mail and bank windows shut when the refine window opens.
+const REFINE_CLOSED_MAIL: usize = 2991;
+const REFINE_CLOSED_BANK: usize = 3013;
+/// Results for refines done without the refine window (ZC_ACK_ITEMREFINING): success, failed, lowered.
+const UPGRADE_SUCCESS: usize = 498;
+const UPGRADE_FAILED: usize = 499;
+const REFINE_LOWERED: usize = 1537;
+
+/// The effect on the own player and the chat line (in #00FFFF) for a refine result (ZC_ACK_ITEMREFINING).
+/// When the refine window is open, no non-window effect or line is emitted.
+pub const fn non_window_refine_result(refine_open: bool, result: u16) -> (Option<u32>, Option<usize>) {
+    if refine_open {
+        return (None, None);
+    }
+    match result {
+        0 => (Some(154), Some(UPGRADE_SUCCESS)),
+        1 => (Some(155), Some(UPGRADE_FAILED)),
+        2 => (Some(155), Some(REFINE_LOWERED)),
+        _ => (None, None),
+    }
+}
+/// The making list's title, nothing to make, and the results: made, not made.
+// ponytail: the result lines (428/429 exist too) are estimates.
+const MAKING_TITLE: usize = 425;
+const NOTHING_TO_MAKE: usize = 424;
+/// Blacksmith services: the lists' titles, a repair done or not, and Upgrade Weapon's results (refined, failed,
+/// skill too low, ore missing) in rathena's colors for them.
+/// The spell lists' title.
+// ponytail: one title for both; the real client's isn't known.
+const SPELL_TITLE: usize = 697;
+const REPAIR_TITLE: usize = 812;
+const REPAIRED: usize = 813;
+const NOT_REPAIRED: usize = 814;
+const UPGRADE_TITLE: usize = 910;
+const UPGRADE_RESULTS: [(usize, [u8; 3]); 4] = [(911, [0, 255, 255]), (912, [0, 205, 205]), (913, [255, 200, 200]), (914, [255, 200, 200])];
+/// Warp Portal's and Teleport's list: Teleport's random spot, and the last row.
+const RANDOM_AREA: usize = 212;
+const WARP_HEADING: usize = 213;
+const WARP_CANCEL: usize = 218;
+/// What a map doesn't allow: teleporting, memo points, the skill, the item.
+const MAP_FORBIDS: [usize; 4] = [500, 501, 1334, 1335];
+/// How far (in cells) others' sounds carry, fading on the way.
+/// The sound of a landed hit (under data\wav\). On a player, its body by its job's line (`lineage`): metal for the
+/// Swordman, Monk and Star Gladiator lines, wood for the Archer, Thief, Gunslinger and Ninja lines, cloth for the rest.
+/// On anything else, the attacker's weapon type: unknown (a monster) one of four plain hits, bare hands one of four
+/// fists (`roll` picks).
+fn hit_sound(lineage: Option<&[u16]>, weapon: Option<u32>, roll: u32) -> String {
+    const METAL: [u16; 7] = [1, 4002, 4024, 15, 4016, 4038, 4047];
+    const WOOD: [u16; 8] = [3, 4003, 4026, 6, 4005, 4029, 24, 25];
+    let pick = roll % 4 + 1;
+    let name = match (lineage, weapon) {
+        (Some(jobs), _) if jobs.iter().any(|job| METAL.contains(job)) => "player_metal".to_owned(),
+        (Some(jobs), _) if jobs.iter().any(|job| WOOD.contains(job)) => "player_wooden_male".to_owned(),
+        (Some(_), _) => "player_clothes".to_owned(),
+        (None, None) => format!("_enemy_hit_normal{pick}"),
+        (None, Some(0)) => format!("_hit_fist{pick}"),
+        (None, Some(1..=3)) => "_hit_sword".to_owned(),
+        (None, Some(4 | 5)) => "_hit_spear".to_owned(),
+        (None, Some(6 | 7)) => "_hit_axe".to_owned(),
+        (None, Some(10 | 23)) => "_hit_rod".to_owned(),
+        (None, Some(11)) => "_hit_arrow".to_owned(),
+        (None, Some(17)) => "_hit_권총".to_owned(),
+        (None, Some(18)) => "_hit_라이플".to_owned(),
+        (None, Some(19)) => "_hit_개틀링한발".to_owned(),
+        (None, Some(20)) => "_hit_샷건".to_owned(),
+        (None, Some(21)) => "_hit_그레네이드런쳐".to_owned(),
+        (None, Some(_)) => "_hit_mace".to_owned(),
+    };
+    format!("{name}.wav")
+}
+
+/// The sounds of a unit's state changing (body state OPT1, health bits OPT2): stone setting in and breaking, a freeze
+/// breaking, stun; poison, curse, silence and blindness starting.
+// ponytail: which state change plays which sound is partly guessed from the files' names.
+fn state_sounds(before: (u16, u16), after: (u16, u16)) -> Vec<&'static str> {
+    let (stone, stone_wait, freeze, stun) = (1, 6, 2, 3);
+    let mut sounds = Vec::new();
+    match (before.0, after.0) {
+        (from, to) if from == to => {}
+        (from, to) if (to == stone || to == stone_wait) && from != stone && from != stone_wait => sounds.push("_stonecurse.wav"),
+        (from, _) if from == stone => sounds.push("_stone_explosion.wav"),
+        (from, _) if from == freeze => sounds.push("_frozen_explosion.wav"),
+        (_, to) if to == stun => sounds.push("_stun.wav"),
+        _ => {}
+    }
+    for (bit, sound) in [(0x01, "_poison.wav"), (0x02, "_curse.wav"), (0x04, "_silence.wav"), (0x10, "_blind.wav")] {
+        if after.1 & bit != 0 && before.1 & bit == 0 {
+            sounds.push(sound);
+        }
+    }
+    sounds
+}
+
+/// How loud an effect sound is `cells` away: full within 8 cells (40 world units), then 40 / distance, none from 50
+/// cells (250 units) on.
+fn heard(cells: f32) -> f32 {
+    let distance = cells * world::CELL;
+    if distance >= 250.0 { 0.0 } else { (40.0 / distance).min(1.0) }
+}
+const WHISPER_COLOR: [u8; 3] = [0xFF, 0xFF, 0x00];
+/// "No one of that name is online", then the two ways of being ignored (147 + the result).
+const WHISPER_FAILED: usize = 148;
+/// "Please wait 10 seconds before trying to log out."
+const LOGOUT_WAIT: usize = 502;
+/// /help: its heading, then the help lines.
+const HELP_TITLE: usize = 22;
+const HELP_LINES: std::ops::RangeInclusive<usize> = 33..=46;
+/// /who: how many are online (%d).
+const USER_COUNT: usize = 178;
+/// "Item Appraisal has completed successfully.", and "... has failed.".
+const APPRAISED: usize = 491;
+const APPRAISAL_FAILED: usize = 492;
+/// /ex alone: no one blocked. After a name, how blocking it went (193 + the result) or allowing it (196 + the result).
+const BLOCKED_NONE: usize = 192;
+const BLOCK_RESULTS: usize = 193;
+const ALLOW_RESULTS: usize = 196;
+/// /exall done or failed (58, 59), /inall (60, 61).
+const BLOCK_ALL_RESULTS: usize = 58;
+const ALLOW_ALL_RESULTS: usize = 60;
+/// /effect: effects on, effects off.
+const EFFECTS_ON: usize = 23;
+/// /aura: "Simplified Aura [OFF]" / "[ON]"; /aura2: "Aura effect is ON" / "OFF"; /aura while /aura2 has it off.
+const SIMPLIFIED_AURA_OFF: usize = 711;
+const SIMPLIFIED_AURA_ON: usize = 712;
+const AURA_EFFECT_ON: usize = 2994;
+const AURA_EFFECT_OFF: usize = 2995;
+const AURA_OFF_FIRST: usize = 2996;
+const EFFECTS_OFF: usize = 24;
+/// /quake: "Screen shake ON" / "Screen shake OFF".
+// ponytail: /quake's chat lines use the message table's 2805 and 2806.
+const QUAKE_ON: usize = 2805;
+const QUAKE_OFF: usize = 2806;
+/// /mineffect: lighter effects on, off.
+// ponytail: another build's /mineffect lines (687, 688), their order taken as /effect's.
+const MIN_EFFECT_ON: usize = 687;
+const MIN_EFFECT_OFF: usize = 688;
+/// Deals: "requests a deal", no one of that name, "can't overlap items", "no more than 10 kinds", how asking went
+/// (70 + the result), how it ended (75 done, 76 failed, 74 cancelled), too heavy.
+/// "Invalid Command", in yellow.
+const INVALID_COMMAND: usize = 95;
+const TRADE_ASKS: usize = 93;
+const TRADE_NO_ONE: usize = 71;
+const TRADE_DONE: usize = 75;
+const TRADE_FAILED: usize = 76;
+const TRADE_CANCELLED: usize = 74;
+const TRADE_HEAVY: usize = 73;
+/// "Request a deal with %s".
+/// "Request a deal with (%s)".
+const TRADE_CHOICE: usize = 391;
+/// "Trade : ", the deal window's caption.
+const TRADE_CAPTION: usize = 206;
+/// "Please finish the task in progress (NPC conversation, ...) and try again.", in white.
+const TASK_IN_PROGRESS: usize = 1923;
+/// "Check %s's Equipment Info"; the Show Equipment box's answers, on and off.
+const VIEW_CHOICE: usize = 1360;
+/// "Send an adoption request to %s"; the questions to the one asked: "(name)" + " wishes to adopt you. Do you
+/// accept?", then what a baby class gives up.
+const ADOPT_CHOICE: usize = 887;
+const ADOPT_ASKS: usize = 794;
+const ADOPT_ASKS_AGAIN: usize = 888;
+/// Asking to adopt, refused: a child already, under level 70, the one asked is married.
+const ADOPT_REFUSALS: [usize; 3] = [899, 900, 916];
+/// "%s and %s have divorced from each other."
+const DIVORCED: usize = 836;
+/// The Wedding Rings (a man's, a woman's) and I Miss You, which the ring gives.
+const WEDDING_RINGS: [u32; 2] = [2634, 2635];
+const CALL_PARTNER: u16 = 336;
+/// The wedding effect.
+// ponytail: the effect ZC_CONGRATULATION plays isn't knowable; 347 (EF_COLORPAPER) is the one whose sound the
+// client's table names effect\wedding.
+const WEDDING_EFFECT: u32 = 347;
+/// Pets: the egg list's title, the menu (status, feed, performance, back to the egg, accessory off, by command), the
+/// questions (feeding; the name, then renaming once), no food, and neglect.
+// ponytail: the menu's order is a guess; the strings sit together like one.
+const PET_EGGS: usize = 599;
+/// Our pet's menu: Check Pet Status, Feed Pet, Performance, Unequip Accessory, Return to Egg; all five always.
+const PET_CHOICES: [(usize, u8); 5] = [(596, net::PET_INFO), (592, net::PET_FEED), (593, net::PET_PERFORM), (595, net::PET_UNEQUIP), (594, net::PET_RETURN)];
+/// A player's menu: "Open 1:1 Chat", "Send a mail", "Block Chat (Toggle)", "Kick %s".
+const WHISPER_CHOICE: usize = 360;
+const MAIL_CHOICE: usize = 2808;
+const BLOCK_CHOICE: usize = 3820;
+const KICK_CHOICE: usize = 458;
+/// Our homunculus's menu: "View Status", "Feed", "Stand By".
+const HOMUNCULUS_CHOICES: [(usize, Choice); 3] = [(1112, Choice::HomunculusStatus), (1113, Choice::HomunculusFeed), (1114, Choice::HomunculusStandBy)];
+/// Our mercenary's menu: View Status, Stand By.
+const MERCENARY_CHOICES: [(usize, Choice); 2] = [(1112, Choice::MercenaryStatus), (1114, Choice::MercenaryStandBy)];
+/// Ourselves with a stall open: "Close stall".
+const CLOSE_STALL_CHOICE: usize = 3493;
+const PET_FEED_ASKS: usize = 601;
+const PET_RENAME_ASKS: usize = 2931;
+const PET_NO_FOOD: usize = 591;
+/// "Your pet has been fed. %s (%d) remaining", and the lines' colours.
+const PET_FED: usize = 2578;
+const PET_FED_COLOR: [u8; 3] = [0x64, 0xFF, 0xFF];
+const PET_NO_FOOD_COLOR: [u8; 3] = [0xF5, 0x1E, 0x1E];
+/// A pet's line in the chat.
+const PET_TALK_COLOR: [u8; 3] = [0xFA, 0xFA, 0xFA];
+const EQUIPMENT_SHOWN: usize = 1359;
+const EQUIPMENT_HIDDEN: usize = 1358;
+/// Vending: "%s %d sold.", "Items are sold out.", and "There are items priced 0..." (a shop refused for it).
+const VEND_SOLD: usize = 231;
+const VEND_SOLD_OUT: usize = 311;
+/// "Merchant Shop", before " - <owner>" in a player's shop's title.
+const VENDOR_TITLE: usize = 227;
+/// "%s %d sold." in light cyan.
+const VEND_SOLD_COLOR: [u8; 3] = [100, 255, 255];
+const VEND_FAILED: usize = 2720;
+/// The cart window's title ("Cart Items") and where it first opens.
+const CART_TITLE: usize = 222;
+const CART_POSITION: [f32; 2] = [300.0, 172.0];
+/// Guilds: "Send (%s) a Guild Invitation", " Guild has sent you an invitation...", made (374, then 375, 376, 405),
+/// how an invitation went (378 + the result), "Guild Member %s has connected/disconnected", guild chat's color.
+const GUILD_CHOICE: usize = 382;
+/// "Send an Guild Alliance Request", "Set this guild as an Antagonist".
+const ALLY_CHOICE: usize = 399;
+const ANTAGONIST_CHOICE: usize = 403;
+/// "(guild) Guild is asking for an Alliance with them. Do you accept?", "Are you sure that you want to delete it?"
+const ALLY_ASKS: usize = 393;
+/// "Are sure want to assign %s as guild leader? ..." with the member's name twice.
+const GUILD_LEADER_ASKS: usize = 2924;
+/// The master's menu on an ally or antagonist: "Delete".
+const RELATION_DELETE: usize = 351;
+/// A tracked quest's menu: "Quest information", "Delete".
+const QUEST_INFO_CHOICE: usize = 1622;
+const QUEST_DELETE_CHOICE: usize = 351;
+const GUILD_INVITED: usize = 377;
+const GUILD_ONLINE: usize = 485;
+const GUILD_CHAT: [u8; 3] = [180, 255, 180];
+// ponytail: clan chat's color isn't in the data files; calibrate against the official client.
+const CLAN_CHAT: [u8; 3] = [180, 220, 255];
+/// Friends: "Register as a Friend", "(%s) wishes to be friends with you...", how adding went (821 + the result, but
+/// 819 and 820 for full lists), "%s has logged in/out".
+const FRIEND_CHOICE: usize = 358;
+const FRIEND_ASKS: usize = 818;
+/// Inventory expansion vouchers: [Event], [Limited], and the coupon.
+const VOUCHERS: [u32; 3] = [25791, 25792, 25793];
+/// What a voucher adds.
+const VOUCHER_SLOTS: usize = 10;
+/// The question (the voucher, the size now, the size after), and the results: done, failed, busy, no voucher, at
+/// the most.
+// ponytail: rathena sends numbers only; the lines are matched to them by their words.
+const EXPANSION_ASKS: usize = 3561;
+const EXPANSION_RESULTS: [usize; 5] = [3566, 3562, 3563, 3564, 3565];
+const FRIEND_ONLINE: usize = 1041;
+/// Parties: "Ask (%s) to join your party", made, " Party has sent you an invitation...", "You left the party",
+/// party chat colors (ours, others'), the prompts' titles.
+const PARTY_ASK: usize = 392;
+const PARTY_INVITED: usize = 94;
+const PARTY_LEFT: usize = 84;
+const PARTY_CHAT_OURS: [u8; 3] = chat::PARTY_OURS;
+const PARTY_CHAT: [u8; 3] = chat::PARTY;
+/// "%s has acquired %s.", a member's pickup.
+const PARTY_PICKUP: usize = 1276;
+/// "Costume equipments are not visible on this map."
+const NO_COSTUME_NOTICE: usize = 1772;
+/// "In this Map,Effect of Mirace of Sun and Moon is nullified."
+const NO_MIRACLE_NOTICE: usize = 2381;
+const MAP_NOTICE: [u8; 3] = [0x64, 0xFF, 0xFF];
+/// "[Point] You have been rewarded with %d … rank points. Your point total is %d.", by ranking.
+const RANK_POINTS_BLACKSMITH: usize = 901;
+const RANK_POINTS_ALCHEMIST: usize = 902;
+const RANK_POINTS_TAEKWON: usize = 926;
+const RANK_POINTS_SLAYER: usize = 953;
+/// "[Taekwon Mission] Target Monster: %s (%d%%)"
+const MISSION_TARGET: usize = 927;
+/// rankfont's and timefont's action for the slash or colon (0 to 9 are the digits).
+const GLYPH_SEPARATOR: usize = 10;
+/// "Congratulations! %s's rank has gone up to %d." / "What a pity! %s's rank has gone down to %d."
+const RANK_UP: usize = 582;
+const RANK_DOWN: usize = 583;
+const RANK_LINE: [u8; 3] = [0xFF, 0xFF, 0x00];
+/// EF_TOPRANK, on every player ranked 1 to 10.
+const TOP_RANK_EFFECT: u32 = 159;
+/// How long the "time attack" banner shows after reaching first place.
+const FIRST_PLACE_BANNER: Duration = Duration::from_secs(3);
+
+fn digits(number: u64) -> Vec<usize> {
+    number.to_string().bytes().map(|digit| usize::from(digit - b'0')).collect()
+}
+
+/// The PvP counter's glyphs (rankfont actions) and where each is anchored: the rank right-aligned with its last digit
+/// at W − 105, H − 50, 25 px apart; the slash at W − 80, H − 40; the player count (at most 9999) from W − 55, H − 30.
+fn counter_glyphs(rank: u32, players: u32, screen: [f32; 2]) -> Vec<(usize, [f32; 2])> {
+    let [width, height] = screen;
+    let rank = digits(u64::from(rank));
+    let count = rank.len() as f32;
+    let mut glyphs: Vec<_> = rank.into_iter().enumerate().map(|(n, digit)| (digit, [width - 105.0 - (count - 1.0 - n as f32) * 25.0, height - 50.0])).collect();
+    glyphs.push((GLYPH_SEPARATOR, [width - 80.0, height - 40.0]));
+    glyphs.extend(digits(u64::from(players.min(9999))).into_iter().enumerate().map(|(n, digit)| (digit, [width - 55.0 + n as f32 * 25.0, height - 30.0])));
+    glyphs
+}
+
+/// The first-place clock's glyphs (timefont actions): mm:ss, hh:mm:ss or dd:hh:mm:ss, every part two digits.
+fn clock_glyphs(seconds: u64) -> Vec<usize> {
+    let parts = [seconds / 86_400, seconds / 3600 % 24, seconds / 60 % 60, seconds % 60];
+    // Minutes and seconds at the least.
+    let first = parts.iter().position(|&part| part > 0).unwrap_or(2).min(2);
+    let mut glyphs = Vec::new();
+    for (n, part) in parts[first..].iter().enumerate() {
+        if n > 0 {
+            glyphs.push(GLYPH_SEPARATOR);
+        }
+        glyphs.extend(digits(*part / 10).into_iter().chain(digits(*part % 10)));
+    }
+    glyphs
+}
+
+/// The chat line when our rank moves into or out of the top ten (the first rank compares with 0).
+fn rank_line(before: u32, now: u32) -> Option<usize> {
+    let top = |rank: u32| (1..=10).contains(&rank);
+    match (top(before), top(now)) {
+        (false, true) => Some(RANK_UP),
+        (true, false) => Some(RANK_DOWN),
+        (false, false) if before == 0 && now > 10 => Some(RANK_DOWN),
+        _ => None,
+    }
+}
+/// The bow's weapon type (rathena's W_BOW): its attack pace isn't capped.
+const BOW: u32 = 11;
+/// AC_SHOWER: its arrows fall round the cells it hits.
+const ARROW_SHOWER: u16 = 47;
+/// The Star Gladiator line, whose Miracle of Sun, Moon and Stars a map can turn off (rathena's `enum e_job`).
+const STAR_GLADIATORS: [u16; 10] = [4047, 4048, 4226, 4238, 4239, 4243, 4241, 4244, 4302, 4316];
+
+/// Where a hit's damage came from: an attack, a skill used by a unit (or reaching one of its splash's other targets),
+/// or a skill's unit on the ground.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum HitFrom {
+    Attack,
+    Skill,
+    Splash,
+    Unit,
+}
+
+/// What a unit coming into view shows. Only a spawn in view (ZC_NOTIFY_NEWENTRY) of a unit the client doesn't have,
+/// and not our own character: a player gets the blue rings unless a GM hides it; anything else fades in.
+#[derive(Debug, PartialEq)]
+enum Arrival {
+    Fade,
+    Rings,
+    Plain,
+}
+
+fn arrival(spawned: bool, known: bool, own: bool, kind: u8, option: u32) -> Arrival {
+    match () {
+        _ if !spawned || known || own => Arrival::Plain,
+        _ if kind == PLAYER && option & GM_HIDE != 0 => Arrival::Plain,
+        _ if kind == PLAYER => Arrival::Rings,
+        _ => Arrival::Fade,
+    }
+}
+
+/// A GM hidden from view (rathena's OPTION_INVISIBLE).
+const GM_HIDE: u32 = 0x40;
+/// The blue rings and the portal sound of a player arriving (EF_ENTRY2).
+const EF_ENTRY2: u32 = 344;
+/// Where a unit that comes back while fading out leaves its fading copy: under its ID with the top bit set (no ID the
+/// server gives has it).
+const LEFT_BEHIND: u32 = 0x8000_0000;
+
+/// A unit fading out (or a corpse) whose ID comes back: its copy moves aside to fade out where it was.
+fn leave_behind(units: &mut HashMap<u32, Actor>, id: u32) {
+    if units.get(&id).is_some_and(|actor| actor.remove_at.is_some())
+        && let Some(old) = units.remove(&id)
+    {
+        units.insert(id | LEFT_BEHIND, old);
+    }
+}
+
+/// A teleport on the same map: rathena sends no vanish for what was in view (`pc_setpos`), only what's in view again
+/// once the load is acknowledged. The units and skills' units go, and with them what plays on them, or each warp seen
+/// again would start another portal on top of its old one.
+fn forget_view(units: &mut HashMap<u32, Actor>, skill_units: &mut HashMap<u32, (u32, [u16; 2], u8)>, effects: &mut effects::Effects) {
+    for id in units.drain().map(|(id, _)| id).chain(skill_units.drain().map(|(id, _)| id)) {
+        effects.forget(id);
+    }
+}
+
+/// A stand entry's state byte, for players only: 1 dead (lying as after a death in view, falling once), 2 sitting,
+/// anything else standing (a dead or sitting player stands up).
+fn take_posture(actor: &mut Actor, posture: Option<u8>, now: Instant) {
+    let Some(posture) = posture.filter(|_| actor.kind == PLAYER) else { return };
+    match posture {
+        1 if !actor.dead => fall(actor, now),
+        1 => {}
+        _ => {
+            if actor.dead {
+                actor.revive();
+            }
+            actor.sitting = posture == 2;
+        }
+    }
+}
+
+/// Monsters whose sprites face the other way round: turned (dir + 4) on the entry that brings them.
+fn turned_round(job: u16) -> bool {
+    matches!(job, 21064..=21088 | 22551..=22668)
+}
+
+/// A unit that died falls when the killing hit lands, playing its death at the sprite's pace. A player lies there until
+/// revived (ZC_RESURRECTION) or gone; any other body then lies on its last frame as a corpse and fades out.
+fn fall(actor: &mut Actor, lands: Instant) {
+    let (.., die) = actor::combat_actions(actor.kind);
+    actor.play_at_pace(die, lands, 1.0, true);
+    if actor.kind == PLAYER {
+        actor.dead = true;
+    } else {
+        let dying_ms = actor.sprites.as_ref().and_then(|sprites| sprites.action_ms(die, actor.direction)).unwrap_or(0.0);
+        actor.fade_out(lands + Duration::from_micros((f64::from(dying_ms) * 1000.0).round() as u64), CORPSE_FADE_MS);
+    }
+}
+
+/// What a map's flags tell a player of this job on arrival: the messages to print.
+fn arrival_notices(flags: u32, job: u16) -> Vec<usize> {
+    let mut notices = Vec::new();
+    if flags & net::MAP_NO_COSTUME != 0 {
+        notices.push(NO_COSTUME_NOTICE);
+    }
+    if flags & net::MAP_SUN_MOON_STAR_MIRACLE == 0 && STAR_GLADIATORS.contains(&job) {
+        notices.push(NO_MIRACLE_NOTICE);
+    }
+    notices
+}
+const PARTY_REFUSING: usize = 1325;
+const PARTY_ALLOWING: usize = 1326;
+/// "Party leader is [%s].", the setup lines' and the new leader's colour, and the invitation lines'.
+const PARTY_NEW_LEADER: usize = 1552;
+const PARTY_SETUP_LINE: [u8; 3] = [0xFF, 0xFF, 0x00];
+const PARTY_NOTICE: [u8; 3] = [0xFF, 0xFF, 0x64];
+/// "Only the Party Leader can change this setting." in the chat.
+const PARTY_LEADER_ONLY_LINE: [u8; 3] = [0x64, 0xFF, 0xFF];
+/// "Can't re-assign party leader", for an offline member.
+const LEADER_OFFLINE: usize = 1534;
+const PARTY_LEAVE_ASKS: usize = 357;
+const PARTY_EXPEL_ASKS: usize = 363;
+/// "Item cannot be dropped from the hotkey bar."
+const HOTKEY_ITEM_STAYS: usize = 1696;
+/// Dropping on the ground with the equipment window open, the mail window open, or the ammunition worn.
+const DROP_EQUIPMENT_OPEN: usize = 189;
+const DROP_MAIL_OPEN: usize = 2736;
+const DROP_AMMO_WORN: usize = 657;
+/// Nothing is dropped on the ground this soon after asking to wear something.
+const WEAR_PAUSE: Duration = Duration::from_secs(2);
+const LEADER_QUESTION: usize = 1533;
+/// What a locked chat room asks ("Please enter Password.").
+const ROOM_PASSWORD: usize = 15;
+/// An item without a picture of its own shows the apple's.
+const FALLBACK_ITEM_SPRITE: &str = "사과";
+
+/// How high a just-dropped item is over the ground, `ticks` (24 ms each) after it appears: it starts 15 units up, hops
+/// a little, then falls and lands after about 0.42 s.
+fn item_fall_height(ticks: f32) -> f32 {
+    (15.0 + 0.6 * ticks - 0.083 * ticks * ticks).max(0.0)
+}
+
+/// An item on the ground glints yellow for 2 ticks every 92 (48 ms every 2.208 s), counted from when it appeared.
+fn item_glints(ticks: f32) -> bool {
+    (ticks as i32).rem_euclid(92) >= 90
+}
+
+/// The sprite an item lies on the ground as (identified or not), the apple when the data has none.
+fn ground_sprite(items: &HashMap<u32, ItemInfo>, item: u32, identified: bool) -> &str {
+    items.get(&item).map(|info| info.resource(identified)).filter(|resource| !resource.is_empty()).unwrap_or(FALLBACK_ITEM_SPRITE)
+}
+/// Items cast 0.4 of a character's shadow.
+const ITEM_SHADOW: f32 = 0.4;
+
+/// The size a unit is drawn at. The size table applies to monsters (1 when the job isn't listed).
+/// ChangeSize's percent multiplies that. 100 leaves it. None leaves the table factor.
+fn unit_draw_scale(sizes: &HashMap<u16, f32>, kind: u8, job: u16, change_percent: Option<i32>) -> f32 {
+    let factor = if kind == MONSTER { sizes.get(&job).copied().unwrap_or(1.0) } else { 1.0 };
+    lua::sprite_scale(factor, change_percent)
+}
+
+/// Grows a frame around the feet. 1 leaves it.
+fn scale_frame(placed: &mut [actor::Placed], scale: f32) {
+    if scale == 1.0 {
+        return;
+    }
+    for (_, position, size, _) in placed {
+        *position = position.map(|value| value * scale);
+        *size = size.map(|value| value * scale);
+    }
+}
+
+// ponytail: dialog layout eyeballed from the classic client; calibrate against a screenshot of the real one.
+/// Offsets inside the 280x120 dialog bitmaps (win_login, win_service, win_msgbox).
+const LEFT_BUTTON: [f32; 2] = [189.0, 96.0];
+pub use shop::{DEAL_BUTTONS, DEAL_MESSAGE, deal_box_position};
+const RIGHT_BUTTON: [f32; 2] = [235.0, 96.0];
+const FIELD_PADDING: f32 = 3.0;
+/// The login window (bg_login.tga) and its parts, window-local: the account drop-down, the ID and password boxes, the
+/// Save ID box and its label, Opening and Sign Up under them, the round Login button, the close X.
+const LOGIN_DROP: ([f32; 2], [f32; 2]) = ([13.0, 10.0], [160.0, 22.0]);
+const LOGIN_FIELDS: [[f32; 2]; 2] = [[15.0, 40.0], [15.0, 64.0]];
+const LOGIN_FIELD_SIZE: [f32; 2] = [153.0, 16.0];
+const LOGIN_SAVE: ([f32; 2], [f32; 2]) = ([56.0, 85.0], [12.0, 12.0]);
+const LOGIN_SAVE_LABEL: ([f32; 2], [f32; 2]) = ([73.0, 87.0], [72.0, 22.0]);
+const LOGIN_OPENING: ([f32; 2], [f32; 2]) = ([13.0, 104.0], [67.0, 21.0]);
+const LOGIN_SIGN_UP: ([f32; 2], [f32; 2]) = ([87.0, 104.0], [84.0, 21.0]);
+const LOGIN_START: [f32; 2] = [192.0, 32.0];
+const LOGIN_START_SIZE: [f32; 2] = [84.0, 84.0];
+const LOGIN_EXIT: ([f32; 2], [f32; 2]) = ([273.0, 15.0], [19.0, 19.0]);
+/// The drop-down's two accounts, the Save ID label, Opening and Sign Up, and their colours.
+const LOGIN_ACCOUNTS: [usize; 2] = [3250, 3251];
+const SAVE_ID_LABEL: usize = 3411;
+const OPENING_LABEL: usize = 3431;
+const SIGN_UP_LABEL: usize = 3414;
+const SAVE_ID_COLOR: [u8; 3] = [0x33, 0x33, 0x33];
+/// A switched-off button's label.
+const DIMMED_LABEL_COLOR: [u8; 3] = [0x99, 0x99, 0x99];
+/// An ID under 4 bytes and a password under 6 aren't sent: "%d or more" lines.
+const ID_TOO_SHORT: (usize, usize) = (3029, 4);
+const PASSWORD_TOO_SHORT: (usize, usize) = (3030, 6);
+const BUTTON_SOUND: &str = "버튼소리.wav";
+const SERVER_LIST: [f32; 2] = [10.0, 22.0];
+const SERVER_ROW: [f32; 2] = [260.0, 18.0];
+const SELECTION_COLOR: [u8; 4] = [0xC6, 0xDE, 0xF7, 0xFF];
+const MESSAGE_TEXT: [f32; 2] = [20.0, 40.0];
+
+/// The message box's text area and its input field (the birthdate prompt).
+const MESSAGE_WIDTH: f32 = 240.0;
+const MESSAGE_LINE: f32 = 16.0;
+// ponytail: the prompt's field is placed like the login fields; calibrate against the real client.
+const PROMPT_FIELD: [f32; 2] = [20.0, 70.0];
+const PROMPT_FIELD_SIZE: [f32; 2] = [240.0, 18.0];
+const PROMPT_LENGTH: usize = 6;
+/// The most letters a new name takes (NAME_LENGTH, less its terminator).
+const NAME_MOST: usize = NAME_LENGTH - 1;
+const MOVE_QUESTION: usize = 2016;
+const MOVE_FAILED: usize = 2017;
+const RENAME_QUESTION: usize = 1213;
+/// "Ready to change character name in.(%d)": the name prompt, with the renames left.
+const RENAME_PROMPT: usize = 2026;
+const QUIT_MESSAGE: usize = 17;
+/// What I Will Protect You says after the partner's name.
+const PROTECT_WORDS: usize = 759;
+/// "Do you want to return to the login screen?" (Esc at character select).
+const RETURN_TO_LOGIN_MESSAGE: usize = 3432;
+const DELETE_QUESTION: usize = 19;
+const BIRTHDATE_MESSAGE: usize = 1815;
+/// Talking to another NPC while one's window is open.
+const TALK_REFUSED: usize = 4027;
+
+/// NPC dialogs are drawn as shapes, like the client draws them.
+/// A player's action while casting or using a skill.
+const SKILL_ACTION: usize = 12;
+/// How far over the ground the magic square under a ground cast floats, so the ground doesn't cover it.
+const CAST_SQUARE_LIFT: f32 = 0.2;
+/// The ground cursor's tint (0x6600ffaa): green-blue, 40% opaque.
+const GROUND_CURSOR_TINT: [f32; 4] = [0.0, 1.0, 170.0 / 255.0, 102.0 / 255.0];
+/// Routes the player starts may use the Kafra and the airship, not scrolls.
+const NAVI_SERVICES: u8 = 101;
+/// The room owner's menu: "Give Master Authority", "Kick Character Out".
+const ROOM_HAND_OVER: usize = 128;
+const ROOM_KICK: usize = 127;
+/// Words over a head stay this long.
+const SPEECH_TIME: Duration = Duration::from_secs(5);
+/// Spirit spheres and coins: how far from the body they circle, how high, how fast (radians a second), and how
+/// much flatter the circle looks than it is.
+// ponytail: estimates; calibrate against the real client.
+const SPIRIT_RADIUS: f32 = 28.0;
+const SPIRIT_HEIGHT: f32 = 45.0;
+const SPIRIT_TURN: f32 = 1.5;
+const SPIRIT_TILT: f32 = 0.4;
+/// The sphere picture's ball is about 22px across in a 94px square.
+const SPHERE_SCALE: f32 = 0.5;
+/// Shields and souls circle at their own heights, so two kinds on one unit don't overlap; the shield picture is scaled down
+/// to about a sphere's size, and souls are spheres tinted pale violet.
+// ponytail: heights, sizes and tints are estimates; calibrate against the real client.
+const SHIELD_HEIGHT: f32 = 22.0;
+const SHIELD_SCALE: f32 = 0.22;
+const SOUL_HEIGHT: f32 = 64.0;
+const SOUL_TINT: [f32; 4] = [0.85, 0.7, 1.0, 1.0];
+const CHARM_NAMES: [&str; 4] = ["water", "earth", "fire", "wind"];
+/// Heal, Highness Heal and Coluceo Heal report how much they healed.
+/// Heals that show their amount and an effect by it: Heal, Lord Heal, the NPC heal, Coluceo Heal, Highness Heal and the
+/// homunculus's (not Epiclesis).
+const HEAL_SKILLS: [u16; 6] = [28, 334, 729, 2043, 2051, 8001];
+/// SP Recovery's amount shows blue.
+const SP_RECOVERY: u16 = 9;
+/// The look a trap takes when it goes off.
+const FIRED_TRAP: u32 = 0x8c;
+const STATUS_ICON: f32 = status_tip::ICON;
+/// Steps of the clock drawn over a status icon.
+const CLOCK_STEPS: usize = 32;
+/// A skill still blocked: "There is a Delay after using a Skill.", and the words after a cooldown's seconds left.
+const COOLDOWN_REFUSED: usize = 1460;
+/// A skill goes once less than this of its cooldown is left.
+const COOLDOWN_GRACE: Duration = Duration::from_millis(100);
+/// The Talkie Box (a Hunter's trap holding a message), and the box asking for its message.
+// ponytail: 436 "Please type a message for the Talkie Box"; 435 may be the official one.
+const TALKIE_BOX: u16 = 125;
+/// Change Cart (MC_CHANGECART): the client picks the cart itself.
+const CHANGE_CART: u16 = 154;
+/// A held item's or skill's icon is drawn this much larger than in its slot.
+const DRAG_ICON_SCALE: f32 = 1.5;
+/// The aim balloons' text.
+const AIM_TEXT: [u8; 3] = [50, 255, 50];
+/// The one skill that takes a homunculus as its target.
+const POTION_PITCHER: u16 = 231;
+const TALKIE_ASKS: usize = 436;
+/// Equipment: a break ("[%s]'s %s has been damaged.", Weapon, Armor), the item's damaged line, and binding (the
+/// question before, the line after).
+const DAMAGED: usize = 1301;
+const DAMAGED_WEAPON: usize = 1302;
+const DAMAGED_ARMOR: usize = 1303;
+const BIND_ASKS: usize = 1327;
+const BOUND: usize = 1328;
+/// Rentals: " The [%s] item will disappear in %d minutes.", the same in seconds, and " [%s] item has been deleted
+/// from the Inventory.".
+const RENTAL_MINUTES: usize = 1256;
+const RENTAL_SECONDS: usize = 1270;
+const RENTAL_ENDED: usize = 1258;
+/// EFST_BLADESTOP, EFST_CURSEDCIRCLE_ATKER and EFST_CURSEDCIRCLE_TARGET: a unit locked with another.
+const LOCK_ICONS: [u16; 3] = [85, 416, 417];
+/// "<item> have been placed on / removed from the Swap Equipment window."
+const SWITCH_ADDED: usize = 3143;
+const SWITCH_REMOVED: usize = 3144;
+/// The Convex Mirror: no boss here, the boss will show on the minimap; its status icon (EFST_CASH_BOSS_ALARM).
+const NO_BOSS: usize = 1223;
+const BOSS_SHOWN: usize = 1225;
+const BOSS_ALARM: u16 = 253;
+/// EFST_UNKNOWN_NAME: the unit's name shows as ?????? on PvP and siege maps.
+const UNKNOWN_NAME: u16 = 672;
+const HIDDEN_NAME: &str = "??????";
+/// The spark of a landed hit, and a warp portal's rings.
+const EF_HIT1: u32 = 0;
+/// A critical's second spark, and the spark of the Taekwon line's blows.
+const EF_HIT2: u32 = 1;
+const TAEKWON_HIT: u32 = 434;
+/// The Taekwon line: Taekwon, Star Gladiator (and its union), Star Emperor (and its union).
+const TAEKWON_LINE: [u16; 5] = [4046, 4047, 4048, 4239, 4240];
+
+/// The sparks a landed normal attack shows on its target: none for a miss or a lucky dodge; EF_HIT1 (434 from the
+/// Taekwon line), and EF_HIT2 too on a critical.
+fn attack_sparks(damage: i32, kind: u8, taekwon: bool) -> Vec<u32> {
+    if damage <= 0 || !matches!(kind, 0 | 4 | 8 | 9 | 10 | 13) {
+        return Vec::new();
+    }
+    let first = if taekwon { TAEKWON_HIT } else { EF_HIT1 };
+    if matches!(kind, 10 | 13) { vec![first, EF_HIT2] } else { vec![first] }
+}
+
+/// A heal's effect by its amount.
+fn heal_effect(amount: i32) -> u32 {
+    match amount {
+        4000.. => 325,
+        2000.. => 313,
+        200.. => 312,
+        _ => 7,
+    }
+}
+const EF_WARPZONE2: u32 = 321;
+/// The MVP's banner (mvp.str).
+const EF_MVP: u32 = 68;
+/// The cast aura by the skill's element: neutral, water, earth, fire, wind, poison, holy, shadow, ghost, undead.
+const CAST_AURAS: [u32; 10] = [12, 54, 56, 55, 57, 59, 58, 12, 12, 12];
+/// "Select a target", under an aimed skill's name.
+const TARGET_MESSAGE: usize = 234;
+/// Taming's result: the slot machine's success and failure actions (they play those sounds), how long the last
+/// frame stays, and the chat lines.
+// ponytail: the slot machine at the screen's middle and the lines in the chat; how and where the real client shows
+// the result isn't known.
+/// HP/SP bars under characters: border, background, HP, low HP (under a quarter), SP, hunger, a 4th job's third row;
+/// and monsters' HP bars.
+const BAR_COLORS: [[u8; 4]; 7] = [
+    [0x14, 0x19, 0x9B, 255],
+    [0x44, 0x44, 0x44, 255],
+    [0x16, 0xEA, 0x25, 255],
+    [0xEA, 0x16, 0x16, 255],
+    [0x1D, 0x65, 0xDB, 255],
+    [0xFF, 0xE4, 0xE1, 255],
+    [0xFF, 0xC0, 0x60, 255],
+];
+const MONSTER_BAR_COLORS: [[u8; 4]; 4] = [[0x10, 0x18, 0x9C, 255], [0x42, 0x41, 0x42, 255], [0xFF, 0x00, 0xE7, 255], [0xFF, 0xFF, 0x00, 255]];
+/// A multi-hit's hits come this far apart.
+const MULTI_HIT_DELAY: Duration = Duration::from_millis(200);
+/// A corpse fades out over this long (one step of alpha every 24 ms); a unit walking out of sight over this.
+const CORPSE_FADE_MS: f32 = 255.0 * 24.0;
+const OUT_OF_SIGHT_FADE_MS: f32 = 510.0;
+
+/// Unit object types (rathena's clif_bl_type).
+const PLAYER: u8 = 0;
+const MONSTER: u8 = 5;
+const NPC: u8 = 6;
+/// rathena's object type 0xC: an NPC drawn with a monster's sprite (`clif_bl_type`, PACKETVER 20170726 on). It is an NPC for
+/// everything the player does with it: talking on a click, the cursor, the name.
+const NPC_MOB_SPRITE: u8 = 0xC;
+
+/// The kind a unit is kept as: an NPC with a monster's sprite is an NPC.
+fn actor_kind(kind: u8) -> u8 {
+    if kind == NPC_MOB_SPRITE { NPC } else { kind }
+}
+const PET: u8 = 7;
+const HOMUNCULUS: u8 = 8;
+/// rathena's NPC_ELEMENTAL_TYPE.
+const ELEMENTAL: u8 = 10;
+const MERCENARY: u8 = 9;
+/// The effect launcher (104), JT_HIDDEN_NPC and JT_HIDDEN_WARP_NPC: invisible script NPCs.
+const HIDDEN_JOBS: [u16; 3] = [104, HIDDEN_NPC_JOB, 139];
+/// JT_HIDDEN_NPC: no sprite, but it can be clicked (`hidden_npc_pick`).
+const HIDDEN_NPC_JOB: u16 = 111;
+/// Names over the world: NPCs', monsters' (red well above our level, grey well under), our summons', ground items'.
+const NPC_NAME_COLOR: [u8; 3] = [0x95, 0xB8, 0xF7];
+const MONSTER_NAME_COLOR: [u8; 3] = [0xFF, 0xC3, 0xC3];
+const STRONG_NAME_COLOR: [u8; 3] = [0xFF, 0x00, 0x00];
+const WEAK_NAME_COLOR: [u8; 3] = [0x9B, 0x9B, 0x9B];
+const SUMMON_NAME_COLOR: [u8; 3] = [0xC8, 0xC8, 0xC8];
+const ITEM_NAME_COLOR: [u8; 3] = [0xFF, 0xEF, 0x95];
+
+/// The colour of a unit's name over the world, by its object type and job: NPC-like units blue, monsters pink (red at
+/// 11 or more levels above ours, grey at more than 15 below), our own summons grey, players and the rest white.
+fn name_color(kind: u8, job: u16, level: u16, ours: bool, own_level: i64) -> [u8; 3] {
+    if ours {
+        return SUMMON_NAME_COLOR;
+    }
+    if matches!(kind, 1 | NPC | 12) || matches!(job, 45..=999 | 10001..=20000) {
+        return NPC_NAME_COLOR;
+    }
+    if !matches!(job, 1001..=3998 | 20021..=31999) {
+        return CHAT_WHITE;
+    }
+    match i64::from(level) - own_level {
+        11.. => STRONG_NAME_COLOR,
+        ..-15 => WEAK_NAME_COLOR,
+        _ => MONSTER_NAME_COLOR,
+    }
+}
+
+/// The character after a warp: standing on `position`'s centre, facing the way it did on entering the map server, with the
+/// camera looking at its `feet` at once (no glide across the map).
+fn after_warp(player: &mut Actor, camera: &mut Camera, feet: world::Vector, position: [u16; 2], entered_facing: u8) {
+    player.stop_at(position.map(i32::from));
+    camera.target = feet;
+    player.sitting = false;
+    player.set_direction(entered_facing);
+}
+
+/// The effect a unit leaves where it vanished, by rathena's `clr_type`: 3 teleported (EF_TELEPORTATION2, its violet
+/// rings) unless a GM hidden from sight (OPTION_INVISIBLE), 2 logged out (EF_EXIT2, purple rings, hidden GMs too);
+/// nothing for going out of sight or dying.
+// ponytail: the 300 and 600 the game passes with these aren't used.
+fn vanish_effect(reason: u8, option: u32) -> Option<u32> {
+    match reason {
+        3 if option & actor::OPTION_INVISIBLE == 0 => Some(304),
+        2 => Some(314),
+        _ => None,
+    }
+}
+
+/// Over a monster: the attack cursor when a click would attack it (not with Shift held, unless /noshift is on).
+fn monster_cursor(shift: bool, no_shift: bool) -> cursor::Kind {
+    if shift && !no_shift { cursor::Kind::Default } else { cursor::Kind::Attack }
+}
+
+/// The turning cursor only while the right button turns the camera: not when Shift tilts it, nor with Alt.
+fn turning_cursor(dragging: bool, shift: bool, alt: bool) -> bool {
+    dragging && !shift && !alt
+}
+
+/// A warp portal's pick box around its feet, in sprite pixels: 50/640 of the screen's width and 50/480 of its height
+/// each way at the default camera, so it grows and shrinks with the zoom like a sprite.
+// ponytail: worked out for the 1024-wide screen; a wider canvas keeps the same box.
+const WARP_PICK: [f32; 2] = [59.7, 59.7];
+
+/// A warp portal's pick box on screen (`0..1`, y down: left, top, right, bottom).
+/// Where an attack's target is: a unit still there, or a skill's unit on the ground; none ends the attack.
+fn attack_goal(units: &HashMap<u32, Actor>, skill_units: &HashMap<u32, (u32, [u16; 2], u8)>, target: u32) -> Option<[i32; 2]> {
+    units
+        .get(&target)
+        .filter(|actor| actor.remove_at.is_none())
+        .map(|actor| actor.cell)
+        .or_else(|| skill_units.get(&target).map(|(_, cell, _)| cell.map(i32::from)))
+}
+
+/// Skill units on the ground a plain attack breaks (rathena's `battle_check_target` takes them): Ice Wall, Blast Mine,
+/// Claymore Trap, Reverberation, Poem of Netherworld, Wall of Thorns and the four Windhawk traps.
+fn attackable_ground_unit(kind: u32) -> bool {
+    matches!(kind, 0x8d | 0x8f | 0x98 | 0xda | 0xde | 0xe6 | 0x5174..=0x5177)
+}
+
+fn warp_pick_rect(view: &world::View, feet: world::Vector) -> Option<[f32; 4]> {
+    view.sprite_rect(feet, [-WARP_PICK[0], -WARP_PICK[1]], WARP_PICK)
+}
+
+/// An NPC with no sprite that can still be clicked, and named on hover.
+fn hidden_npc(actor: &Actor) -> bool {
+    actor.kind == NPC && actor.job == HIDDEN_NPC_JOB
+}
+
+/// A hidden NPC's pick box from its unit packet's xSize and ySize, as sprite-pixel corners from its feet: xSize to each
+/// side and ySize up, in the game's units for the warp's 50. With no size (rathena's NPCs) it is the feet's point, which
+/// the least unit box then grows, so the NPC can still be clicked there.
+fn hidden_npc_pick([x, y]: [u8; 2]) -> ([f32; 2], [f32; 2]) {
+    let unit = WARP_PICK[0] / 50.0;
+    let [x, y] = [f32::from(x) * unit, f32::from(y) * unit];
+    ([-x, -y], [x, 0.0])
+}
+
+/// /snap, /itemsnap and /skillsnap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Snaps {
+    snap: bool,
+    item: bool,
+    skill: bool,
+}
+
+impl Snaps {
+    /// As saved; a first run has only /skillsnap on.
+    fn load() -> Self {
+        let saved =
+            |name: &str, default: bool| settings_path(name).and_then(|path| std::fs::read_to_string(path).ok()).map_or(default, |text| text.trim() == "1");
+        Self { snap: saved("snap", false), item: saved("itemsnap", false), skill: saved("skillsnap", true) }
+    }
+}
+
+/// What is under the pointer, for snapping.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum SnapTo {
+    Monster,
+    Item,
+    OurHomunculus,
+    Other,
+}
+
+/// Where the cursor is drawn when it snaps: the middle of the pick box under the pointer (a monster with /skillsnap
+/// while a skill waits for a unit, with /snap otherwise; an item with /itemsnap; our homunculus while aiming Potion
+/// Pitcher). None: it stays at the pointer.
+// ponytail: Potion Pitcher's snap to our homunculus goes by /skillsnap too.
+fn snap_point(under: Option<(SnapTo, picking::Rect)>, aiming_unit: bool, pitcher: bool, snaps: Snaps) -> Option<[f32; 2]> {
+    let (kind, [left, top, right, bottom]) = under?;
+    let snaps_here = match kind {
+        SnapTo::Monster => {
+            if aiming_unit {
+                snaps.skill
+            } else {
+                snaps.snap
+            }
+        }
+        SnapTo::Item => snaps.item,
+        SnapTo::OurHomunculus => pitcher && snaps.skill,
+        SnapTo::Other => false,
+    };
+    snaps_here.then_some([(left + right) / 2.0, (top + bottom) / 2.0])
+}
+
+/// JT_WARPNPC: warp portals, drawn as an effect without a name.
+const WARP_JOB: u16 = 45;
+
+// The camera by default: 300 world units (60 cells) from the player, 45 degrees up, with world.rs's 15 degree field
+// of view. Distances are in world units (a cell is 5); the goal keeps the client's zoom units (× 2.5).
+const ZOOM: f32 = 120.0;
+/// World units per zoom unit.
+const UNITS_PER_ZOOM: f32 = 2.5;
+/// How near and far the camera goes, outdoors and indoors; a wheel step, and how often the wheel counts.
+const DISTANCE_RANGE: [f32; 2] = [230.0, 400.0];
+const DISTANCE_RANGE_INDOOR: [f32; 2] = [230.0, 300.0];
+/// With /zoom on, outdoors the camera goes out to this; its lines: on, off.
+const ZOOM_OUT_DISTANCE: f32 = 480.0;
+const ZOOM_OUT_ON: usize = 3511;
+const ZOOM_OUT_OFF: usize = 3512;
+/// With the Extras' far zoom on, the camera goes out to this indoors and out (not on maps with their own table).
+const FAR_ZOOM_DISTANCE: f32 = 800.0;
+const WHEEL_STEP: f32 = 24.3;
+const WHEEL_GAP: Duration = Duration::from_millis(15);
+/// Shift + wheel tilts this many degrees a step.
+const WHEEL_TILT: f32 = 5.0;
+const PITCH: f32 = 45.0;
+/// A double right-click with Shift tilts back to this.
+const PITCH_RESET: f32 = 50.0;
+/// Indoors the camera keeps a fixed slant you can only turn a little.
+const YAW_INDOOR: f32 = 45.0;
+const YAW_RANGE_INDOOR: [f32; 2] = [25.0, 65.0];
+const CAMERA_DOUBLE_CLICK: Duration = Duration::from_millis(500);
+/// /camera's lines: on, off.
+const CAMERA_ON: usize = 319;
+const CAMERA_OFF: usize = 320;
+
+/// How far the camera tilts: outdoors 50 to 65 degrees (25 to 65 with Ctrl), indoors fixed at 60 (35 to 55 with
+/// Ctrl).
+fn pitch_range(indoor: bool, ctrl: bool) -> [f32; 2] {
+    match (indoor, ctrl) {
+        (false, false) => [50.0, 65.0],
+        (false, true) => [25.0, 65.0],
+        (true, false) => [60.0, 60.0],
+        (true, true) => [35.0, 55.0],
+    }
+}
+/// "Disconnected from the server."
+const DISCONNECTED_MESSAGE: usize = 3;
+/// "Failed to Connect to Server."
+const CONNECT_FAILED: usize = 1;
+/// The wait box's lines: "Please wait...", and the one for making and deleting characters.
+const WAIT_MESSAGE: usize = 122;
+const MAKING_MESSAGE: usize = 123;
+/// In the wait box (at the login window's place): the text's area, and Cancel.
+const WAIT_TEXT: [f32; 2] = [10.0, 22.0];
+const WAIT_TEXT_WIDTH: f32 = 260.0;
+const WAIT_CANCEL: [f32; 2] = [119.0, 95.0];
+/// The loading screen's progress bar.
+const LOADING_BAR: [f32; 2] = [240.0, 15.0];
+
+enum NetEvent {
+    Login(Result<LoginAccepted, LoginError>),
+    Char(CharEvent),
+    Map(MapEvent),
+    /// A command from the control socket (dev).
+    Control(control::Request),
+    /// What the server's add-on asks for (see addon.rs).
+    Addon(addon::Action),
+}
+
+/// On a map: the connection, the world and everyone in view.
+struct Game {
+    /// The windows' places as last saved (see `save_places`).
+    saved_places: String,
+    session: MapSession,
+    /// Moving to another map server: the map to load once it lets us in, and whether the old connection's drop is still to come.
+    server_move: Option<String>,
+    leaving_server: bool,
+    world: World,
+    map: String,
+    me: Character,
+    account_id: u32,
+    player: Actor,
+    /// The way the character faced on entering the map server: it faces so again after every warp.
+    entered_facing: u8,
+    units: HashMap<u32, Actor>,
+    camera: Camera,
+    camera_goal: CameraGoal,
+    /// The map's overview picture, for the minimap, and the part of it showing (with what it was cut for).
+    minimap: Option<image::RgbaImage>,
+    minimap_crop: Option<((u32, u32, u32, minimap::View), Texture)>,
+    /// Ctrl+Tab walks this: opaque, see-through, hidden. Kept with the settings (`minimap_view`).
+    minimap_view: minimap::View,
+    /// The minimap's zoom (1 to 4), kept with the settings.
+    minimap_zoom: f32,
+    /// ponytail: the navigation route (#276) reads this. The route itself is not drawn here.
+    navigation_route: bool,
+    /// The big minimap of the current map.
+    minimap_window: minimap_window::Window,
+    /// Guild members' cells on this map; party members' minimap colours by their place in the party.
+    guild_places: HashMap<u32, [i32; 2]>,
+    party_colors: Vec<Texture>,
+    /// Alt+End hides the player's HP and SP bars. Monsters keep theirs.
+    show_bars: bool,
+    last_frame: Instant,
+    /// The latest frame time walks were moved at (`redraw_game`).
+    walk_clock: Instant,
+    chat: chat::Chat,
+    entered: Instant,
+    /// Dev switch: a cell to walk to shortly after entering.
+    auto_walk: Option<[u16; 2]>,
+    /// Walking by the mouse: when the last walk was sent and where, how many were sent, whether the held button
+    /// keeps walking (and when it last tried), and the last press (when, and whether the pointer moved since).
+    last_move: Option<u64>,
+    walk_goal: Option<[i32; 2]>,
+    walks: u32,
+    walk_held: bool,
+    last_walk_try: Option<u64>,
+    stored_walk: StoredWalk,
+    /// The client's skill table: names, levels to pick, ranges by level.
+    skill_info: HashMap<u16, SkillInfo>,
+    /// Big monsters: the jobs standing on a radius of r cells (`lua::location_radii`).
+    location_radii: HashMap<u16, f32>,
+    press_mark: Option<(Instant, [f32; 2], bool)>,
+    auto_say: Option<String>,
+    /// The blob under every character.
+    shadow: Option<SpriteSet>,
+    /// The emotion sprite, and the emotions showing: by unit (None = the player), the sprite action and when.
+    emotion_sprite: Option<SpriteSet>,
+    emotions: HashMap<Option<u32>, (usize, Instant)>,
+    /// The MVP sprite, and over which MVP winners it shows (None = the player) since when.
+    mvp_sprite: Option<SpriteSet>,
+    mvps: HashMap<Option<u32>, Instant>,
+    /// The status marks' sprites (stun, sleep, curse, the ice block) by name.
+    mark_sprites: HashMap<&'static str, SpriteSet>,
+    /// What circles units (None = the player): spheres or coins, shields, charms, souls; the sphere's and the shield's
+    /// pictures, the coin's sprite. The charms are world objects too (`world_fx::ninja`); the count is kept for the throws.
+    spirits: HashMap<Option<u32>, Orbs>,
+    /// The units (None = the player) leaving afterimages since their Shadow Exceed double ended, until its status goes.
+    exceed_shadows: HashSet<Option<u32>>,
+    /// The units (None = the player) under Shadow Exceed's status.
+    exceed_on: HashSet<Option<u32>>,
+    /// The last Shadow Scar count each unit was sent with.
+    shadow_scars: HashMap<u32, u16>,
+    sphere: Option<Texture>,
+    shield: Option<Texture>,
+    coin_sprite: Option<SpriteSet>,
+    digits: Option<Digits>,
+    /// The message sprite: a critical hit's burst and Lucky (`actor::BURST_ACTION`, `LUCKY_ACTION`).
+    message_sprite: Option<SpriteSet>,
+    /// The NPC conversation on screen.
+    dialog: Option<Dialog>,
+    /// The NPC say window's place, scroll and button throttle.
+    say: npc_say::SayWindow,
+    /// A special popup (ZC_SPECIALPOPUP) by id, until it is clicked or Esc closes it.
+    special_popup: Option<i32>,
+    /// Where the NPC menu is.
+    npc_menu: window::Frame,
+    /// Last frame's clickable units and items.
+    hit_boxes: Vec<picking::Target<Owner>>,
+    /// Last frame's units dying or fading out on screen, by ID: their sprite's box. They can't be clicked (#1147).
+    fading_boxes: HashMap<u32, picking::Rect>,
+    /// Skills' units on the ground in view: their unit kind and cell.
+    skill_units: HashMap<u32, (u32, [u16; 2], u8)>,
+    /// Items lying around, by ground ID.
+    ground: HashMap<u32, FloorItem>,
+    /// Ground item sprites by resource name.
+    item_sprites: HashMap<String, Option<SpriteSet>>,
+    /// The Granny models some jobs are drawn as, by job (None: it didn't load).
+    props: HashMap<u16, Option<props::Prop>>,
+    inventory: Inventory,
+    equipment: Equipment,
+    basic_info: BasicInfo,
+    hotkeys: hotkeys::Hotkeys,
+    /// An item or skill being dragged: what, where the drag began, and whether it has moved yet.
+    dragging: Option<(Dragged, [f32; 2], bool)>,
+    /// A right press let go of the drag: the left button's release does nothing.
+    drag_cancelled: bool,
+    skills: Vec<net::Skill>,
+    skill_window: skills::SkillWindow,
+    /// A Talkie Box's message waiting to be placed, and the boxes saying theirs (where each stands).
+    talkie_text: Option<String>,
+    talkie_spots: HashMap<u32, world::Vector>,
+    /// Skills blocked after use, and the line one still blocked prints when used.
+    cooldowns: skills::Cooldowns,
+    /// "Cannot use [%s] due to cooldown delay."
+    cooldown_line: String,
+    /// A skill waiting for its target: ID and level.
+    targeting: Option<(u16, u16)>,
+    /// A taming item waiting for its monster; the slot machine, and the result it plays (action, since when).
+    capturing: bool,
+    slot_sprite: Option<SpriteSet>,
+    /// The quest details' NPC picture: the sprite's name and the sprite.
+    quest_npc: Option<(String, Option<SpriteSet>)>,
+    /// The taming slot machine, open on a monster.
+    slot: Option<taming::Machine>,
+    /// Change Cart's (or Change Cart 2's) choice, each cart's sprite once loaded, and the red lines when it can't open.
+    cart_choice: Option<cart_choice::CartChoice>,
+    /// The package boxes the data knows, and the set pick a used one opened.
+    packages: std::rc::Rc<lua::Packages>,
+    package_pick: Option<package::PackagePick>,
+    cart_sprites: HashMap<u16, Option<SpriteSet>>,
+    cart_refusals: [String; 2],
+    /// Units casting (None = the player): when it began and how long it takes.
+    casts: HashMap<Option<u32>, (Instant, Duration)>,
+    /// The last web page an NPC's link opened, under the control socket (which doesn't open it).
+    opened_page: Option<String>,
+    /// The player's progress bar (a script's `progressbar`).
+    progress: ProgressBar,
+    /// The magic squares under ground skills being cast, by caster (None = the player); each goes with its cast.
+    cast_squares: HashMap<Option<u32>, cast_square::Square>,
+    /// The red cells casts will hit, as the server shows them; each goes when its cast time is up.
+    skill_areas: Vec<skill_area::Area>,
+    /// When each caster's last skill hit lands, for its splash's other targets.
+    skill_lands: HashMap<u32, Instant>,
+    /// The ground cursor (Alt+Home, on at the start): whether it's on, and the cell it shows.
+    ground_cursor: bool,
+    ground_mark: Option<[i32; 2]>,
+    /// Units that may use their next combo skill (None = the player): when the window opened and how long it lasts.
+    combos: HashMap<Option<u32>, (Instant, Duration)>,
+    /// Units locked together by Blade Stop or Cursed Circle: source and target.
+    locks: Vec<(u32, u32)>,
+    /// Words over heads (chat, skill names), by unit (None = the player): text, color, when said.
+    speech: HashMap<Option<u32>, (String, [u8; 3], Instant)>,
+    /// Status effects on the player with an icon: the client's EFST id, when it began and ends (None: no end).
+    status_icons: Vec<(u16, Instant, Option<Instant>)>,
+    /// The player's statuses with no icon in the data (Rolling Cutter's spin counter, EFST 339), kept like `status_icons`
+    /// for the hunt only (`autohunt::state`): a skill that needs one is cast only while it is on.
+    quiet_statuses: Vec<(u16, Instant, Option<Instant>)>,
+    /// The lines of the status icon tooltip showing, if one is.
+    status_tip: Option<Vec<String>>,
+    effects: effects::Effects,
+    mygene_arcane_fx: Vec<(u32, world::Vector, world::Vector, Instant)>,
+    /// An NPC shop asking whether to buy or sell, its box's frame, and the open shop.
+    deal_choice: Option<u32>,
+    /// Buy or Sell was pressed in that box: the shop that opens next came through it.
+    deal_chosen: bool,
+    deal_frame: window::Frame,
+    shop: Option<shop::Shop>,
+    /// A vendor's deal, waiting in "Confirm Deal".
+    deal_confirm: Option<shop::Confirm>,
+    /// When a shop sign was last clicked through.
+    shop_asked: Option<Instant>,
+    /// /shopping: a shop's sign opens on one click (on, not kept), else on a double click; the last click on a sign.
+    shopping: bool,
+    sign_clicked: Option<(u32, Instant)>,
+    storage: storage::Storage,
+    /// An NPC's illustration and where it goes.
+    cutin: Option<cutin::Cutin>,
+    /// Compass marks on the minimap, by mark id: the cell, its color, until when (None: until taken away) and when set.
+    marks: Vec<(u8, Mark)>,
+    /// NPCs' quest marks (ZC_QUEST_NOTIFY_EFFECT): the NPC, its cell, the effect and the mark's colour.
+    quest_marks: Vec<(u32, [i32; 2], u16, u16)>,
+    /// When each NPC's quest mark over its head started looping: made again by a new effect or colour, or the NPC
+    /// coming back into view.
+    quest_started: HashMap<u32, Instant>,
+    /// Where the store picked in the Universal Catalog stands.
+    store_mark: Option<[i32; 2]>,
+    /// The box asking how many, and what for.
+    amount: Option<window::Amount<Asked>>,
+    /// The option menu (Esc, or on dying).
+    escape: Option<escape::Menu>,
+    /// The option menu's audio settings, while open.
+    settings_window: Option<game_settings::GameSettings>,
+    /// Game Settings' Reset was answered yes: the sound and the effect switches go back to their defaults.
+    reset_settings: bool,
+    shortcuts_window: Option<shortcut_window::ShortcutWindow>,
+    world_map: Option<worldmap::WorldMap>,
+    /// The quest log and its window.
+    quests: Vec<net::Quest>,
+    quest_window: quest::QuestWindow,
+    /// The achievements: the totals, the player's by ID, and their window.
+    achievement_totals: net::AchievementTotals,
+    achievements: HashMap<u32, net::Achievement>,
+    achievement_window: achievement::AchievementWindow,
+    /// The item description window, and how many lines its text wraps to.
+    item_window: Option<iteminfo::ItemWindow>,
+    /// A card's own window, opened from a description's strip, where it opens, and its text's lines.
+    card_window: Option<iteminfo::ItemWindow>,
+    card_place: [f32; 2],
+    card_lines: usize,
+    item_lines: usize,
+    /// A quick move (Alt + right press) with the storage is waiting for the server's answer.
+    quick_moving: bool,
+    /// Where the item description window opens: where it was last (saved), else its first place.
+    item_place: [f32; 2],
+    /// Where the identify list and the card list open: where each was last (saved), else the icon lists' first place.
+    pick_places: [[f32; 2]; 2],
+    /// A card's picture, opened from its info.
+    card_view: Option<iteminfo::CardView>,
+    /// Whispers sent and not yet answered: to whom, and what.
+    whispered: VecDeque<(String, String)>,
+    /// Names whose whispers we asked to block or allow, not yet answered (the answer doesn't name them).
+    whisper_asked: VecDeque<String>,
+    /// A list of carried items to pick from, and what the pick is for.
+    pick: Option<(pick_list::PickList, Picking)>,
+    forge: Option<forge::Forge>,
+    /// Item merge's grid of stacks.
+    merge: Option<merge::Merge>,
+    /// The card whose list was asked for (the list doesn't name it).
+    card_asked: Option<u16>,
+    /// A skill an item cast that needs aiming (the player may not know it).
+    item_skill: Option<net::Skill>,
+    /// The deal under way; someone asking for one (name, character ID, level); whom we asked.
+    trade: Option<trade::Trade>,
+    refine: Option<refine::Refine>,
+    /// Double clicks on the refine window's item slot.
+    refine_clicks: window::Clicks,
+    /// The grade enchant window.
+    grade: Option<grade::GradeEnchant>,
+    /// Laphine synthesis and upgrade, open until their close packet or a map change.
+    synthesis: Option<laphine::Laphine>,
+    upgrade: Option<laphine::Laphine>,
+    /// The item reform window (a reform box or an NPC).
+    reform: Option<reform::Reform>,
+    /// The enchant window (perfect, random, upgrade, reset).
+    enchant: Option<enchant::Enchant>,
+    /// The stylist (`@stylist`). The preview is its own figure; the player's look waits for the server.
+    stylist: Option<stylist::Window>,
+    /// The attendance check's calendar, and whether the menu's button asked for it (a driven client keeps the one
+    /// the server opens at login shut).
+    attendance: Option<attendance::Window>,
+    attendance_asked: bool,
+    /// The material window (Change Material, Four Spirit Analysis).
+    materials: Option<material::Materials>,
+    /// The Lucky Roulette's window.
+    roulette: Option<roulette::Roulette>,
+    /// Sense's window, and the map's boss as the Convex Mirror shows it (name and cell).
+    monster_window: Option<monster_info::MonsterWindow>,
+    boss: Option<(String, [i32; 2])>,
+    viewing: Option<Viewed>,
+    bank: Option<bank::Bank>,
+    /// A captcha check from the server, from its picture's first chunk to its close.
+    captcha: Option<captcha::Captcha>,
+    cashshop: Option<cashshop::CashShop>,
+    cashshop_lists: Vec<Vec<(u32, u32)>>,
+    cashshop_list_requested: bool,
+    cashshop_buy_asked: bool,
+    trade_asked: Option<(String, u32, u16)>,
+    /// The party booking board, its web server (address and who we are there), the answers coming back from the
+    /// requests sent to it, and someone asking to join through our post (character, account, name, level, job).
+    booking: Option<booking_window::BookingWindow>,
+    booking_web: (String, booking::Auth),
+    booking_answers: (std::sync::mpsc::Sender<BookingAnswer>, std::sync::mpsc::Receiver<BookingAnswer>),
+    booking_asked: Option<(u32, u32, String, u16, u16)>,
+    /// Emblems coming back from the web server: guild, version, the file or why not.
+    web_emblems: (std::sync::mpsc::Sender<WebEmblem>, std::sync::mpsc::Receiver<WebEmblem>),
+    /// The NPC shop windows' sizes (goods width, goods and deal rows): kept, and given to the next shop.
+    shop_sizes: (f32, [usize; 2]),
+    /// Where an NPC shop's goods, Buying and Selling windows were left: kept, and given to the next shop.
+    shop_places: [[f32; 2]; 3],
+    /// The NPC shops' "Toggle Item Amount." box: given to the next shop (saved).
+    shop_whole: bool,
+    trade_with: String,
+    /// /notrade: deal requests are refused at once.
+    no_trade: bool,
+    /// Dev switch `RUSTNAROK_CLIENT_TRADE_GIVE`: the items still to put in, one per answer, then the zeny to lock with.
+    trade_give: VecDeque<(u16, u32)>,
+    trade_give_zeny: Option<u32>,
+    /// The status window, and its height (its background's).
+    status_window: status::StatusWindow,
+    status_height: f32,
+    /// The party, its window, and an invitation waiting for an answer (party ID and name).
+    party: Option<party::Party>,
+    party_window: party::PartyWindow,
+    /// Members dragged out of the party window: a small HP window each, until it's closed, they leave, or logout.
+    member_windows: party::MemberWindows,
+    party_invite: Option<(u32, String)>,
+    /// The partner's name, as the last I Miss You told it (while the player has the ring's skill).
+    partner: Option<String>,
+    /// Being asked to be adopted: by whom (parent, partner accounts; the name), and whether it's the second question.
+    adopt_asked: Option<(u32, u32, String, bool)>,
+    /// Setting up our shop, and our open shop.
+    vend_setup: Option<vend::Setup>,
+    /// The vending windows' size, kept for the next ones.
+    vend_size: vend::GridSize,
+    /// The chat room window's size, as its corner grip left it.
+    room_size: [f32; 2],
+    my_shop: Option<vend::MyShop>,
+    /// What our shop sold, shown where it was once it closes.
+    sell_history: Option<vend::SellHistory>,
+    /// Setting up our buying store, and our open buying store.
+    buying_setup: Option<buying::Setup>,
+    my_buying_store: Option<buying::MyStore>,
+    /// RODEX: the mailbox, a mail read and one written.
+    mail: mail::Mail,
+    /// The cart (shown like the inventory, once the server says there is one).
+    cart: inventory::Inventory,
+    /// The guild we're in, its window, and a guild inviting us (ID and name).
+    guild: Option<guild::Guild>,
+    guild_window: guild::GuildWindow,
+    guild_invite: Option<(u32, String)>,
+    /// A guild question: another guild asks for an alliance, or the master is about to end a relation.
+    guild_asked: Option<GuildAsked>,
+    /// The reason box for leaving the guild or expelling a member.
+    reason_box: Option<guild::ReasonBox>,
+    /// Without a guild: the Guild Companion, its tip and create window (the disband window too).
+    guild_companion: guild_companion::Companion,
+    /// Dev switch RUSTNAROK_CLIENT_GUILD=window ran.
+    guild_shown: bool,
+    /// The clan we're in, and its window.
+    clan: Option<clan::Clan>,
+    clan_window: clan::ClanWindow,
+    /// Guild emblems by guild ID: the version last asked for, and the image that came.
+    emblems: HashMap<u32, (u32, Option<Texture>)>,
+    /// What shows with players' names (party, guild, position) by account ID, and the unit last pointed at.
+    name_tags: HashMap<u32, net::NameTag>,
+    pointed: Option<u32>,
+    /// Units' names (CZ_REQNAME), asked for whatever the pointer is on, once per unit's appearance.
+    unit_names: names::NameQueue,
+    /// The friend list, and someone asking to be friends (account, character, name).
+    friends: Vec<net::Friend>,
+    friend_asked: Option<(u32, u32, String)>,
+    /// The server asks whether to use this voucher to grow the inventory.
+    expansion_asked: Option<u32>,
+    /// The item the player last put in or took out of the Swap Equipment set: its answer gets a line.
+    switch_asked: Option<u16>,
+    /// When something was last asked to be worn.
+    last_wear: Option<Instant>,
+    /// A bind-on-equip item (inventory index) waiting for OK to be worn; the broken items' indexes before the
+    /// inventory came again (None: there was none yet, at login).
+    bind_asked: Option<u16>,
+    broken_before: Option<Vec<u16>>,
+    /// The player's pet: its unit (once the server says it's ours), what it's like, its window, and a question about
+    /// it waiting for OK.
+    pet_id: Option<u32>,
+    pet: Option<net::Pet>,
+    pet_window: pet::PetWindow,
+    pet_asked: Option<PetAsked>,
+    /// The pet's hunger before its last hunger update, and how long it has stood still.
+    pet_hunger_before: u16,
+    pet_idle: pet::Idle,
+    /// The player's mercenary, its skills, its window and skill list, how it's steered, and whether dismissing it is
+    /// being asked.
+    mercenary: Option<net::Mercenary>,
+    /// The ranking board while it's open, characters' names by ID as the server told them (None: it has none), and
+    /// the names asked for.
+    ranking: Option<ranking::Board>,
+    /// Reputation points by reputation type, as the server last sent them, and the reputation window while it's open.
+    reputation: HashMap<u64, i64>,
+    reputation_window: Option<reputation::Window>,
+    /// The navigation under way, and the navigation window while it's open.
+    navigation: Option<navigation::Active>,
+    navi_window: Option<navi_window::Window>,
+    /// What was just picked up, for five seconds; and whether anything was since the inventory was last open.
+    pickup_popup: Option<pickup::Popup>,
+    new_items: bool,
+    /// The level up buttons in the bottom corners.
+    level_ups: level_up::LevelUps,
+    /// The server's overweight point, in percent of the weight limit.
+    overweight: u32,
+    /// A new quest's icon (until the quest window opens), and hunts' progress banners.
+    quest_icon: bool,
+    banners: quest_notice::Banners,
+    /// A skill's description, while it shows.
+    skill_description: Option<skill_descript::SkillDescription>,
+    /// The Universal Catalog's store search while it's open.
+    catalog: Option<catalog::Catalog>,
+    char_names: HashMap<u32, Option<String>>,
+    /// Characters' names by ID (CZ_REQNAME_BYGID): item makers and ranking rows.
+    char_name_queue: names::NameQueue,
+    /// The dress room's lists, the room while it's open, and its figure.
+    dress_lists: dressroom::Lists,
+    dressroom: Option<dressroom::Room>,
+    dress_figure: Option<SpriteSet>,
+    /// The equipment window's figure and the look it was made from.
+    preview_figure: Option<(Look, Option<SpriteSet>)>,
+    /// The emblems drawn over heads this frame: whose, their guild, the box (for the test driver).
+    head_emblems: Vec<(String, u32, [f32; 4])>,
+    /// The bars drawn under units this frame: whose ("player", a summon's kind, else the unit ID), the box, each row's
+    /// fill (for the test driver).
+    bars_drawn: Vec<(String, [f32; 4], Vec<Option<f32>>)>,
+    /// /noshift: a click on a player attacks without Shift (saved).
+    no_shift: bool,
+    /// /loginout: the guild notice and members' log-in lines (on unless turned off; saved). /notalkmsg2: guild chat
+    /// hidden (saved).
+    login_notices: bool,
+    no_guild_talk: bool,
+    /// /emblem: emblems next to hovered players' names (saved; on unless turned off).
+    show_emblems: bool,
+    /// The Gold PC Cafe points box, made by the server's first count; /goldpc shows or hides it (saved; on unless
+    /// turned off).
+    gold_pc: Option<goldpc::GoldPc>,
+    show_gold_pc: bool,
+    /// Units under the unknown-name status (672), whose names hide on PvP and siege maps.
+    unknown_names: HashSet<u32>,
+    /// The hovered player's name block as drawn: its lines and the emblem's box (for the test driver).
+    hover_block: Option<(Vec<String>, Option<[f32; 4]>)>,
+    /// /noctrl: a click on a monster keeps attacking without Ctrl (saved; on unless turned off).
+    no_ctrl: bool,
+    /// /skillfail: the red lines for some skill failures (saved; on unless turned off).
+    skill_fail: bool,
+    /// /snap, /itemsnap, /skillsnap (saved; only /skillsnap on unless changed).
+    snaps: Snaps,
+    /// Where the cursor is drawn: the pointer, or the middle of what it snapped to.
+    cursor_at: [f32; 2],
+    /// /camera: the camera sticks to the player (saved; off unless turned on).
+    camera_snap: bool,
+    /// The last skill sent by aiming: ID, level and target.
+    skill_sent: Option<(u16, u16, SkillTarget)>,
+    /// MYgene: monster selected by a successful attack click. Its screen marker
+    /// follows the live actor; NPCs, drops and unrelated units aren't marked.
+    marked_monster: Option<u32>,
+    /// The attack asked for with the mouse, and when the last attack packet went out; riding a mount that can't
+    /// attack.
+    attack: Option<Attack>,
+    last_attack: Option<u64>,
+    /// The attack as the last frame left it, for a 0x0139 after it ended.
+    attack_was: Option<Attack>,
+    /// The cell the last walk toward an attack asked for (`chase_walk`), when that was asked (whole ms), and the
+    /// player's drawn action and whether it was dead at the last frame (`clears_walk_cell`).
+    walk_cell: Option<[i32; 2]>,
+    last_chase_walk: Option<u64>,
+    player_motion: (usize, bool),
+    riding: bool,
+    /// ChangeChatMode (/bm): the chat line stays closed and letter keys are shortcuts.
+    chat_mode: battle_mode::Mode,
+    /// The map's property and flags (net::MAP_*), and its type, as the server last sent them.
+    map_property: Option<(u16, u32)>,
+    map_type: Option<u16>,
+    /// The battleground queue's window, the battleground queued for (and how many wait), and its question up.
+    queue_window: battle_queue::QueueWindow,
+    /// The memorial dungeon, and whether Destroy is asking yes or no.
+    memorial: memorial::Window,
+    memorial_asked: bool,
+    /// The guild storage's log window, and the log's entries heard before its last page.
+    storage_log: Option<storage_log::Log>,
+    storage_log_heard: Vec<net::GuildStorageEntry>,
+    queued: Option<(String, Option<u32>)>,
+    queue_asked: Option<QueueAsked>,
+    /// The battleground's camps, score, teammates' dots and battle chat; forgotten on a map change.
+    battle: battleground::Battle,
+    /// The minimap dot for teammates, and the marks over heads: our camp's, the other's.
+    camp_looks: Option<(Texture, [Texture; 2])>,
+    /// The player's PvP rank and the players on the map, while the server counts them.
+    pvp_rank: Option<(u32, u32)>,
+    /// The counter's digits (rankfont), the clock's (timefont) and the first-place banner (timeattack), loaded when first
+    /// shown.
+    rank_font: Option<Option<SpriteSet>>,
+    time_font: Option<Option<SpriteSet>>,
+    time_attack: Option<Option<SpriteSet>>,
+    /// Our last rank (0 before any), and since when we've held first place.
+    last_rank: u32,
+    first_since: Option<Instant>,
+    /// Players ranked 1 to 10 (by account): they carry the top-ten aura.
+    top_ten: HashSet<u32>,
+    /// Server announcements in the bar across the top.
+    announcements: announce::Bar,
+    /// The names whose whispers (and speaker announcements) the player blocks, as far as the server has said.
+    blocked: HashSet<String>,
+    /// Whether the player refuses party invitations (None until the server says).
+    refusing_party: Option<bool>,
+    /// The party setup window, and the member whose leadership is being asked about.
+    party_dialog: Option<party::PartyDialog>,
+    leader_asked: Option<u32>,
+    /// A question or notice in the message box: leaving, disbanding, expelling a member, "only the leader can invite", a
+    /// plain notice.
+    question_box: Option<BoxQuestion>,
+    /// The last press on a party member's row (when, whose): a second soon after on the same row is a double click.
+    row_press: Option<(Instant, u32)>,
+    /// The small party windows as last saved for this character.
+    small_saved: String,
+    /// 1:1 whisper windows, when an incoming whisper opens one, the friend setup, the block list and the away message.
+    talks: whisper::Talks,
+    whisper_open: whisper::OpenSettings,
+    friend_setup: Option<whisper::FriendSetup>,
+    block_list: Option<whisper::BlockList>,
+    away: whisper::Away,
+    away_prompt: Option<whisper::AwayPrompt>,
+    mercenary_skills: Vec<net::Skill>,
+    mercenary_window: mercenary::Window,
+    mercenary_skill_list: homunculus::SkillList,
+    steering: mercenary::Steering,
+    dismiss_asked: bool,
+    /// The player's homunculus: its unit (once the server says it's ours), what it's like, its skills, its windows,
+    /// how it's steered, the name being asked about, and its hunger before the last update.
+    homunculus: Option<net::Homunculus>,
+    homunculus_id: Option<u32>,
+    homunculus_skills: Vec<net::Skill>,
+    homunculus_window: homunculus::Window,
+    homunculus_skill_list: homunculus::SkillList,
+    homunculus_steering: mercenary::Steering,
+    homunculus_asked: Option<HomunculusAsked>,
+    /// The hunger the starving line was last said at.
+    homunculus_warned: Option<u16>,
+    /// The player's elemental: its unit, HP, max HP, SP and max SP.
+    elemental: Option<(u32, [u32; 4])>,
+    /// Chat rooms over their owners' heads (by owner), and where their signs were last drawn (room ID, password).
+    signs: HashMap<u32, chatroom::Sign>,
+    sign_rects: Vec<([f32; 4], u32, u8)>,
+    /// Item links as last drawn, their boxes and items: in the chat log (under the windows) and in the NPC window
+    /// (over them).
+    chat_links: Vec<([f32; 4], links::Target)>,
+    dialog_links: Vec<([f32; 4], links::Target)>,
+    /// The room we're in, and the window making one.
+    room: Option<chatroom::Room>,
+    room_make: Option<chatroom::Make>,
+    /// The emotion list (Alt+L), when open.
+    emotion_list: Option<emotion_list::List>,
+    /// The macro window (Alt+M), when open, and the ten lines Alt+1 to Alt+0 send.
+    macro_window: Option<macros::Window>,
+    macro_lines: [String; macros::COUNT],
+    /// Dev switch RUSTNAROK_CLIENT_ROOM ran.
+    room_tried: bool,
+    /// The map's weather, from the server's weather effects until the map changes.
+    weather: weather::Weather,
+    /// When Blind or Deep Blind started covering the player's view.
+    blind: effects::BlindView,
+    /// Status 1205 (Deep Blind) is on the player.
+    deep_blind: bool,
+    /// L and the dusk fade. Ground and models take its tint.
+    scene: world::SceneLight,
+    /// The sky in the world: MapSkyData's puffs and cloud fields, and the cloud and fog weather's.
+    sky: sky::Sky,
+    /// The right-click menu, and where a right press began (and on whom).
+    menu: Option<menu::Menu<Choice>>,
+    right_press: Option<([f32; 2], Option<MenuFor>)>,
+    /// The pointer moved since the right button went down: no menu on release.
+    right_moved: bool,
+    /// A monster marked for a companion (the companion, the monster): a second Alt press on it sends the attack.
+    companion_mark: Option<(u32, u32)>,
+    /// Open windows from back to front.
+    windows: Vec<Panel>,
+    /// Every window from the bottom up, as drawn: the last opened or pressed on top (`front`).
+    front: front::Front,
+    /// F11's stage and the windows it hid.
+    close_tabs: front::CloseTabs,
+    /// Windows Esc closes, newest first. Pushed on open and on a press, dropped on close.
+    esc_order: Vec<escape::WindowId>,
+    /// The save-point question (messages[1548]) is up.
+    save_asked: bool,
+    /// The skill window's Apply asks first (`skills::APPLY_QUESTION`).
+    apply_asked: bool,
+    damages: Vec<Damage>,
+    /// Kills' base and job exp, over where the monsters died.
+    exp_shown: exp_shown::ExpShown,
+    /// The player's own status values (HP, SP, ...) by rathena SP_* ID.
+    status: HashMap<u16, i64>,
+    /// Monsters' HP, when the server shares it: (hp, max hp).
+    unit_hp: HashMap<u32, (i32, i32)>,
+    /// Dev switches: an NPC name to talk to, "next" presses left, and whether to attack the nearest monster.
+    auto_talk: Option<String>,
+    auto_next: u32,
+    auto_menu: Vec<usize>,
+    auto_store: Option<String>,
+    auto_attack: bool,
+    auto_pick_up: bool,
+    auto_wear: bool,
+    /// Dev switch: hotkey slots to press and when (after entering).
+    auto_keys: Vec<(Duration, usize)>,
+    /// Dev switch: a skill and level to use 3 seconds in (aimed at oneself if it needs a target).
+    auto_skill: Option<(u16, u16)>,
+    /// The player's attack reach in cells.
+    attack_range: i32,
+    /// What to do once the walk toward it ends (and when it ended), and where its walk went and when (None: none yet).
+    pending: Option<(Pending, Option<Instant>)>,
+    pending_walk: Option<([i32; 2], Instant)>,
+    /// Items already asked to pick up: once each, until an answer or the next map.
+    pickups_asked: HashSet<u32>,
+}
+
+/// Where the camera eases toward, steered with the right mouse button and the wheel.
+struct CameraGoal {
+    /// Degrees, clockwise.
+    yaw: f32,
+    /// Degrees above the horizon.
+    pitch: f32,
+    /// Zoom units: 125 shows 62.5 cells.
+    zoom: f32,
+    indoor: bool,
+    /// The right button is down: where the pointer was last.
+    dragging: Option<[f32; 2]>,
+    /// The last right press: when, where, and whether the pointer moved off since.
+    last_press: Option<(Instant, [f32; 2], bool)>,
+    /// The pointer's vertical movement this frame with the right button down, and whether Ctrl and Shift were held:
+    /// tilt and zoom are applied once a frame (`drag_frame`).
+    dragged: (f32, bool, bool),
+    last_wheel: Option<Instant>,
+    /// The map's own camera table, which then sets the limits (and no double click resets).
+    limits: Option<rustnarok_client::map::Viewpoint>,
+    /// /zoom: outdoors the camera goes out to ZOOM_OUT_DISTANCE.
+    zoom_out: bool,
+    /// The Extras' far zoom: it goes out to FAR_ZOOM_DISTANCE.
+    far: bool,
+    /// A camera shake is running (when it stops, the look-at point, distance and pitch snap straight back).
+    shaking: bool,
+}
+
+impl CameraGoal {
+    #[cfg(test)]
+    fn new(indoor: bool) -> Self {
+        Self::arrive(indoor, None, [PITCH, ZOOM * UNITS_PER_ZOOM], false, false)
+    }
+
+    /// The goal on arriving on a map: the map's own table's start, or the tilt and distance the player left on this
+    /// kind of map (within its limits); turned 0 outdoors, YAW_INDOOR indoors.
+    fn arrive(indoor: bool, limits: Option<rustnarok_client::map::Viewpoint>, saved: [f32; 2], zoom_out: bool, far: bool) -> Self {
+        let mut goal = Self {
+            yaw: if indoor { YAW_INDOOR } else { 0.0 },
+            pitch: PITCH,
+            zoom: ZOOM,
+            indoor,
+            dragging: None,
+            last_press: None,
+            dragged: (0.0, false, false),
+            last_wheel: None,
+            limits,
+            zoom_out,
+            far,
+            shaking: false,
+        };
+        match limits {
+            Some(table) => {
+                goal.yaw = table.yaw_in.clamp(table.yaw[0], table.yaw[1]);
+                goal.pitch = table.pitch_in.clamp(table.pitch[0], table.pitch[1]);
+                goal.set_distance(table.distance_in);
+            }
+            None => {
+                // The widest tilt each kind of map allows: with Ctrl outdoors, 35 to 55 indoors.
+                let [low, high] = if indoor { [35.0, 55.0] } else { [25.0, 65.0] };
+                goal.pitch = saved[0].clamp(low, high);
+                goal.set_distance(saved[1]);
+            }
+        }
+        // RUSTNAROK_CLIENT_CAMERA holds on every map, warps included.
+        if let Some([yaw, pitch, zoom]) = std::env::var("RUSTNAROK_CLIENT_CAMERA").ok().and_then(|camera| {
+            let values: Vec<f32> = camera.split(',').filter_map(|value| value.parse().ok()).collect();
+            <[f32; 3]>::try_from(values).ok()
+        }) {
+            (goal.yaw, goal.pitch, goal.zoom) = (yaw, pitch, zoom);
+        }
+        goal
+    }
+
+    /// The camera already in place, for a fresh map.
+    fn camera(&self, target: world::Vector) -> Camera {
+        Camera { target, distance: self.zoom * UNITS_PER_ZOOM, pitch: self.pitch.to_radians(), yaw: self.yaw.to_radians(), ground: f32::MIN }
+    }
+
+    /// The distance to the player in world units.
+    fn distance(&self) -> f32 {
+        self.zoom * UNITS_PER_ZOOM
+    }
+
+    /// Moves the camera to `distance` world units, within the map's range: its own table's, or the kind of map's
+    /// (further out outdoors with /zoom, and everywhere with the far zoom).
+    fn set_distance(&mut self, distance: f32) {
+        let [near, far] = match self.limits {
+            Some(table) => table.distance,
+            None if self.far => [DISTANCE_RANGE[0], FAR_ZOOM_DISTANCE],
+            None if self.indoor => DISTANCE_RANGE_INDOOR,
+            None if self.zoom_out => [DISTANCE_RANGE[0], ZOOM_OUT_DISTANCE],
+            None => DISTANCE_RANGE,
+        };
+        self.zoom = distance.clamp(near, far) / UNITS_PER_ZOOM;
+    }
+
+    /// The far zoom switched: a camera out past the range left comes back in.
+    fn set_far(&mut self, far: bool) {
+        if std::mem::replace(&mut self.far, far) != far {
+            self.set_distance(self.distance());
+        }
+    }
+
+    /// How far the camera tilts now: the map's table, or `pitch_range`.
+    fn pitch_limits(&self, ctrl: bool) -> [f32; 2] {
+        self.limits.map_or(pitch_range(self.indoor, ctrl), |table| table.pitch)
+    }
+
+    /// Right button down. A second press within CAMERA_DOUBLE_CLICK with the pointer not moved at all resets: the
+    /// distance with Ctrl, the tilt with Shift, otherwise (outdoors only) the turn, to the nearest whole circle.
+    fn press(&mut self, cursor: [f32; 2], now: Instant, ctrl: bool, shift: bool) {
+        let double = self.last_press.is_some_and(|(at, _, moved)| !moved && now.saturating_duration_since(at) < CAMERA_DOUBLE_CLICK);
+        if self.limits.is_none() && double {
+            if ctrl {
+                self.zoom = ZOOM;
+            }
+            if shift {
+                self.pitch = PITCH_RESET;
+            }
+            if !ctrl && !shift && !self.indoor {
+                self.yaw = (self.yaw / 360.0).round() * 360.0;
+            }
+        }
+        // After a double click the next press starts a new pair.
+        self.last_press = (!double).then_some((now, cursor, false));
+        self.dragging = Some(cursor);
+    }
+
+    /// The pointer moved to `cursor`: off the last press, the next right press isn't a double click.
+    fn pointer_moved(&mut self, cursor: [f32; 2]) {
+        if let Some((_, from, moved)) = &mut self.last_press {
+            *moved |= moved_off(*from, cursor);
+        }
+    }
+
+    /// Dragging with the right button down (see `steer`).
+    fn drag(&mut self, cursor: [f32; 2], modifiers: ModifiersState) {
+        // Only while the right button is down: `replace` would start a drag on any move.
+        let Some(last) = self.dragging else { return };
+        self.dragging = Some(cursor);
+        self.steer(cursor[0] - last[0], cursor[1] - last[1], modifiers.control_key(), modifiers.shift_key(), modifiers.alt_key());
+    }
+
+    /// A drag of `dx`, `dy` pixels: turns a degree a pixel (indoors within YAW_RANGE_INDOOR), except with Shift. With
+    /// Shift it tilts and with Ctrl it zooms, once a frame (`drag_frame`). Ctrl turns too; Alt does nothing.
+    fn steer(&mut self, dx: f32, dy: f32, ctrl: bool, shift: bool, alt: bool) {
+        if alt {
+            return;
+        }
+        if shift || ctrl {
+            self.dragged = (self.dragged.0 + dy, ctrl, shift);
+        }
+        if !shift {
+            self.yaw += dx;
+            if let Some(table) = self.limits {
+                self.yaw = self.yaw.clamp(table.yaw[0], table.yaw[1]);
+            } else if self.indoor {
+                self.yaw = self.yaw.clamp(YAW_RANGE_INDOOR[0], YAW_RANGE_INDOOR[1]);
+            }
+        }
+    }
+
+    /// The frame's tilt or zoom drag: half a degree or unit a pixel of the frame's vertical movement, whole steps only
+    /// (the rest is dropped, so a very slow drag does nothing). Dragging down tilts down and comes closer.
+    fn drag_frame(&mut self) {
+        let (dy, ctrl, shift) = std::mem::replace(&mut self.dragged, (0.0, false, false));
+        let steps = (dy / 2.0).trunc();
+        if shift {
+            let [low, high] = self.pitch_limits(ctrl);
+            self.pitch = (self.pitch + steps).clamp(low, high);
+        }
+        if ctrl {
+            self.set_distance(self.distance() - steps);
+        }
+    }
+
+    /// A wheel turn (`rows` > 0: toward the user), counted at most once per WHEEL_GAP: one WHEEL_STEP however far
+    /// it turned, away from the user farther; with Shift it tilts instead (away from the user flatter).
+    fn wheel(&mut self, rows: i32, now: Instant, ctrl: bool, shift: bool) {
+        if rows == 0 || self.last_wheel.is_some_and(|last| now.saturating_duration_since(last) < WHEEL_GAP) {
+            return;
+        }
+        self.last_wheel = Some(now);
+        let toward = rows.signum() as f32;
+        if shift {
+            let [low, high] = self.pitch_limits(ctrl);
+            self.pitch = (self.pitch + toward * WHEEL_TILT).clamp(low, high);
+        } else {
+            self.set_distance(self.distance() - toward * WHEEL_STEP);
+        }
+    }
+
+    /// Moves the camera FOLLOW of the way per 60th of a second to the goal and its look-at point to the player's feet
+    /// (`snap`: at once); it turns the short way round.
+    fn ease(&self, camera: &mut Camera, elapsed: Duration, feet: world::Vector, snap: bool) {
+        let step = follow_step(elapsed);
+        camera.target = if snap { feet } else { [0, 1, 2].map(|axis| camera.target[axis] + (feet[axis] - camera.target[axis]) * step) };
+        let yaw = camera.yaw.to_degrees();
+        let turn = (self.yaw - yaw + 180.0).rem_euclid(360.0) - 180.0;
+        camera.yaw = (yaw + turn * step).to_radians();
+        camera.pitch += (self.pitch.to_radians() - camera.pitch) * step;
+        camera.distance += (self.distance() - camera.distance) * step;
+    }
+
+    /// Shakes the camera (`[sideways, distance, pitch_degrees]`), or snaps the look-at point, distance and pitch
+    /// straight back when the shake ends.
+    fn shake(&mut self, camera: &mut Camera, feet: world::Vector, quake: Option<[f32; 3]>) {
+        if let Some([side, distance, pitch]) = quake {
+            self.shaking = true;
+            camera.target[0] += camera.yaw.cos() * side;
+            camera.target[2] -= camera.yaw.sin() * side;
+            camera.distance += distance;
+            camera.pitch += pitch.to_radians();
+        } else if std::mem::replace(&mut self.shaking, false) {
+            camera.target = feet;
+            camera.distance = self.distance();
+            camera.pitch = self.pitch.to_radians();
+        }
+    }
+}
+
+/// The camera moves this share of the way each 60th of a second.
+const FOLLOW: f32 = 0.1;
+/// A view changed is written this long after it last changed.
+const VIEW_SAVE_AFTER: Duration = Duration::from_millis(500);
+
+/// How much of the way the camera moves in `elapsed`: FOLLOW per 60th of a second, the same at any frame rate.
+fn follow_step(elapsed: Duration) -> f32 {
+    1.0 - (1.0 - FOLLOW).powf(elapsed.as_secs_f32() * 60.0)
+}
+
+/// The tilt and distance the player left the camera at, outdoors and indoors: kept between maps, and (for a client
+/// the harness doesn't drive) saved.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SavedView {
+    views: [[f32; 2]; 2],
+    changed: Option<Instant>,
+}
+
+/// A first run's view: outdoors 400 units away, indoors 300, tilted 45.
+const FIRST_DISTANCE: [f32; 2] = [400.0, 300.0];
+
+impl Default for SavedView {
+    fn default() -> Self {
+        Self { views: FIRST_DISTANCE.map(|distance| [PITCH, distance]), changed: None }
+    }
+}
+
+impl SavedView {
+    /// The view a client the harness drives starts from, every run: 300 units both ways.
+    // ponytail: the scenarios' fixed pixel clicks were placed at 300; a driven client keeps it outdoors too.
+    fn harness() -> Self {
+        Self { views: [[PITCH, ZOOM * UNITS_PER_ZOOM]; 2], changed: None }
+    }
+
+    /// From the saved text: outdoor tilt and distance, then indoor; anything missing stays the default.
+    fn parse(text: &str) -> Self {
+        let mut saved = Self::default();
+        let values: Vec<f32> = text.split_whitespace().filter_map(|value| value.parse().ok()).collect();
+        if let [outdoor_pitch, outdoor_distance, indoor_pitch, indoor_distance] = values[..] {
+            saved.views = [[outdoor_pitch, outdoor_distance], [indoor_pitch, indoor_distance]];
+        }
+        saved
+    }
+
+    fn text(&self) -> String {
+        let [[a, b], [c, d]] = self.views;
+        format!("{a} {b} {c} {d}")
+    }
+
+    fn of(&self, indoor: bool) -> [f32; 2] {
+        self.views[usize::from(indoor)]
+    }
+
+    /// Follows the goal: a changed tilt or distance is kept (not on a map with its own table), and written once it
+    /// has held still VIEW_SAVE_AFTER, when `save`.
+    fn follow(&mut self, goal: &CameraGoal, now: Instant, save: bool) {
+        if goal.limits.is_none() {
+            let view = [goal.pitch, goal.distance()];
+            let slot = &mut self.views[usize::from(goal.indoor)];
+            if *slot != view {
+                *slot = view;
+                self.changed = Some(now);
+            }
+        }
+        if self.changed.is_some_and(|at| now.saturating_duration_since(at) >= VIEW_SAVE_AFTER) {
+            self.changed = None;
+            if save && let Some(path) = settings_path("camera") {
+                let _ = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, self.text()));
+            }
+        }
+    }
+}
+
+/// The sprite direction to draw for a unit facing `direction`, seen through a camera turned `yaw` radians.
+fn seen_direction(rot: f32, yaw: f32, round: bool) -> u8 {
+    actor::view_direction(rot, yaw.to_degrees(), round)
+}
+
+/// Whether a unit rounds the camera's angle (to the nearest direction) rather than flooring it, by the job it's drawn
+/// with (`Actor::drawn_job`) whatever its type: jobs up to 30 and 4001 to 5999 standing, walking or sitting; 46 to 999
+/// standing; 6018 to 6052 standing, walking or sitting. Everything else floors, the ready stance included.
+fn rounds_facing(job: u16, action: usize) -> bool {
+    let still_or_walking = matches!(action, actor::IDLE | actor::WALK | actor::SIT);
+    match job {
+        0..=30 | 4001..=5999 | 6018..=6052 => still_or_walking,
+        46..=999 => action == actor::IDLE,
+        _ => false,
+    }
+}
+
+/// Ground position of a companion at world XZ, lifted by `lift` (the falcon's 25).
+fn companion_feet(world: &World, at: [f32; 2], lift: f32) -> [f32; 3] {
+    let mut feet = world.cell_position([at[0] / world::CELL - 0.5, at[1] / world::CELL - 0.5]);
+    feet[1] += lift;
+    feet
+}
+
+/// What shows in front of its owner (spirit spheres on the near side, emotions) steps nearer than any of its images.
+const IN_FRONT: f32 = 100.0;
+
+/// The depth layer of a sprite's `index`th image: a player's all share the body's plane, each a step nearer; other
+/// sprites' each sit a layer nearer.
+fn sprite_layer(index: usize, player: bool, flat: bool) -> DepthLayer {
+    if player { DepthLayer { index: 0.0, nudge: index as f32, flat } } else { DepthLayer { index: index as f32, nudge: 0.0, flat } }
+}
+
+struct CompanionDraw {
+    owner: Owner,
+    warg: bool,
+    feet: [f32; 3],
+    placed: Vec<actor::Placed>,
+    /// Its shadow's size (a body's is 1; none for the falcon).
+    shadow: f32,
+}
+
+/// A falcon or warg to draw: its direction rounds the camera's angle, as a standing player's does.
+fn push_companion(companion: &mut actor::Companion, warg: bool, owner: Owner, gpu: &Gpu, world: &World, yaw: f32, now: Instant, out: &mut Vec<CompanionDraw>) {
+    let lift = if warg { 0.0 } else { companion.lift };
+    let placed = companion.frame(gpu, seen_direction(companion.rot, yaw, true), now);
+    if placed.is_empty() {
+        return;
+    }
+    out.push(CompanionDraw { owner, warg, feet: companion_feet(world, companion.at, lift), placed, shadow: companion.shadow });
+}
+
+/// A pet: its monster's sprite, moving by its accessory's ACT when it wears one the data has.
+fn pet_sprites(grf: &Grf, name: &str, act: Option<&String>) -> Option<SpriteSet> {
+    let worn = act.and_then(|act| SpriteSet::with_act(grf, &format!("data\\sprite\\몬스터\\{name}"), &format!("data\\sprite\\몬스터\\{act}")));
+    worn.or_else(|| SpriteSet::single(grf, name, MONSTER))
+}
+
+/// The titles of the achievements done whose rewards were taken, by ID, with their names.
+fn earned_titles(achievements: &HashMap<u32, net::Achievement>, info: &HashMap<u32, lua::AchievementInfo>, names: &HashMap<u32, String>) -> Vec<(u32, String)> {
+    let mut titles: Vec<u32> = achievements
+        .values()
+        .filter(|achievement| achievement.completed && achievement.rewarded)
+        .filter_map(|achievement| info.get(&achievement.id).map(|info| info.reward_title).filter(|&title| title != 0))
+        .collect();
+    titles.sort_unstable();
+    titles.dedup();
+    titles.into_iter().map(|title| (title, names.get(&title).cloned().unwrap_or_else(|| title.to_string()))).collect()
+}
+
+fn character_look(character: &Character) -> Look {
+    Look {
+        job: character.job,
+        sex: character.sex,
+        hair: character.hair,
+        hair_color: character.hair_color,
+        clothes_color: character.clothes_color,
+        weapon: u32::from(character.weapon),
+        shield: actor::shield_part(u32::from(character.shield)).unwrap_or(0),
+        left: u32::from(character.shield),
+        head_top: character.head_top,
+        head_mid: character.head_mid,
+        head_bottom: character.head_bottom,
+        robe: character.robe,
+        option: character.option & actor::BODY_OPTIONS,
+        body: character.body,
+    }
+}
+
+fn unit_look(unit: &net::Unit) -> Look {
+    Look {
+        job: unit.job,
+        sex: unit.sex,
+        hair: unit.hair,
+        hair_color: unit.hair_color,
+        clothes_color: unit.clothes_color,
+        weapon: unit.weapon,
+        // The shield field is the left hand.
+        shield: actor::shield_part(unit.shield).unwrap_or(0),
+        left: unit.shield,
+        head_top: unit.head_top,
+        head_mid: unit.head_mid,
+        head_bottom: unit.head_bottom,
+        robe: unit.robe,
+        option: unit.option & actor::BODY_OPTIONS,
+        body: unit.body,
+    }
+}
+
+/// Whether a unit is drawn as a player: a player, or any unit with a player's job (0–30, 4001–5999), as an `@clone`
+/// or a script NPC with a player class is. It stays what it is for clicks, names, the cursor and the HP bar.
+fn drawn_as_player(kind: u8, job: u16) -> bool {
+    kind == PLAYER || matches!(job, 0..=30 | 4001..=5999)
+}
+
+/// The look an entry brings for a unit already there, when it changes it: every move entry's, and a stand or new
+/// entry's only for a player (another unit keeps its job on those).
+fn refreshed_look(actor: &Actor, unit: &net::Unit, move_entry: bool) -> Option<Look> {
+    let look = unit_look(unit);
+    (drawn_as_player(unit.kind, unit.job) && (move_entry || unit.kind == PLAYER) && actor.look.as_ref() != Some(&look)).then_some(look)
+}
+
+/// A unit not drawn as a player taking another job (ZC_SPRITE_CHANGE type 0, ZC_NPCSPRITE_CHANGE, a move entry):
+/// whether its sprites need loading again.
+fn take_job(actor: &mut Actor, job: u16) -> bool {
+    let changed = actor.job != job;
+    actor.job = job;
+    changed
+}
+
+/// A unit taking another job at once (ZC_SPRITE_CHANGE type 0, ZC_NPCSPRITE_CHANGE): drawn as a player with it, or
+/// with the job's own sprite.
+fn change_job(actor: &mut Actor, job: u16, grf: &Grf, job_names: &HashMap<u16, String>, look_tables: &LookTables) {
+    if drawn_as_player(actor.kind, job) {
+        let look = Look { job, ..actor.look.clone().unwrap_or_default() };
+        if actor.look.as_ref() != Some(&look) {
+            actor.sprites = SpriteSet::player(grf, &look, look_tables);
+            actor.look = Some(look);
+        }
+        actor.job = job;
+    } else if take_job(actor, job) {
+        actor.look = None;
+        actor.sprites = job_sprites(grf, job_names, actor.kind, job);
+    }
+}
+
+/// A unit's sprites for a job it isn't drawn as a player with: none for hidden jobs and warps.
+fn job_sprites(grf: &Grf, job_names: &HashMap<u16, String>, kind: u8, job: u16) -> Option<SpriteSet> {
+    if HIDDEN_JOBS.contains(&job) || job == WARP_JOB {
+        return None;
+    }
+    // MYgene custom Yellow Fabre (31050): animated with the real Fabre (1007)
+    // sprite supplied by the user's GRF, then recolored in memory to yellow.
+    // No new proprietary game assets are distributed.
+    // MYgene Yellow Fabre: prefer its dedicated sprite files.
+    if kind == MONSTER && job == 31050 {
+        if let Some(sprites) =
+            SpriteSet::single(grf, "mygene_yellow_fabre", kind)
+        {
+            return Some(sprites);
+        }
+
+        // Fallback to the original Fabre sprite with recoloring.
+        let mut sprites = job_names
+            .get(&1007)
+            .and_then(|name| SpriteSet::single(grf, name, kind))
+            .or_else(|| SpriteSet::single(grf, "fabre", kind))?;
+
+        sprites.make_yellow_fabre();
+        return Some(sprites);
+    }
+
+    // MYgene Red Thief Bug (31051): use the full animated native Thief
+    // Bug sprite (1051), recolored crimson at decode time. This preserves
+    // walking, attack, hit and death actions from the player's own GRF.
+    if kind == MONSTER && job == 31051 {
+        if let Some(sprites) = SpriteSet::single(grf, "mygene_red_thief_bug", kind) {
+            return Some(sprites);
+        }
+        let mut sprites = job_names
+            .get(&1051)
+            .and_then(|name| SpriteSet::single(grf, name, kind))
+            .or_else(|| SpriteSet::single(grf, "thief_bug", kind))?;
+        sprites.make_red_thief_bug();
+        return Some(sprites);
+    }
+
+    // MYGENE_APPROVED_BLUE_CHON
+    if kind == MONSTER && job == 31052 {
+        let mut sprites = job_names
+            .get(&1011)
+            .and_then(|name| SpriteSet::single(grf, name, kind))
+            .or_else(|| SpriteSet::single(grf, "chonchon", kind))?;
+
+        sprites.make_blue_chonchon();
+        return Some(sprites);
+    }
+
+    // MYGENE_SLAYER456: use the native animated sprite, recolored per encounter.
+    if kind == MONSTER {
+        let base = match job {
+            31053 => Some((1010, "wilow")),
+            31054 => Some((1195, "rideword")),
+            31055 => Some((1023, "ork_warrior")),
+            _ => None,
+        };
+        if let Some((id, fallback)) = base {
+            let mut sprites = job_names.get(&id)
+                .and_then(|name| SpriteSet::single(grf, name, kind))
+                .or_else(|| SpriteSet::single(grf, fallback, kind))?;
+            sprites.make_slayer456(job, "");
+            return Some(sprites);
+        }
+    }
+
+    // All other monsters retain their original mappings.
+    job_names
+        .get(&job)
+        .and_then(|name| SpriteSet::single(grf, name, kind))
+}
+
+/// Applies a ZC_SPRITE_CHANGE to a look; returns whether it changed anything drawn.
+fn change_look(look: &mut Look, kind: u8, value: u32, extra: u32) -> bool {
+    let before = look.clone();
+    let short = value as u16;
+    match kind {
+        net::LOOK_JOB => look.job = short,
+        net::LOOK_HAIR => look.hair = short,
+        // The second value is the left hand on the Assassin line only; a left-hand weapon keeps the shield as it was.
+        net::LOOK_WEAPON => {
+            look.weapon = value;
+            look.left = if actor::dual_wielder(actor::sprite_job(look.job, look.option)) { extra } else { 0 };
+            look.shield = actor::shield_part(extra).unwrap_or(look.shield);
+        }
+        net::LOOK_HEAD_BOTTOM => look.head_bottom = short,
+        net::LOOK_HEAD_TOP => look.head_top = short,
+        net::LOOK_HEAD_MID => look.head_mid = short,
+        net::LOOK_HAIR_COLOR => look.hair_color = short,
+        net::LOOK_CLOTHES_COLOR => look.clothes_color = short,
+        net::LOOK_SHIELD => (look.shield, look.left) = (actor::shield_part(value).unwrap_or(0), value),
+        net::LOOK_ROBE => look.robe = short,
+        net::LOOK_BODY => look.body = short,
+        _ => {}
+    }
+    *look != before
+}
+
+/// A map name as the indoor table lists it.
+/// An NPC's mark on the minimap: (NPC, mark ID), cell, image, until when (None while the NPC keeps it), and when it was set.
+type Mark = ([i32; 2], Texture, Option<Instant>, Instant);
+
+/// A scripted input (RUSTNAROK_CLIENT_CLICKS): when, right button, where, and where to drag to.
+type ScriptedInput = (Duration, bool, [f32; 2], Option<[f32; 2]>);
+
+fn map_key(map: &str) -> String {
+    map.trim_end_matches(".gat").trim_end_matches(".rsw").to_lowercase()
+}
+
+/// The storage list a list window shows: a category window's tab, or the Search window's.
+fn storage_list(panel: Panel) -> Option<storage::List> {
+    match panel {
+        Panel::StorageCategory(tab) => Some(storage::List::Tab(tab)),
+        Panel::StorageSearch => Some(storage::List::Search),
+        _ => None,
+    }
+}
+
+/// A panel Esc closes. The hotbar and the basic info window stay up.
+/// The Esc window a press reached: any press is the right-click menu's while it's up.
+fn esc_reached(top: Option<Top>, menu: bool) -> Option<escape::WindowId> {
+    match top {
+        _ if menu => Some(escape::WindowId::Menu),
+        Some(Top::Esc(id)) => Some(id),
+        Some(Top::GameMenu) => Some(escape::WindowId::GameMenu),
+        Some(Top::QuestIcon) => Some(escape::WindowId::QuestNotice),
+        Some(Top::ChatSettings) => Some(escape::WindowId::ChatSettings),
+        Some(Top::PartyBooking) => Some(escape::WindowId::PartyBooking),
+        Some(Top::Panel(panel)) => esc_panel(panel),
+        _ => None,
+    }
+}
+
+/// Whether a click with `top` on top may open a link under it: the NPC window's, or the chat log's. The log takes no
+/// click of its own (it lets the world have it), so nothing is on top over it; any other window over the log covers it.
+fn takes_link(top: Option<Top>) -> bool {
+    matches!(top, None | Some(Top::NpcDialog | Top::Chat))
+}
+
+fn esc_panel(id: Panel) -> Option<escape::WindowId> {
+    use escape::WindowId::*;
+    Some(match id {
+        Panel::Hotkeys | Panel::BasicInfo => return None,
+        Panel::Inventory => Inventory,
+        Panel::Equipment => Equipment,
+        Panel::Skills => Skills,
+        // Esc never closes the storage.
+        Panel::Storage => return None,
+        Panel::StorageCategory(tab) => StorageCategory(tab),
+        Panel::StorageSearch => StorageSearch,
+        Panel::Party => Party,
+        Panel::Status => Status,
+        Panel::Guild => Guild,
+        Panel::Clan => Clan,
+        Panel::Cart => Cart,
+        Panel::Pet => Pet,
+        Panel::Mercenary => Mercenary,
+        Panel::MercenarySkills => MercenarySkills,
+        Panel::Homunculus => Homunculus,
+        Panel::HomunculusSkills => HomunculusSkills,
+        Panel::Cutin => return None,
+    })
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Panel {
+    Hotkeys,
+    BasicInfo,
+    Inventory,
+    Equipment,
+    Skills,
+    Storage,
+    /// A storage tab's category window, and the storage's Search window (`storage::Category`).
+    StorageCategory(usize),
+    StorageSearch,
+    Party,
+    Status,
+    Guild,
+    Clan,
+    Cart,
+    Pet,
+    Mercenary,
+    MercenarySkills,
+    Homunculus,
+    HomunculusSkills,
+    /// An NPC's picture.
+    Cutin,
+}
+
+/// What the box asking how many is for.
+#[derive(Clone, Copy)]
+enum Asked {
+    /// A row of the shop, into the deal.
+    Shop(usize),
+    /// A row of the shop's deal, out of it.
+    ShopOut(usize),
+    /// An inventory item, into storage.
+    Store(u16),
+    /// An inventory item, onto the ground.
+    Drop(u16),
+    /// A stored item, out.
+    Take(u16),
+    /// An inventory item, into the deal.
+    Trade(u16),
+    /// A cart item, onto the vending setup.
+    Vend(u16),
+    /// The price, then the quantity, of an inventory item for a buying store: `(index, item_id)`.
+    BuyingPrice(u16, u32),
+    BuyingAmount(u16),
+    /// An inventory item into the cart, and a cart item out.
+    ToCart(u16),
+    FromCart(u16),
+    /// A stored item into the cart, and a cart item into storage.
+    StoreToCart(u16),
+    CartToStore(u16),
+    /// The password of a chat room, by ID.
+    RoomPassword(u32),
+    /// An inventory item, into the mail being written.
+    Mail(u16),
+    /// An inventory item, into the material window.
+    Material(u16),
+    /// A Talkie Box's message, before it's placed at the cell.
+    TalkieBox {
+        level: u16,
+        cell: [i32; 2],
+    },
+}
+
+impl Asked {
+    /// A count of items to move, not a name or a price.
+    fn moves_items(&self) -> bool {
+        matches!(
+            self,
+            Asked::Shop(_)
+                | Asked::ShopOut(_)
+                | Asked::Store(_)
+                | Asked::Drop(_)
+                | Asked::Take(_)
+                | Asked::Trade(_)
+                | Asked::ToCart(_)
+                | Asked::FromCart(_)
+                | Asked::StoreToCart(_)
+                | Asked::CartToStore(_)
+                | Asked::Mail(_)
+                | Asked::Material(_)
+                | Asked::Vend(_)
+        )
+    }
+}
+
+/// What the right-click menu offers.
+#[derive(Clone, Copy, PartialEq)]
+enum Choice {
+    /// Ask this player (by account ID) for a deal.
+    Trade(u32),
+    /// Invite them into the party.
+    Invite(u32),
+    /// Ask them to be friends.
+    Befriend(u32),
+    /// Invite them into the guild.
+    GuildInvite(u32),
+    /// Ask their guild for an alliance, or set it as an antagonist.
+    Ally(u32),
+    Antagonist(u32),
+    /// See what they wear.
+    ViewEquipment(u32),
+    /// A command to the player's pet (net::PET_INFO and on).
+    Pet(u8),
+    /// A party member's menu entry, for this member (by account).
+    Member(party::MemberChoice, u32),
+    /// The room's owner hands the room to this member, or kicks them out (by their row in the member list).
+    RoomOwner(usize),
+    RoomKick(usize),
+    /// The room's owner changes the room: its title, size, password.
+    RoomSetup,
+    /// A tracked quest: its details in the quest window, or put it aside.
+    QuestInfo(u32),
+    QuestAside(u32),
+    /// Ask this party member (by account) to be adopted.
+    Adopt(u32),
+    /// The member menu on the guild's members page: an entry, for a member (by place in the member list).
+    GuildMember(guild::MemberChoice, usize),
+    /// A guild skill's description.
+    GuildSkillInfo(u16),
+    /// The master ends the relation with this guild (antagonist or not), without asking.
+    EndRelation(u32, bool),
+    /// Whisper this player: their name in the chat's name box.
+    Whisper(u32),
+    /// Take off the cart or the mount (CZ_UNINSTALLATION's kind).
+    Uninstall(u8),
+    /// Write them a mail.
+    Mail(u32),
+    /// Block their whispers.
+    Block(u32),
+    /// Our homunculus: its window, feeding it, or it staying put rather than following.
+    HomunculusStatus,
+    HomunculusFeed,
+    HomunculusStandBy,
+    /// Our mercenary: its window, or it staying put.
+    MercenaryStatus,
+    MercenaryStandBy,
+    /// Close our stall.
+    CloseStall,
+}
+
+/// Whom a still right-click opens the menu for.
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum MenuFor {
+    Player(u32),
+    Pet(u32),
+    Homunculus(u32),
+    Mercenary(u32),
+    /// Ourselves, while our stall is open.
+    Stall,
+}
+
+/// The menu a still right-click opens for what's under the pointer (`picked`, by the usual ranks with Shift's aside):
+/// another player, our pet, homunculus or mercenary, or ourselves while our stall is open; nothing for anything else.
+fn menu_for(
+    picked: Option<Owner>,
+    is_player: impl Fn(u32) -> bool,
+    pet: Option<u32>,
+    homunculus: Option<u32>,
+    mercenary: Option<u32>,
+    stall: bool,
+) -> Option<MenuFor> {
+    match picked? {
+        Owner::Unit(id) if pet == Some(id) => Some(MenuFor::Pet(id)),
+        Owner::Unit(id) if homunculus == Some(id) => Some(MenuFor::Homunculus(id)),
+        Owner::Unit(id) if mercenary == Some(id) => Some(MenuFor::Mercenary(id)),
+        Owner::Unit(id) if is_player(id) => Some(MenuFor::Player(id)),
+        Owner::Player if stall => Some(MenuFor::Stall),
+        _ => None,
+    }
+}
+
+/// What we can do with another player, from where we stand.
+#[derive(Default, Clone, Copy)]
+struct PlayerTies {
+    trading: bool,
+    /// We lead a party they aren't in.
+    party_invite: bool,
+    /// We're a guild master: they aren't in our guild; they're in another guild.
+    guild_invite: bool,
+    guild_relation: bool,
+    friend: bool,
+    adoptable: bool,
+    /// Their row in the chat room we own.
+    in_our_room: Option<usize>,
+}
+
+/// A player's menu entries in the game's order, each when it applies: the message and the choice.
+// ponytail: no separator lines; good/bad points, the chat-block record and removing all equipment are left out.
+fn player_choices(id: u32, ties: PlayerTies) -> Vec<(usize, Choice)> {
+    let mut choices = Vec::new();
+    if !ties.trading {
+        choices.push((TRADE_CHOICE, Choice::Trade(id)));
+    }
+    if ties.party_invite {
+        choices.push((PARTY_ASK, Choice::Invite(id)));
+    }
+    if ties.guild_invite {
+        choices.push((GUILD_CHOICE, Choice::GuildInvite(id)));
+    }
+    if ties.guild_relation {
+        choices.extend([(ALLY_CHOICE, Choice::Ally(id)), (ANTAGONIST_CHOICE, Choice::Antagonist(id))]);
+    }
+    choices.push((WHISPER_CHOICE, Choice::Whisper(id)));
+    if !ties.friend {
+        choices.push((FRIEND_CHOICE, Choice::Befriend(id)));
+    }
+    choices.extend([(MAIL_CHOICE, Choice::Mail(id)), (VIEW_CHOICE, Choice::ViewEquipment(id))]);
+    if ties.adoptable {
+        choices.push((ADOPT_CHOICE, Choice::Adopt(id)));
+    }
+    choices.push((BLOCK_CHOICE, Choice::Block(id)));
+    if let Some(row) = ties.in_our_room {
+        choices.push((KICK_CHOICE, Choice::RoomKick(row)));
+    }
+    choices
+}
+
+/// A battleground queue question waiting for OK: applying (how, for which), leaving the queue, or entering the
+/// battle (until the time to answer runs out).
+enum QueueAsked {
+    Apply(u16, String),
+    Cancel(String),
+    Lobby(String, Instant),
+}
+
+/// A homunculus question waiting for OK: feed it, delete it, rename it (to this), or why a name was turned down.
+enum HomunculusAsked {
+    Feed,
+    Delete,
+    Rename(String),
+    // ponytail: drawn as the question box; the game's has OK alone.
+    Refused(usize),
+}
+
+/// A pet question waiting for OK: feed it, or rename it (to this).
+enum PetAsked {
+    Feed,
+    Rename(String),
+    /// A new name turned down: the line why (either button closes it).
+    // ponytail: drawn as the question box; the game's has OK alone.
+    Refused(usize),
+}
+
+/// Another player's equipment window: the window, what they wear, and their figure for its preview.
+struct Viewed {
+    window: equipment::Equipment,
+    items: Vec<net::InventoryItem>,
+    /// Their job, sex, hair and colours, and what they wear (where, view), for the figure.
+    look: Look,
+    views: Vec<(u32, u16)>,
+    figure: Option<(Look, Option<SpriteSet>)>,
+}
+
+/// Makes the equipment window's figure again when the look it should wear changes.
+fn dress_preview(figure: &mut Option<(Look, Option<SpriteSet>)>, look: Option<Look>, grf: &Grf, tables: &LookTables) {
+    if figure.as_ref().map(|(had, _)| had) != look.as_ref() {
+        *figure = look.map(|look| {
+            let sprites = SpriteSet::player(grf, &look, tables);
+            (look, sprites)
+        });
+    }
+}
+
+/// A map about to load behind the loading screen.
+enum LoadTarget {
+    Enter { position: [u16; 2], direction: u8 },
+    Change { map: String, position: [u16; 2] },
+}
+
+struct Loading {
+    image: Option<Texture>,
+    /// Drawn once: now the map can load.
+    shown: bool,
+    target: LoadTarget,
+}
+
+/// An action waiting for the player to arrive.
+#[derive(Clone, Copy, PartialEq)]
+enum Pending {
+    /// An item, and how many times its walk was asked for again (`PickStep::Retry`).
+    PickUp(u32, u8),
+    Skill {
+        id: u16,
+        level: u16,
+        target: SkillTarget,
+    },
+}
+
+/// What a skill was aimed at.
+#[derive(Clone, Copy, PartialEq)]
+enum SkillTarget {
+    Unit(u32),
+    Cell([i32; 2]),
+}
+
+/// What's being dragged out of a window.
+#[derive(Clone, Copy, PartialEq)]
+enum Dragged {
+    Item(u16),
+    Skill(u16),
+    /// A stored item, by storage index.
+    Stored(u16),
+    /// A cart item, by cart index.
+    Carted(u16),
+    /// What a hotkey slot holds, by slot.
+    Hotkey(usize),
+    /// A worn item, by inventory index, out of the equipment window.
+    Worn(u16),
+    /// A shop's offer (by row), or a row of its deal.
+    ShopOffer(usize),
+    ShopDeal(usize),
+    /// Out of the vending setup's cart mirror (by cart index), or a row on sale (by place).
+    VendMirror(u16),
+    VendGood(usize),
+    /// A Laphine list's row, or what's in one of its slots, by inventory index.
+    LaphineRow(u16),
+    LaphineSlot(u16),
+    /// The item on the grade window's machine, by inventory index, being taken out.
+    GradeItem(u16),
+}
+
+/// What a sprite on the map belongs to.
+#[derive(Clone, Copy, PartialEq)]
+enum Owner {
+    Player,
+    Unit(u32),
+    Item(u32),
+    /// A skill's unit on the ground that can be attacked (`attackable_ground_unit`).
+    SkillUnit(u32),
+}
+
+struct FloorItem {
+    item: u32,
+    identified: bool,
+    amount: u16,
+    /// The server's cell, and where in it the item lies (fractional cells).
+    at: [i32; 2],
+    cell: [f32; 2],
+    /// When it appeared: it glints from then on.
+    seen: Instant,
+    /// Set while it falls after being dropped.
+    dropped: Option<Instant>,
+}
+
+#[derive(PartialEq)]
+enum DialogButton {
+    None,
+    Next,
+    Close,
+}
+
+/// A guild question, answered with OK or Cancel.
+/// The message box's buttons and whether each answers yes: OK and Cancel, or OK alone where Cancel would be.
+fn box_buttons(asks: bool) -> Vec<([f32; 2], bool)> {
+    if asks { vec![(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] } else { vec![(RIGHT_BUTTON, true)] }
+}
+
+/// A question or notice in the message box.
+#[derive(Debug, Clone, PartialEq)]
+enum BoxQuestion {
+    /// "Are you sure that you want to leave?" (357).
+    Leave,
+    /// Nobody to hand the party to: disband instead? (3257).
+    Disband,
+    /// "Are you sure that you want to expel this player?" (363), for this member (account, name).
+    Expel(u32, String),
+    /// "Only the leader can invite." (2070), OK only.
+    OnlyLeader,
+    /// "In the last row" (3145): a small party window let go outside the used cells. OK only.
+    LastRow,
+    /// A plain notice of this message, OK only (the big minimap refused on this map).
+    Notice(usize),
+    /// The master hands the guild to this member (2924, both %s their name).
+    GuildLeader { account: u32, character: u32, name: String },
+    /// A plain notice in these words, OK only (a quest link to a quest no list has).
+    Said(String),
+    /// Something in the vending setup is priced 0: open anyway? (604).
+    FreeGoods,
+    /// Game Settings' Reset: "Set Basic Settings?" (3166).
+    ResetSettings,
+    /// Shortcut Settings: the key is this row's already; bind it here instead? (1489).
+    RebindKey(String),
+    /// A Gold catalog's result: open this store from afar? (1785).
+    OpenStall { account: u32, store: u32, item: u32 },
+    /// "Do you want to cancel navigation?" (2239).
+    StopNavigation,
+    /// The style shop's Buy: "Item cannot be restored, are you sure want to apply it?" (2818), for these picks.
+    BuyStyle(net::StylePicks),
+    /// The enchant window's button: "Do you want to enchant it?" (3846).
+    Enchant,
+    /// Grade enchanting's Start with no blessing: go on anyway? (3823).
+    GradeStart,
+}
+
+impl BoxQuestion {
+    fn message(&self) -> usize {
+        match self {
+            Self::Leave => PARTY_LEAVE_ASKS,
+            Self::Disband => party::ASK_DISBAND,
+            Self::Expel(..) => PARTY_EXPEL_ASKS,
+            Self::OnlyLeader => party::ONLY_LEADER_INVITES,
+            Self::LastRow => party::IN_THE_LAST_ROW,
+            Self::Notice(message) => *message,
+            Self::GuildLeader { .. } => GUILD_LEADER_ASKS,
+            Self::Said(_) => 0,
+            Self::FreeGoods => vend::FREE_ASKS,
+            Self::ResetSettings => game_settings::RESET_ASKS,
+            Self::RebindKey(_) => shortcut_window::ASKS_REBIND,
+            Self::OpenStall { .. } => catalog::OPEN_STALL_ASKS,
+            Self::StopNavigation => navigation::ASKS_STOP,
+            Self::BuyStyle(_) => stylist::ASKS_BUY,
+            Self::Enchant => enchant::ASKS,
+            Self::GradeStart => grade::ASKS_WITHOUT_BLESSING,
+        }
+    }
+
+    /// Its words: the message, with the member's name in the leader question.
+    fn text(&self, messages: &[String]) -> String {
+        let template = messages.get(self.message()).map_or("", String::as_str);
+        match self {
+            Self::GuildLeader { name, .. } => rustnarok_client::messages::fill(template, &[name, name]),
+            Self::Said(words) => words.clone(),
+            Self::RebindKey(name) => rustnarok_client::messages::fill(template, &[name]),
+            _ => template.to_owned(),
+        }
+    }
+
+    /// Whether it asks (OK and Cancel), else it tells (OK alone).
+    fn asks(&self) -> bool {
+        !matches!(self, Self::OnlyLeader | Self::LastRow | Self::Notice(_) | Self::Said(_))
+    }
+}
+
+enum GuildAsked {
+    /// Another guild (its name) asks for an alliance, through the player who asked (account ID).
+    Ally { id: u32, guild: String },
+}
+
+/// What a pick list's answer is for.
+#[derive(Debug, Clone, Copy)]
+enum Picking {
+    /// The equipment this card (its inventory index) goes into.
+    Card(u16),
+    /// What a Magnifier appraises.
+    Identify,
+    /// What to make (CZ_REQMAKINGITEM), what to cook (CZ_REQ_MAKINGITEM with the list's type), what Arrow
+    /// Crafting uses (CZ_REQ_MAKINGARROW).
+    Make,
+    Cook(u16),
+    Arrow,
+    /// What Repair Weapon mends, what Upgrade Weapon refines.
+    Repair,
+    Upgrade,
+    /// Hindsight's spell; a skill picked for a reason (Shadow Spell's), which goes back with it.
+    Spell,
+    SkillSelect(u32),
+    /// The egg to hatch.
+    Hatch,
+}
+
+/// The talking state an NPC packet sets, for that NPC: a page, Next or a menu holds the player; the script's close
+/// frees them. Other packets (the input boxes among them) leave it.
+fn npc_holds(event: &MapEvent) -> Option<(u32, bool)> {
+    match *event {
+        MapEvent::NpcSay { npc, .. } | MapEvent::NpcNext { npc } | MapEvent::NpcMenu { npc, .. } => Some((npc, true)),
+        MapEvent::NpcClose { npc } => Some((npc, false)),
+        _ => None,
+    }
+}
+
+/// Talking to an NPC holds the player (no walking, attacking, picking up, other NPCs or ground drops), except while
+/// their cast bar is up.
+fn talk_holds(talking: bool, cast_bar: bool) -> bool {
+    talking && !cast_bar
+}
+
+/// When the player's progress bar runs out.
+#[derive(Default)]
+struct ProgressBar(Option<Instant>);
+
+impl ProgressBar {
+    fn start(&mut self, now: Instant, length: Duration) {
+        self.0 = Some(now + length);
+    }
+
+    /// Whether the bar ends now, its time up or `cancelled`: true once.
+    fn ends(&mut self, now: Instant, cancelled: bool) -> bool {
+        let ended = self.0.is_some_and(|end| cancelled || now >= end);
+        if ended {
+            self.0 = None;
+        }
+        ended
+    }
+}
+
+struct Dialog {
+    npc: u32,
+    /// Set by a page, Next or a menu, ended by the script's close: the player is held while talking.
+    talking: bool,
+    lines: Vec<String>,
+    /// Next was pressed: the text stays until the next page wipes it.
+    wipe: bool,
+    button: DialogButton,
+    menu: Option<npc_menu::Menu>,
+    /// Waiting for a number or text, in its own box.
+    input: Option<npc_input::Input>,
+    /// Warp Portal's or Teleport's list rather than an NPC's: the skill and the maps as the server named them.
+    warp: Option<(u16, Vec<String>)>,
+    /// The server has sent text or a Next button: the say window is up, and stays until its Close is clicked. A menu or
+    /// an input box alone opens none.
+    said: bool,
+}
+
+impl Dialog {
+    fn new(npc: u32) -> Self {
+        Self { npc, talking: false, lines: Vec::new(), wipe: false, button: DialogButton::None, menu: None, input: None, warp: None, said: false }
+    }
+
+    /// The say window shows: something was said, and this isn't a warp list (the menu's box alone).
+    fn say_window(&self) -> bool {
+        self.said && self.warp.is_none()
+    }
+
+    /// The script's close. With a say window its Close button shows and the window waits for the click. With none
+    /// the menu just goes and nothing is answered: true when that ends the talk (an open input box keeps it).
+    fn close(&mut self) -> bool {
+        if self.say_window() {
+            // MYGENE_DIALOG_TIMEOUT_V61
+            self.menu = None;
+            self.button = DialogButton::Close;
+            return false;
+        }
+        self.menu = None;
+        self.input.is_none()
+    }
+}
+
+/// A number over a unit: who (None = the player), how much, when it shows, how it looks, and the flinch it causes.
+struct Damage {
+    target: Option<u32>,
+    /// Who hit, until the hit's sound has played (none for misses, heals and totals).
+    source: Option<u32>,
+    amount: i32,
+    start: Instant,
+    kind: DamageKind,
+    flinch: Option<f32>,
+    /// The ground axes' signs (x east, z north) a hit's number drifts along.
+    drift: [f32; 2],
+}
+
+/// How a number looks and moves.
+#[derive(Clone, Copy, PartialEq)]
+enum DamageKind {
+    SlayerDoubleCritical,
+    SlayerMagic,
+    /// White, or red on a player, homunculus or mercenary (`taken`); blue when it's SP.
+    Hit { taken: bool, sp: bool },
+    /// Yellow on the critical burst.
+    Critical,
+    /// "Lucky": the hit was dodged.
+    Lucky,
+    /// MISS over the attacker: white from a monster or NPC, red from anyone else.
+    Miss { red: bool },
+    /// Coloured number (green HP, blue SP, or custom colour), rising slowly.
+    Heal { color: [u8; 3] },
+    /// The running total of a multi-hit, high above in yellow; each new one replaces the last.
+    Combo,
+}
+
+/// The heal colours for green HP and blue SP numbers.
+pub const HEAL_GREEN: [u8; 3] = [0x00, 0xFF, 0x00];
+pub const HEAL_BLUE: [u8; 3] = [0x00, 0x00, 0xFF];
+
+/// The number colour for effects that carry numbers (331, 332, 657–664).
+pub fn number_color(id: u32) -> Option<[u8; 3]> {
+    match id {
+        331 | 657 => Some([0x00, 0xFF, 0x00]), // green
+        332 | 658 => Some([0x00, 0x00, 0xFF]), // blue
+        659 => Some([0xFF, 0x00, 0x00]),       // red
+        660 => Some([0xFF, 0x00, 0xFF]),       // magenta
+        661 => Some([0x00, 0x00, 0x00]),       // black
+        662 => Some([0xFF, 0xFF, 0xFF]),       // white
+        663 => Some([0xFF, 0xFF, 0x00]),       // yellow
+        664 => Some([0xFF, 0x55, 0xB1]),       // pink
+        _ => None,
+    }
+}
+
+/// The number, target, and colour for an effect packet (0x0284) with a number.
+/// An unknown AID shows nothing (returns None).
+pub fn effect_number(id: u32, effect: u32, num: Option<i32>, account_id: u32, in_view: &impl Fn(u32) -> bool) -> Option<(Option<u32>, i32, [u8; 3])> {
+    let is_player = id == account_id;
+    if !is_player && !in_view(id) {
+        return None;
+    }
+    let target = (!is_player).then_some(id);
+    let (num, color) = (num?, number_color(effect)?);
+    Some((target, num.max(0), color))
+}
+
+/// Heal numbers take the depth test. Hits, criticals, MISS, Lucky and totals draw over walls and the ground.
+pub(crate) fn number_depth_tested(kind: DamageKind) -> bool {
+    matches!(kind, DamageKind::Heal { .. })
+}
+
+impl DamageKind {
+    fn duration(self, _amount: i32) -> f32 {
+        let ticks = match self {
+            DamageKind::Lucky => return actor::LUCKY_MS / 1000.0,
+            DamageKind::Miss { .. } => actor::MISS_TICKS,
+            DamageKind::Combo => actor::TOTAL_NUMBER_TICKS,
+            DamageKind::Heal { .. } => actor::HEAL_NUMBER_TICKS,
+            DamageKind::Hit { .. } | DamageKind::Critical | DamageKind::SlayerMagic | DamageKind::SlayerDoubleCritical => actor::HIT_NUMBER_TICKS,
+        };
+        ticks * 0.024
+    }
+
+    /// Its name in the test driver's state.
+    fn name(self) -> &'static str {
+        match self {
+            DamageKind::Hit { sp: true, .. } => "sp",
+            DamageKind::SlayerMagic => "slayer_magic",
+            DamageKind::Hit { .. } => "hit",
+            DamageKind::Critical => "critical",
+            DamageKind::SlayerDoubleCritical => "slayer_double_critical",
+            DamageKind::Lucky => "lucky",
+            DamageKind::Miss { .. } => "miss",
+            DamageKind::Heal { .. } => "heal",
+            DamageKind::Combo => "combo",
+        }
+    }
+}
+
+/// The numbers that have shown on the player in the last `actor::HIT_SHOWN`: amount, kind and how long ago, oldest
+/// first (for the test driver).
+fn hits_taken(damages: &[Damage], now: Instant) -> Vec<(i32, &'static str, u64)> {
+    damages
+        .iter()
+        .filter(|damage| damage.target.is_none() && damage.start <= now && now.duration_since(damage.start) < actor::HIT_SHOWN)
+        .map(|damage| (damage.amount, damage.kind.name(), now.duration_since(damage.start).as_millis() as u64))
+        .collect()
+}
+
+enum Scene {
+    /// The servers clientinfo.xml lists, before the login window when it lists more than one.
+    Connections {
+        selected: usize,
+    },
+    Login,
+    /// A request is in flight (`Wait` says which: its box and time limit); the inner scene stays on screen without
+    /// reacting.
+    Waiting(Wait, Box<Scene>),
+    ServerSelect {
+        accepted: LoginAccepted,
+        selected: usize,
+        /// The first row on screen, so the selection stays among the nine that show.
+        scroll: usize,
+    },
+    CharSelect(Box<char_select::Select>),
+    /// Making a character, with the select screen to go back to.
+    CharMake(Box<char_make::Make>, Box<char_select::Select>),
+    Game(Box<Game>),
+    /// A message box over the scene it returns to.
+    Message(String, Box<Scene>),
+    /// A question with OK and Cancel over the scene it returns to; OK goes on with `Then`.
+    Confirm(String, Then, Box<Scene>),
+    /// Asks for a line of text over the scene it returns to; OK goes on with `Then`.
+    Prompt {
+        text: String,
+        input: String,
+        then: Then,
+        back: Box<Scene>,
+    },
+    /// The client closes (a box's OK led here).
+    Quit,
+}
+
+/// What a request waits for: the box over it and how long before the client gives up.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Wait {
+    /// The login's answer.
+    Login,
+    /// The char server, after picking a server (or back from a map).
+    CharServer,
+    /// Game Start, until the char server names the map server.
+    Start,
+    /// The map server, from connecting to entering the map.
+    Map,
+    /// Making or deleting a character.
+    Making,
+    /// Another char server request (a deletion's reserve or cancel, a slot move, a rename): no box.
+    Quiet,
+    /// A pick on the server list (a scene of its own, timed from when it opened).
+    ServerList,
+}
+
+/// How a wait goes on after so long.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum WaitEnd {
+    Keep,
+    /// "Failed to Connect to Server." and the login window, as Cancel does.
+    GiveUp,
+    /// "Failed to Connect to Server.", then the client closes.
+    Quit,
+}
+
+impl Wait {
+    /// The box's line: "Please wait..." (122), or 123 for making and deleting; none for the quiet ones.
+    fn message(self) -> Option<usize> {
+        match self {
+            Wait::Login | Wait::CharServer | Wait::Start | Wait::Map => Some(WAIT_MESSAGE),
+            Wait::Making => Some(MAKING_MESSAGE),
+            Wait::Quiet | Wait::ServerList => None,
+        }
+    }
+
+    /// The limits: 15 s for the login's answer and the map server, 80 s for the char server, and 15 s to pick a server
+    /// before the client closes.
+    fn end(self, elapsed: Duration) -> WaitEnd {
+        let ms = elapsed.as_millis();
+        match self {
+            Wait::Login | Wait::Map if ms >= 15_000 => WaitEnd::GiveUp,
+            Wait::CharServer if ms >= 80_000 => WaitEnd::GiveUp,
+            Wait::ServerList if ms >= 15_000 => WaitEnd::Quit,
+            _ => WaitEnd::Keep,
+        }
+    }
+}
+
+/// Esc on a screen before a map: the login window, the service list and the server list ask to quit; character
+/// select asks to go back to the login screen.
+// ponytail: the game picks 3432 or 17 at character select by a setting we don't have; 3432 is what Esc does there.
+fn pre_map_escape(scene: &Scene) -> Option<(usize, Then)> {
+    match scene {
+        Scene::Login | Scene::Connections { .. } | Scene::ServerSelect { .. } => Some((QUIT_MESSAGE, Then::Quit)),
+        Scene::CharSelect(_) => Some((RETURN_TO_LOGIN_MESSAGE, Then::BackToLogin)),
+        // Making a character, Esc asks to quit (Return and the X go back).
+        Scene::CharMake(..) => Some((QUIT_MESSAGE, Then::Quit)),
+        _ => None,
+    }
+}
+
+/// What a refused character's box closes onto: character select, not the make window.
+fn after_make_refused(scene: Scene) -> Scene {
+    match scene {
+        Scene::CharMake(_, select) => Scene::CharSelect(select),
+        scene => scene,
+    }
+}
+
+/// What a confirmed question or a prompt goes on to do.
+enum Then {
+    BackToLogin,
+    /// Quit the client (Esc before a map, answered yes).
+    Quit,
+    /// Ask for the birthdate that deletes this character.
+    AskBirthdate(u32),
+    /// Delete this character with the birthdate typed in.
+    Delete(u32),
+    /// Move a character from one slot to another, with its moves left.
+    Move(u8, u8, u16),
+    /// Ask whether to rename this character to the name typed in.
+    ConfirmName(u32),
+    /// Rename this character.
+    Rename(u32, String),
+}
+
+impl Scene {
+    /// The scene drawn as the base layer, under any message box or wait.
+    fn base(&self) -> &Scene {
+        match self {
+            Scene::Waiting(_, inner) | Scene::Message(_, inner) | Scene::Confirm(_, _, inner) | Scene::Prompt { back: inner, .. } => inner.base(),
+            scene => scene,
+        }
+    }
+
+    fn base_mut(&mut self) -> &mut Scene {
+        match self {
+            Scene::Waiting(_, inner) | Scene::Message(_, inner) | Scene::Confirm(_, _, inner) | Scene::Prompt { back: inner, .. } => inner.base_mut(),
+            scene => scene,
+        }
+    }
+}
+
+/// Normal, hover and pressed images of a button.
+type ButtonImages = [Texture; 3];
+
+struct Assets {
+    background: Texture,
+    login: Texture,
+    /// The save-ID box, off and on; Opening, Sign Up and the close X (normal, over, press).
+    save: [Texture; 2],
+    opening: ButtonImages,
+    sign_up: ButtonImages,
+    exit: ButtonImages,
+    service: Texture,
+    message: Texture,
+    char_select: char_select::Assets,
+    char_make: char_make::Assets,
+    pin: pin::Assets,
+    skills: skills::Assets,
+    shop: shop::Assets,
+    pick_list: pick_list::Assets,
+    forge: forge::Assets,
+    storage: storage::Assets,
+    storage_log: storage_log::Assets,
+    trade: trade::Assets,
+    refine: refine::Assets,
+    grade: grade::Assets,
+    laphine: laphine::Assets,
+    reform: reform::Assets,
+    enchant: enchant::Assets,
+    stylist: stylist::Assets,
+    /// None when the data has no attendance check.
+    attendance: Option<attendance::Assets>,
+    bank: bank::Assets,
+    cashshop: cashshop::Assets,
+    context_menu: menu::Assets,
+    weather: weather::Assets,
+    sky: sky::Assets,
+    dressroom: dressroom::Assets,
+    catalog: catalog::Assets,
+    skill_descript: skill_descript::Assets,
+    pickup: pickup::Assets,
+    navi_window: navi_window::Assets,
+    level_up: level_up::Assets,
+    quest_notice: quest_notice::Assets,
+    battle_queue: battle_queue::Assets,
+    mercenary: mercenary::Assets,
+    homunculus: homunculus::Assets,
+    companion_skills: homunculus::SkillAssets,
+    party: party::Assets,
+    chatroom: chatroom::Assets,
+    reputation: reputation::Assets,
+    /// The navigation arrows that lie on the ground: eight sets, each by the way the step goes (north, north-west, …
+    /// north-east).
+    navi_arrows: Vec<Vec<Texture>>,
+    /// The marker on the cell a navigation heads for: its four pictures in turn.
+    navi_marker: Vec<Texture>,
+    /// Item links' underline in the NPC window.
+    /// NPC text's link underlines: web links', every other link's.
+    url_line: Texture,
+    link_line: Texture,
+    /// The magic square under a ground cast.
+    magic_target: Option<Texture>,
+    /// A skill area's cell (`skill_area`): white, soft-edged, tinted red.
+    warning_plane: Option<Texture>,
+    /// The ground cursor's square.
+    ground_grid: Option<Texture>,
+    /// fullb.tga and white02.bmp for the blind overlay. A missing file leaves that part unseen.
+    blind_textures: [Option<Texture>; 2],
+    aura: aura::Textures,
+    escape: escape::Assets,
+    options: options::Assets,
+    shortcut_window: shortcut_window::Assets,
+    game_settings: game_settings::Assets,
+    quest: quest::Assets,
+    achievement: achievement::Assets,
+    status: status::Assets,
+    pet: pet::Assets,
+    roulette: roulette::Assets,
+    gold_pc: goldpc::Assets,
+    item_window: iteminfo::Assets,
+    guild: guild::Assets,
+    guild_companion: guild_companion::Assets,
+    clan: clan::Assets,
+    vend: vend::Assets,
+    /// The cast bar's fill, the speech bubble's box and border, the aimed skill's box, and status icons' clocks
+    /// (white, then orange in the last minute) by step.
+    cast_fill: Texture,
+    combo_fill: Texture,
+    speech_fill: Texture,
+    speech_border: Texture,
+    clocks: [Vec<Texture>; 2],
+    /// The cooldown fan by step, `cooldown_fan`.
+    fan: Vec<Texture>,
+    connect: ButtonImages,
+    ok: ButtonImages,
+    cancel: ButtonImages,
+    black: Texture,
+    white: Texture,
+    grey: Texture,
+    selection: Texture,
+    /// The char-server list's #F0F0F0 fill, and the bar along the bottom of its window.
+    server_fill: Texture,
+    say: npc_say::Assets,
+    npc_menu: npc_menu::Assets,
+    npc_input: npc_input::Assets,
+    captcha: captcha::Assets,
+    cart_choice: cart_choice::Assets,
+    package: package::Assets,
+    cutin: cutin::Assets,
+    next: ButtonImages,
+    close: ButtonImages,
+    bars: [Texture; 7],
+    monster_bars: [Texture; 4],
+    chrome: window::Chrome,
+    inventory: inventory::Assets,
+    equipment: equipment::Assets,
+    basic_info: basic_info::Assets,
+    mail: mail::Assets,
+    chat: chat::Assets,
+    minimap: minimap::Assets,
+    hotkeys: hotkeys::Assets,
+    /// The loading bar's border and trough.
+    loading_bar: [Texture; 2],
+}
+
+/// A status icon's clock: the part of the 32px square swept clockwise from 12 o'clock by `share` of a turn.
+/// A cooldown's fan over a 32 px icon after `passed` of it (0 to 1): black at alpha 170 from that angle clockwise round
+/// to 12 o'clock, so it clears clockwise from 12.
+fn cooldown_fan(passed: f32) -> RgbaImage {
+    RgbaImage::from_fn(32, 32, |x, y| {
+        let [dx, dy] = [x as f32 + 0.5 - 16.0, y as f32 + 0.5 - 16.0];
+        let turned = (dx.atan2(-dy) / std::f32::consts::TAU).rem_euclid(1.0);
+        if turned >= passed { Rgba([0, 0, 0, 170]) } else { Rgba([0; 4]) }
+    })
+}
+
+fn clock(share: f32, color: [u8; 4]) -> RgbaImage {
+    RgbaImage::from_fn(32, 32, |x, y| {
+        let [dx, dy] = [x as f32 + 0.5 - 16.0, y as f32 + 0.5 - 16.0];
+        let turned = (dx.atan2(-dy) / std::f32::consts::TAU).rem_euclid(1.0);
+        if turned < share { Rgba(color) } else { Rgba([0; 4]) }
+    })
+}
+
+impl Assets {
+    fn load(gpu: &Gpu, grf: &Grf, font: &Font, messages: &[String]) -> Self {
+        let login = format!("{UI}login_interface\\");
+        let image = |path: String| gpu.load_texture(grf, &path, false);
+        // Game-data vintages use different login artwork. The older MYgene data.grf
+        // has win_login.bmp but not bg_login.tga. Missing decorative login assets
+        // must not prevent a player from reaching the login screen.
+        let login_image = |name: &str| {
+            let path = format!("{login}{name}");
+            gpu.try_load_texture(grf, &path, false).unwrap_or_else(|error| {
+                eprintln!("Optional MYgene login image unavailable: {error}");
+                gpu.solid([0, 0, 0, 0])
+            })
+        };
+        let login_background = gpu.try_load_texture(grf, &format!("{login}bg_login.tga"), false)
+            .or_else(|_| gpu.try_load_texture(grf, &format!("{login}win_login.bmp"), false))
+            .unwrap_or_else(|error| {
+                eprintln!("MYgene login background fallback unavailable: {error}");
+                gpu.solid([0, 0, 0, 0])
+            });
+        let button = |folder: &str, name: &str| ["", "_a", "_b"].map(|suffix| image(format!("{folder}{name}{suffix}.bmp")));
+        Self {
+            background: gpu.load_texture(grf, &format!("{UI}bgi_temp.bmp"), true),
+            login: login_background,
+            save: ["checkbox_off", "checkbox_on"].map(|name| login_image(&format!("{name}.bmp"))),
+            opening: ["normal", "over", "press"].map(|state| login_image(&format!("bt_close_{state}.bmp"))),
+            sign_up: ["normal", "over", "press"].map(|state| login_image(&format!("bt_join_{state}.bmp"))),
+            exit: ["normal", "over", "press"].map(|state| login_image(&format!("bt_close2_{state}.bmp"))),
+            service: login_image("win_service.bmp"),
+            message: image(format!("{UI}win_msgbox.bmp")),
+            char_select: char_select::Assets::load(gpu, grf, font, messages),
+            char_make: char_make::Assets::load(gpu, grf),
+            pin: pin::Assets::load(gpu, grf),
+            skills: skills::Assets::load(gpu, grf),
+            shop: shop::Assets::load(gpu, grf),
+            pick_list: pick_list::Assets::load(gpu, grf),
+            forge: forge::Assets::load(gpu, grf),
+            storage: storage::Assets::load(gpu, grf),
+            storage_log: storage_log::Assets::load(gpu, grf),
+            trade: trade::Assets::load(gpu, grf),
+            refine: refine::Assets::load(gpu, grf),
+            grade: grade::Assets::load(gpu, grf, font),
+            laphine: laphine::Assets::load(gpu, grf),
+            reform: reform::Assets::load(gpu, grf),
+            enchant: enchant::Assets::load(gpu, grf),
+            stylist: stylist::Assets::load(gpu, grf),
+            attendance: attendance::Assets::load(gpu, grf),
+            bank: bank::Assets::load(gpu, grf),
+            cashshop: cashshop::Assets::load(gpu, grf),
+            context_menu: menu::Assets::load(gpu),
+            weather: weather::Assets::load(gpu, grf),
+            sky: sky::Assets::load(gpu, grf),
+            dressroom: dressroom::Assets::load(gpu, grf),
+            catalog: catalog::Assets::load(gpu, grf),
+            skill_descript: skill_descript::Assets::load(gpu),
+            pickup: pickup::Assets::load(gpu, grf),
+            navi_window: navi_window::Assets::load(gpu, grf),
+            level_up: level_up::Assets::load(gpu, grf),
+            quest_notice: quest_notice::Assets::load(gpu, grf),
+            battle_queue: battle_queue::Assets::load(gpu, grf, &lua::entry_queue(grf).unwrap_or_default()),
+            mercenary: mercenary::Assets::load(gpu, grf),
+            homunculus: homunculus::Assets::load(gpu, grf),
+            companion_skills: homunculus::SkillAssets::load(gpu, grf),
+            party: party::Assets::load(gpu, grf),
+            chatroom: chatroom::Assets::load(gpu, grf),
+            reputation: reputation::Assets::load(gpu, grf),
+            // Legacy client GRFs can omit Navigation Interface 3 graphics.
+            // Keep gameplay accessible and render missing navigation decorations transparent.
+            navi_arrows: (1..=8).map(|set| (0..8).map(|turn| {
+                gpu.try_load_texture(grf, &format!("{UI}navigation_interface3\\navi_grid{set}_{turn}.tga"), false)
+                    .unwrap_or_else(|_| gpu.solid([0, 0, 0, 0]))
+            }).collect()).collect(),
+            navi_marker: (1..=4).map(|frame| {
+                gpu.try_load_texture(grf, &format!("{UI}navigation_interface3\\location{frame}.tga"), false)
+                    .unwrap_or_else(|_| gpu.solid([0, 0, 0, 0]))
+            }).collect(),
+            url_line: gpu.solid([links::URL_COLOR[0], links::URL_COLOR[1], links::URL_COLOR[2], 0xFF]),
+            link_line: gpu.solid([links::NPC_COLOR[0], links::NPC_COLOR[1], links::NPC_COLOR[2], 0xFF]),
+            magic_target: gpu.try_load_texture(grf, "data\\texture\\effect\\magic_target.tga", false).ok(),
+            warning_plane: gpu.try_load_texture(grf, "data\\texture\\warning_plane.tga", false).ok(),
+            ground_grid: gpu.try_load_texture(grf, "data\\texture\\grid.tga", false).ok(),
+            blind_textures: [
+                gpu.try_load_texture(grf, "data\\texture\\effect\\fullb.tga", true).ok(),
+                gpu.try_load_texture(grf, "data\\texture\\effect\\white02.bmp", true).ok(),
+            ],
+            aura: aura::Textures::load(gpu, grf),
+            escape: escape::Assets::load(gpu, grf),
+            options: options::Assets::load(gpu, grf),
+            shortcut_window: shortcut_window::Assets::load(gpu, grf),
+            game_settings: game_settings::Assets::load(gpu, grf),
+            quest: quest::Assets::load(gpu, grf),
+            achievement: achievement::Assets::load(gpu, grf),
+            status: status::Assets::load(gpu, grf),
+            pet: pet::Assets::load(gpu, grf),
+            roulette: roulette::Assets::load(gpu, grf),
+            gold_pc: goldpc::Assets::load(gpu, grf),
+            item_window: iteminfo::Assets::load(gpu, grf),
+            guild: guild::Assets::load(gpu, grf),
+            guild_companion: guild_companion::Assets::load(gpu, grf),
+            clan: clan::Assets::load(gpu, grf),
+            vend: vend::Assets::load(gpu, grf),
+            cast_fill: gpu.solid([0x16, 0xEA, 0x25, 0xFF]),
+            combo_fill: gpu.solid([0xFF, 0xA0, 0x00, 0xFF]),
+            speech_fill: gpu.solid([0, 0, 0, 102]),
+            speech_border: gpu.solid([0x5C, 0x5C, 0x5C, 0xFF]),
+            clocks: [[255, 255, 255, 166], [255, 150, 50, 166]]
+                .map(|color| (0..=CLOCK_STEPS).map(|step| gpu.texture(&clock(step as f32 / CLOCK_STEPS as f32, color), false)).collect()),
+            fan: (0..=CLOCK_STEPS).map(|step| gpu.texture(&cooldown_fan(step as f32 / CLOCK_STEPS as f32), false)).collect(),
+            connect: ["normal", "over", "press"].map(|state| image(format!("{login}bt_start_{state}.bmp"))),
+            ok: button(UI, "btn_ok"),
+            cancel: button(UI, "btn_cancel"),
+            black: gpu.solid([0, 0, 0, 255]),
+            white: gpu.solid([255; 4]),
+            grey: gpu.solid([0x9C, 0x9C, 0x9C, 0xFF]),
+            selection: gpu.solid(SELECTION_COLOR),
+            server_fill: gpu.solid(servers::LIST_COLOR),
+            say: npc_say::Assets::load(gpu),
+            npc_menu: npc_menu::Assets::load(gpu, grf),
+            npc_input: npc_input::Assets::load(gpu),
+            captcha: captcha::Assets::load(gpu),
+            cart_choice: cart_choice::Assets::load(gpu, grf),
+            package: package::Assets::load(gpu, grf),
+            cutin: cutin::Assets::load(gpu, grf),
+            next: button(UI, "btn_next"),
+            close: button(UI, "btn_close"),
+            bars: BAR_COLORS.map(|color| gpu.solid(color)),
+            monster_bars: MONSTER_BAR_COLORS.map(|color| gpu.solid(color)),
+            chrome: window::Chrome::load(gpu, grf),
+            inventory: inventory::Assets::load(gpu, grf),
+            equipment: equipment::Assets::load(gpu, grf),
+            basic_info: basic_info::Assets::load(gpu, grf),
+            mail: mail::Assets::load(gpu, grf),
+            chat: chat::Assets::load(gpu, grf),
+            minimap: minimap::Assets::load(gpu, grf),
+            hotkeys: hotkeys::Assets::load(gpu, grf),
+            loading_bar: [gpu.solid([0, 255, 255, 255]), gpu.solid([140, 140, 140, 255])],
+        }
+    }
+}
+
+impl Assets {
+    /// Buy, sell and cancel buttons (the shop's).
+    fn shop_buttons(&self) -> [&ButtonImages; 3] {
+        self.shop.buttons()
+    }
+}
+
+/// The login window's top-left: (W − 640) / 2 + 185 across, 300·H/480 down.
+fn login_position() -> [f32; 2] {
+    escape::menu_origin(screen())
+}
+
+/// A part of the login window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum LoginPart {
+    Drop,
+    /// A row of the open drop-down's list.
+    Account(usize),
+    Field(usize),
+    Save,
+    Opening,
+    SignUp,
+    Start,
+    Exit,
+}
+
+/// The open drop-down's rows, under it.
+// ponytail: the list's rows take the drop-down's size, one under the other.
+fn account_row(row: usize) -> [f32; 2] {
+    offset(LOGIN_DROP.0, [0.0, (row + 1) as f32 * LOGIN_DROP.1[1]])
+}
+
+/// The login window's part under a window-local point (the drop-down's list over the rest while it's open).
+fn login_part(local: [f32; 2], list_open: bool) -> Option<LoginPart> {
+    if let Some(row) = (0..LOGIN_ACCOUNTS.len()).find(|&row| list_open && contains(account_row(row), LOGIN_DROP.1, local)) {
+        return Some(LoginPart::Account(row));
+    }
+    let parts = [
+        (LOGIN_DROP, LoginPart::Drop),
+        ((LOGIN_FIELDS[0], LOGIN_FIELD_SIZE), LoginPart::Field(0)),
+        ((LOGIN_FIELDS[1], LOGIN_FIELD_SIZE), LoginPart::Field(1)),
+        (LOGIN_SAVE, LoginPart::Save),
+        (LOGIN_OPENING, LoginPart::Opening),
+        (LOGIN_SIGN_UP, LoginPart::SignUp),
+        ((LOGIN_START, LOGIN_START_SIZE), LoginPart::Start),
+        (LOGIN_EXIT, LoginPart::Exit),
+    ];
+    parts.into_iter().find(|((corner, size), _)| contains(*corner, *size, local)).map(|(_, part)| part)
+}
+
+/// What stops a login before it's sent: the line to show and its number (4 for an ID, 6 for a password).
+fn login_refusal(id: &str, password: &str) -> Option<(usize, usize)> {
+    if id.len() < ID_TOO_SHORT.1 {
+        Some(ID_TOO_SHORT)
+    } else if password.len() < PASSWORD_TOO_SHORT.1 {
+        Some(PASSWORD_TOO_SHORT)
+    } else {
+        None
+    }
+}
+
+/// The system clipboard's text up to its first line break, for a one-line box.
+fn clipboard_line() -> String {
+    let text = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()).unwrap_or_default();
+    text.lines().next().unwrap_or_default().chars().filter(|character| !character.is_control()).collect()
+}
+
+/// Puts text on the system clipboard (nothing for an empty selection).
+fn set_clipboard(text: &str) {
+    if !text.is_empty() {
+        let _ = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(text.to_owned()));
+    }
+}
+
+fn battle_key(key: &Key) -> battle_mode::KeyKind {
+    match key {
+        Key::Named(NamedKey::Enter) => battle_mode::KeyKind::Enter,
+        Key::Named(NamedKey::Escape) => battle_mode::KeyKind::Escape,
+        Key::Character(text) => {
+            let mut characters = text.chars();
+            match (characters.next(), characters.next()) {
+                (Some(character), None) if character.is_ascii_alphanumeric() => battle_mode::KeyKind::Char(character.to_ascii_lowercase()),
+                _ => battle_mode::KeyKind::Other,
+            }
+        }
+        _ => battle_mode::KeyKind::Other,
+    }
+}
+
+/// A party booking request and what the web server said to it.
+type BookingAnswer = (booking::Request, std::io::Result<booking::Reply>);
+/// A guild's emblem from the web server: guild, version, the file or why not.
+type WebEmblem = (u32, u32, std::io::Result<Vec<u8>>);
+
+/// The web server's address (party booking): RUSTNAROK_CLIENT_WEB, else the login server's host on 8888.
+// ponytail: the web server's port, rathena's default; the client's own source of it isn't in our data.
+fn web_address(login: &str) -> String {
+    std::env::var("RUSTNAROK_CLIENT_WEB").ok().filter(|address| !address.is_empty()).unwrap_or_else(|| {
+        let host = login.rsplit_once(':').map_or(login, |(host, _)| host);
+        format!("{host}:8888")
+    })
+}
+
+/// The lines of the window places that keep sizes: the inventory's and the cart's columns and rows, the storage's
+/// rows, and an NPC shop's goods width and both windows' rows (the next shop opens at those).
+const INVENTORY_SIZE: &str = "inventory_size";
+const CART_SIZE: &str = "cart_size";
+const STORAGE_SIZE: &str = "storage_size";
+/// The storage's category windows that are on, a bit each (Use first): they open with it.
+const STORAGE_CATEGORIES: &str = "storage_categories";
+const SHOP_SIZE: &str = "shop_size";
+const SHOP_DEAL_SIZE: &str = "shop_deal_size";
+/// An NPC shop's goods, Buying and Selling windows' places.
+const SHOP_PLACES: [&str; 3] = ["shop_goods", "shop_buying", "shop_selling"];
+/// The party window's size mode, kept with the places.
+const PARTY_MODE: &str = "party_mode";
+/// Each party window mode's corner grip rows (0: the mode's own height).
+const PARTY_SIZE: &str = "party_size";
+const VEND_SIZE: &str = "vend_size";
+/// The chat room window's width and height.
+const ROOM_SIZE: &str = "room_size";
+const SKILL_LIST_SIZE: &str = "skill_list_size";
+/// The homunculus's and the mercenary's skill lists' heights.
+const COMPANION_SKILLS_SIZE: &str = "companion_skills_size";
+const ITEM_PLACE: &str = "item_info";
+const QUEST_PLACE: &str = "quest";
+const CARD_PLACE: &str = "card_info";
+const IDENTIFY_LIST_PLACE: &str = "identify_list";
+const CARD_LIST_PLACE: &str = "card_list";
+
+/// The sizes' lines of the window places: the inventory's and the cart's columns and rows, the storage's rows, an NPC
+/// shop's goods width and rows, then its deal's rows.
+fn size_lines(inventory: [usize; 2], cart: [usize; 2], storage: usize, (width, [goods, deal]): (f32, [usize; 2])) -> String {
+    let [[columns, rows], [cart_columns, cart_rows]] = [inventory, cart];
+    format!(
+        "{INVENTORY_SIZE} {columns} {rows} 0\n{CART_SIZE} {cart_columns} {cart_rows} 0\n{STORAGE_SIZE} 0 {storage} 0\n{SHOP_SIZE} {width} {goods} 0\n{SHOP_DEAL_SIZE} 0 {deal} 0\n"
+    )
+}
+
+/// The windows' places as saved: a line per window, its name, x, y and 1 when collapsed.
+fn window_places<'a>(frames: impl Iterator<Item = (&'a str, [f32; 2], bool)>) -> String {
+    frames.map(|(name, [x, y], minimized)| format!("{name} {x} {y} {}\n", u8::from(minimized))).collect()
+}
+
+/// Reads `window_places`' lines back; a line it can't read is skipped.
+fn parse_window_places(text: &str) -> HashMap<&str, ([f32; 2], bool)> {
+    text.lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            let name = words.next()?;
+            let [x, y] = [words.next()?.parse().ok()?, words.next()?.parse().ok()?];
+            Some((name, ([x, y], words.next()? == "1")))
+        })
+        .collect()
+}
+
+/// Whether /zoom is on (saved; off unless turned on).
+fn zoom_out_saved() -> bool {
+    settings_path("zoomout").and_then(|path| std::fs::read_to_string(path).ok()).is_some_and(|text| text.trim() == "1")
+}
+
+/// Opens or closes the big minimap. With no overview picture, says `no_picture` and leaves it closed.
+/// ponytail: said when opening is asked and the map has no overview, and when a warp closes an open window
+/// because the new map has none. A picture that fails to decode counts as none.
+/// The world map opens, or closes when open (its shortcut, and the minimap's View On).
+fn toggle_world_map(game: &mut Game, gpu: Option<&render::Gpu>, grf: &Grf, worlds: &(Vec<rustnarok_client::lua::World>, [[u8; 4]; 2])) {
+    let map = map_key(&game.map);
+    game.world_map = match (game.world_map.take(), gpu) {
+        (None, Some(gpu)) => worldmap::WorldMap::open(gpu, grf, &worlds.0, worlds.1, &map),
+        _ => None,
+    };
+}
+
+/// Opens or closes the big minimap, with the player's head; on a map in the exception table, the OK box of
+/// `minimap_window::NO_PICTURE` instead.
+fn toggle_big_minimap(game: &mut Game, gpu: &render::Gpu, grf: &Grf, exceptions: &HashSet<String>) {
+    let map = map_key(&game.map);
+    if !game.minimap_window.frame.open && exceptions.contains(&map) {
+        game.question_box = Some(BoxQuestion::Notice(minimap_window::NO_PICTURE));
+        return;
+    }
+    let image = game.minimap.clone();
+    let head = game.player.look.as_ref().and_then(|look| actor::head_image(grf, look));
+    game.minimap_window.set_head(gpu, head.as_ref());
+    game.minimap_window.toggle(gpu, image.as_ref(), &map);
+    game.sync_esc();
+}
+
+/// Whether the basic info and chat windows are kept between runs: always for a player, and for a client the test
+/// driver runs (`RUSTNAROK_CLIENT_CONTROL`) only with the dev switch `RUSTNAROK_CLIENT_KEEP_WINDOWS`, so one
+/// scenario's windows don't move the next one's.
+pub(crate) fn keeps_windows() -> bool {
+    !mcp::scripted() || std::env::var_os("RUSTNAROK_CLIENT_KEEP_WINDOWS").is_some()
+}
+
+/// Where the player's settings file `name` is kept: Application Support on a Mac, %APPDATA% on Windows, the XDG config
+/// folder elsewhere.
+/// The small party windows saved for a character (by name): a member's account and cell a line.
+fn small_windows_path(character: &str) -> Option<std::path::PathBuf> {
+    settings_path(&format!("party_mini_{character}"))
+}
+
+fn read_small_windows(character: &str) -> String {
+    small_windows_path(character).and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default()
+}
+
+fn write_small_windows(character: &str, saved: &str) {
+    if let Some(path) = small_windows_path(character) {
+        let _ = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, saved));
+    }
+}
+
+pub(crate) fn settings_path(name: &str) -> Option<std::path::PathBuf> {
+    // Dev switch: another settings folder (the test harness gives each scenario a fresh one).
+    if let Some(folder) = std::env::var_os("RUSTNAROK_CLIENT_SETTINGS").filter(|folder| !folder.is_empty()) {
+        return Some(std::path::PathBuf::from(folder).join(name));
+    }
+    let home = || Some(std::path::PathBuf::from(std::env::var_os("HOME")?));
+    let folder = if cfg!(target_os = "macos") {
+        home()?.join("Library/Application Support")
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA")?.into()
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME").filter(|folder| !folder.is_empty()).map(Into::into).or_else(|| Some(home()?.join(".config")))?
+    };
+    Some(folder.join("rustnarok-client").join(name))
+}
+
+/// Where the saved login ID is kept.
+fn saved_id_path() -> Option<std::path::PathBuf> {
+    settings_path("saved_id")
+}
+
+fn saved_id() -> Option<String> {
+    let id = std::fs::read_to_string(saved_id_path()?).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
+/// The char-server row picked last time.
+fn saved_server() -> Option<usize> {
+    std::fs::read_to_string(settings_path("saved_server")?).ok()?.trim().parse().ok()
+}
+
+/// Keeps that row for the next login. Dev runs (`RUSTNAROK_CLIENT_LOGIN`) leave it alone, like the saved ID.
+fn remember_server(row: usize) {
+    if std::env::var_os("RUSTNAROK_CLIENT_LOGIN").is_some() {
+        return;
+    }
+    let Some(path) = settings_path("saved_server") else { return };
+    let _ = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, row.to_string()));
+}
+
+/// Keeps the ID for next time, or forgets it.
+fn remember_id(id: Option<&str>) {
+    let Some(path) = saved_id_path() else { return };
+    let _ = match id {
+        Some(id) => path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&path, id)),
+        None => std::fs::remove_file(&path),
+    };
+}
+
+/// A message's last sentence (after its last ". "), or all of it.
+fn last_sentence(text: &str) -> &str {
+    text.rsplit_once(". ").map_or(text, |(_, last)| last)
+}
+
+fn dialog_position(_dialog: &Texture) -> [f32; 2] {
+    dialog_position_of(screen())
+}
+
+/// Message boxes (280×120), before a map and on one: (W − 640) / 2 + 185 across, (H − 480) / 2 + 180 down; (377, 324)
+/// at 1024×768.
+fn dialog_position_of(screen: [f32; 2]) -> [f32; 2] {
+    [((screen[0] - 640.0) / 2.0 + 185.0).floor(), ((screen[1] - 480.0) / 2.0 + 180.0).floor()]
+}
+
+/// The service and server lists: centred across, two thirds of the free height down.
+fn service_position(window: &Texture) -> [f32; 2] {
+    [((screen()[0] - window.size[0]) / 2.0).floor(), ((screen()[1] - window.size[1]) / 1.5).floor()]
+}
+
+/// An attack asked for with the mouse.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Attack {
+    target: u32,
+    /// Kept up (Ctrl or /noctrl); otherwise only while the button is held.
+    continuous: bool,
+    held: bool,
+    /// The attack packet went out.
+    sent: bool,
+    /// Fixed at the click (`slow_target`): a fast target is chased toward where it's walking to, every CHASE_GAP_MS;
+    /// a slow one toward where it's drawn, every ATTACK_GAP_MS.
+    fast: bool,
+    /// Ice Wall or a trap (a skill unit on the ground): its own reach and chase (`ground_unit_reach`).
+    ground: bool,
+    /// A ground one the server answered with 0x0139: from then on it is chased to the attack range alone, the reach
+    /// the server checks.
+    told: bool,
+}
+
+/// The attack a 0x0139 brings back on `target`, not sent, fast and slow swapped (anything but fast becomes fast).
+/// The one under way keeps its Ctrl and held state; one that had ended comes back the way its click left it: one
+/// swing, or kept up with Ctrl or /noctrl.
+fn rearmed(attack: Option<Attack>, was: Option<Attack>, target: u32) -> Attack {
+    let (continuous, held) = match (attack, was) {
+        (Some(attack), _) => (attack.continuous, attack.held),
+        (None, Some(was)) => (was.continuous, false),
+        (None, None) => (true, false),
+    };
+    let fast = !attack.or(was).is_some_and(|attack| attack.fast);
+    Attack { held, fast, ..Attack::new(target, continuous) }
+}
+
+/// The attack a 0x0139 brings back on Ice Wall or a trap (`target`): as `rearmed`, still on the ground unit, now
+/// chased to the attack range alone. None when the attack wasn't on one.
+// ponytail: the game drops it here (sent from 5 cells, re-armed as a unit it can't find); rathena checks the plain
+// attack range, so dropping it would leave a wall 2 to 5 cells away never hit.
+fn rearmed_ground(attack: Option<Attack>, was: Option<Attack>, target: u32) -> Option<Attack> {
+    attack.or(was).filter(|attack| attack.ground && attack.target == target).map(|_| Attack { ground: true, told: true, ..rearmed(attack, was, target) })
+}
+
+/// What letting go of the button does to an attack.
+#[derive(Debug, PartialEq)]
+enum Release {
+    Keep,
+    /// It went out and was only while held: CZ_CANCEL_LOCKON.
+    Cancel,
+}
+
+impl Attack {
+    fn new(target: u32, continuous: bool) -> Self {
+        Self { target, continuous, held: true, sent: false, fast: true, ground: false, told: false }
+    }
+
+    fn release(&mut self) -> Release {
+        if self.continuous {
+            return Release::Keep;
+        }
+        self.held = false;
+        if self.sent { Release::Cancel } else { Release::Keep }
+    }
+
+    /// Keeps attacking while kept up or held; let go before it reached, one swing.
+    fn action(&self) -> u8 {
+        if self.continuous || self.held { net::ACT_ATTACK_REPEAT } else { net::ACT_ATTACK }
+    }
+}
+
+/// A chase walk goes more than this many whole ms after the last one: toward a fast target, a slow one. An attack
+/// packet goes more than ATTACK_GAP_MS after the last one too.
+const CHASE_GAP_MS: u64 = 450;
+const ATTACK_GAP_MS: u64 = 1200;
+/// "Attacks and skills cannot be used when your Weight is over 90%.", "Unable to attack while riding."
+const OVERWEIGHT: usize = 307;
+const RIDING_NO_ATTACK: usize = 1885;
+/// EFST_ALL_RIDING: a mount that can't attack (rathena's All_Riding has NoAttack).
+const ALL_RIDING: u16 = 613;
+/// /noctrl's lines: on, off.
+const NO_CTRL_ON: usize = 717;
+const NO_CTRL_OFF: usize = 718;
+/// /skillfail's lines: on, off.
+const SKILL_FAIL_ON: usize = 730;
+const SKILL_FAIL_OFF: usize = 731;
+
+/// What the player is doing, as far as a pending attack goes (`Game::player_motion`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PlayerMotion {
+    Stand,
+    Walk,
+    Flinch,
+    Cast,
+    /// A skill's motion.
+    Skill,
+    /// Its own swing, the pickup, sitting, dead.
+    Other,
+}
+
+/// Whether a pending attack is worked on (reach, chase, send) in this motion; otherwise it waits. Standing, walking
+/// or flinching; casting too for Sage, Professor and Baby Sage; casting and skill motions too for Gunslinger, Ninja,
+/// Taekwon and every job after. One on a ground skill unit: in skill motions too, never casting.
+fn attack_works(motion: PlayerMotion, job: u16, ground: bool) -> bool {
+    let later = matches!(job, 24 | 25 | 4046..=4360);
+    match motion {
+        PlayerMotion::Stand | PlayerMotion::Walk | PlayerMotion::Flinch => true,
+        PlayerMotion::Cast => !ground && (later || matches!(job, 16 | 4017 | 4039)),
+        PlayerMotion::Skill => ground || later,
+        PlayerMotion::Other => false,
+    }
+}
+
+/// What an attack in reach does now.
+#[derive(Debug, PartialEq)]
+enum AttackSend {
+    Send,
+    Wait,
+    /// A single swing let go of before it reached, in reach too soon after the last attack packet: dropped.
+    Drop,
+}
+
+/// The attack packet goes more than ATTACK_GAP_MS whole ms after the last one. Sooner, a single swing let go of is
+/// dropped and anything else waits.
+fn attack_send(attack: &Attack, last: Option<u64>, now: u64) -> AttackSend {
+    if last.is_none_or(|last| now > last + ATTACK_GAP_MS) {
+        AttackSend::Send
+    } else if !attack.continuous && !attack.held {
+        AttackSend::Drop
+    } else {
+        AttackSend::Wait
+    }
+}
+
+/// In reach of Ice Wall or a trap: max(5, attack range) cells (the attack range alone once the server has said it's too
+/// far, `told`), flat, from the player's drawn point to the unit's cell centre.
+fn ground_unit_reach(from: [f32; 2], centre: [f32; 2], attack_range: i32, told: bool) -> (bool, i32) {
+    let range = if told { attack_range } else { attack_range.max(5) };
+    let [dx, dz] = [centre[0] - from[0], centre[1] - from[1]];
+    ((range * 5) as f32 + 5.5 >= (dx * dx + dz * dz).sqrt(), range)
+}
+
+/// What a world press does to what's pending: whether it ends the attack, and whether it drops a pending skill or
+/// pickup. One pending action at a time: an attack click replaces the attack and drops the others, a pickup click or
+/// a ground walk ends the attack (the pickup or walk then takes the place of a pending skill or pickup itself). A
+/// double press and an NPC click leave everything.
+fn press_ends(click: &WorldClick, double: bool) -> (bool, bool) {
+    match click {
+        _ if double => (false, false),
+        WorldClick::Talk(_) => (false, false),
+        WorldClick::Attack(_) => (true, true),
+        WorldClick::Swing(_) | WorldClick::PickUp(_) | WorldClick::Warp | WorldClick::Ground => (true, false),
+    }
+}
+
+/// A target is slow when 4/3 of the player's ms per cell (whole ms, truncated) is less than its own; otherwise fast.
+fn slow_target(own_ms: f32, target_ms: f32) -> bool {
+    (4 * own_ms as u32) / 3 < target_ms as u32
+}
+
+/// One frame of a chase out of reach: the cell to ask a walk to, when it isn't the walk cell already and more than
+/// `gap` whole ms passed since the last chase walk. It becomes the walk cell, asked for at `now`, whether or not the
+/// move limit then lets it out.
+fn chase_walk(cell: [i32; 2], walk_cell: &mut Option<[i32; 2]>, last_chase: &mut Option<u64>, gap: u64, now: u64) -> Option<[i32; 2]> {
+    if *walk_cell == Some(cell) || last_chase.is_some_and(|last| now <= last + gap) {
+        return None;
+    }
+    (*walk_cell, *last_chase) = (Some(cell), Some(now));
+    Some(cell)
+}
+
+/// Whether the player's own motion changed in a way that clears the walk cell: anything but starting a walk (a stop,
+/// a swing, a flinch, sitting or standing up, a cast, the pickup, dying), and nothing while dead. Standing ready or
+/// not is the same motion.
+fn clears_walk_cell(before: (usize, bool), now: usize) -> bool {
+    let standing = |action| if action == actor::READY { actor::IDLE } else { action };
+    let (action, dead) = before;
+    !dead && standing(action) != standing(now) && now != actor::WALK
+}
+
+/// Why an attack can't start: weight at 90% or more, riding a mount that can't attack.
+fn attack_refused(weight: i64, max_weight: i64, riding: bool) -> Option<usize> {
+    if max_weight > 0 && weight * 10 >= max_weight * 9 {
+        Some(OVERWEIGHT)
+    } else if riding {
+        Some(RIDING_NO_ATTACK)
+    } else {
+        None
+    }
+}
+
+/// The player menu opens on the right release only for a still click: the pointer not moved at all, no Shift, the
+/// left button up, off the windows.
+fn menu_opens(moved: bool, shift: bool, left_down: bool, on_window: bool) -> bool {
+    !(moved || shift || left_down || on_window)
+}
+
+/// An Alt press for a companion on a monster: the mark left (companion, monster), and whether the attack goes now
+/// (with Shift, or a second press on the marked one).
+fn companion_mark(mark: Option<(u32, u32)>, companion: u32, target: u32, shift: bool) -> (Option<(u32, u32)>, bool) {
+    if shift || mark == Some((companion, target)) { (None, true) } else { (Some((companion, target)), false) }
+}
+
+/// What an aimed skill could land on: the player, a monster, another player.
+#[derive(Clone, Copy)]
+enum AimAt {
+    Me,
+    Monster,
+    Player,
+}
+
+/// A skill's range in cells at `level`: r1 + listed − r2, with r1 its range at `level` (1 where `AttackRange` has
+/// none) and r2 its range at the learned level, capped at `MaxLv` when the entry has one (0 where none, or at level
+/// 0). Listed + 1 when the entry has no ranges.
+fn skill_range(per_level: &[u16], max_lv: Option<u16>, level: u16, learned: u16, listed: u16) -> f32 {
+    if per_level.is_empty() {
+        return f32::from(listed) + 1.0;
+    }
+    let at = |level: u16| usize::from(level).checked_sub(1).and_then(|index| per_level.get(index)).map(|&range| f32::from(range));
+    let learned = max_lv.map_or(learned, |max| learned.min(max));
+    at(level).unwrap_or(1.0) + f32::from(listed) - at(learned).unwrap_or(0.0)
+}
+
+/// In reach at `range` cells: range × 5 + 5.5 world units or more than the distance (a NaN is out).
+fn skill_in_reach(distance: f32, range: f32) -> bool {
+    range * world::CELL + 5.5 >= distance
+}
+
+/// Jobs 1181 and 1284 count as big monsters whatever their radius.
+fn big_job(job: u16) -> bool {
+    matches!(job, 1181 | 1284)
+}
+
+/// The reach distance to a big monster: 20 units less for jobs 1181 and 1284, 4 × (r + 1) less for one standing on a
+/// radius of r > 0 cells, never below 0.
+fn reach_to(distance: f32, job: u16, radius: f32) -> f32 {
+    let cut = if big_job(job) {
+        20.0
+    } else if radius > 0.0 {
+        4.0 * (radius + 1.0)
+    } else {
+        0.0
+    };
+    (distance - cut).max(0.0)
+}
+
+/// How a unit skill's walk toward a big monster shifts the cell it sends, s cells by the angle θ (degrees, from the
+/// player toward the target).
+fn shift_by_angle(theta: f32, s: i32) -> [i32; 2] {
+    match theta {
+        theta if theta < 25.0 => [0, s],
+        theta if theta < 70.0 => [s, s],
+        theta if theta < 115.0 => [s, 0],
+        theta if theta < 160.0 => [s, -s],
+        theta if theta < 205.0 => [0, -s],
+        theta if theta < 250.0 => [-s, s],
+        theta if theta < 295.0 => [-s, 0],
+        theta if theta < 340.0 => [-s, -s],
+        _ => [0, s],
+    }
+}
+
+/// The cell a unit skill's walk sends toward a big monster at `aim` from `from` (ground points): shifted by
+/// `shift_by_angle` with s = 5 for jobs 1181 and 1284, else the radius; other targets' cells as they are.
+fn big_walk_cell(cell: [i32; 2], job: u16, radius: f32, from: [f32; 2], aim: [f32; 2]) -> [i32; 2] {
+    let s = if big_job(job) { 5 } else { radius as i32 };
+    if s <= 0 {
+        return cell;
+    }
+    let theta = (aim[0] - from[0]).atan2(-(aim[1] - from[1])).to_degrees().rem_euclid(360.0);
+    let [dx, dy] = shift_by_angle(theta, s);
+    [cell[0] + dx, cell[1] + dy]
+}
+
+/// Whether a press while aiming takes the unit: a monster with Shift up and another player with Shift down, the other
+/// way round for a support skill (standing in for the game's `IsPlayerSkill`). `/noshift` drops the Shift rule and a
+/// PvP map lets players in. Yourself only for a support skill, by the players' rule.
+fn aim_takes(at: AimAt, support: bool, shift: bool, no_shift: bool, pvp: bool) -> bool {
+    let players = no_shift || shift != support;
+    match at {
+        AimAt::Monster => no_shift || shift == support,
+        AimAt::Player => players || pvp,
+        AimAt::Me => support && players,
+    }
+}
+
+/// What a press while aiming uses the skill on: for a ground skill the cell under the pointer (a unit there doesn't
+/// count), for the others the unit under it. None: the press lets go of the aim.
+fn aim_use(ground: bool, unit: Option<u32>, cell: Option<[i32; 2]>) -> Option<SkillTarget> {
+    if ground { cell.map(SkillTarget::Cell) } else { unit.map(SkillTarget::Unit) }
+}
+
+/// A wheel event's notch: 1 toward the player (its delta below 0), -1 away, 0 for a zero delta. A trackpad's or
+/// Magic Mouse's gesture starts and ends with a zero delta, and `0.0.signum()` is 1: counted, it scrolled back a notch.
+fn wheel_rows(delta: f64) -> i32 {
+    if delta == 0.0 { 0 } else { -delta.signum() as i32 }
+}
+
+/// Canvas pixels of a trackpad's or Magic Mouse's scroll that make one wheel notch: 3 rows of 32-pixel item cells, so
+/// an item list keeps up with the fingers.
+// ponytail: one figure for every list and the camera, set from swipes on a MacBook trackpad; tune it here.
+const NOTCH_PIXELS: f64 = 96.0;
+
+/// The whole notches (signs as `wheel_rows`) in a scroll's pixel delta added to what earlier ones left in `carry`.
+/// macOS sends one swipe as 60 to 250 small deltas, its momentum included; a turn the other way drops what was left.
+fn pixel_rows(carry: &mut f64, delta: f64) -> i32 {
+    if delta * *carry < 0.0 {
+        *carry = 0.0;
+    }
+    *carry += delta;
+    let notches = (*carry / NOTCH_PIXELS).trunc();
+    *carry -= notches * NOTCH_PIXELS;
+    -notches as i32
+}
+
+/// The level a wheel turn picks while aiming (rows > 0 is down, lowering it): 1 to the learned level, and only for
+/// skills whose level can be picked.
+fn aim_level(level: u16, learned: u16, rows: i32, separate: bool) -> u16 {
+    if !separate {
+        return level;
+    }
+    (i32::from(level) - rows).clamp(1, i32::from(learned.max(1))) as u16
+}
+
+/// Talking needs the player standing (not walking, nor in a swing, a flinch, a cast, a skill's motion or the pickup)
+/// or sitting. A pending attack doesn't matter.
+fn may_talk(motion: PlayerMotion, sitting: bool) -> bool {
+    sitting || motion == PlayerMotion::Stand
+}
+
+/// π as the game takes it.
+#[allow(clippy::approx_constant)]
+const GAME_PI: f64 = 3.141592;
+
+/// The rathena direction (0 north, counting counter-clockwise) toward a cell's centre from where the player is drawn,
+/// x east and y north: the angle a = atan2(dx, −dy) in degrees, T = ((trunc(a + 22.5) + 180) / 45) mod 8. The player's
+/// own cell is north (a = 180°).
+fn direction_toward(from: [f32; 2], to: [i32; 2]) -> u8 {
+    let a = f64::atan2(f64::from(to[0]) - f64::from(from[0]), -(f64::from(to[1]) - f64::from(from[1]))) * 180.0 / GAME_PI;
+    (((a + 22.5).trunc() as i32 + 180) / 45).rem_euclid(8) as u8
+}
+
+/// How many sectors from rathena direction `target` the body faces, counted from its exact facing `rot` (degrees, 0
+/// south, 90 east): r = floor((rot − θT) / 45) mod 8, θT = ((T + 4) × 45) mod 360.
+fn sectors_from(rot: f32, target: u8) -> u8 {
+    let theta = ((u32::from(target) + 4) * 45 % 360) as f32;
+    (((rot - theta) / 45.0).floor() as i32).rem_euclid(8) as u8
+}
+
+/// An item can be picked up from the next cell, diagonals too.
+fn within_pickup(from: [i32; 2], at: [i32; 2]) -> bool {
+    (at[0] - from[0]).abs().max((at[1] - from[1]).abs()) <= 1
+}
+
+/// Where a walk to pick up an item at `item` goes: the cell next to it one step toward the player (the item's own when
+/// the player is on it). When that can't be walked on, the first of its neighbours that can: right, right and down,
+/// right and up, left, left and down, left and up, down, up (+y up).
+fn pickup_spot(player: [i32; 2], item: [i32; 2], walkable: impl Fn([i32; 2]) -> bool) -> [i32; 2] {
+    const AROUND: [[i32; 2]; 8] = [[1, 0], [1, 1], [1, -1], [-1, 0], [-1, 1], [-1, -1], [0, 1], [0, -1]];
+    let toward = [item[0] + (player[0] - item[0]).signum(), item[1] + (player[1] - item[1]).signum()];
+    if walkable(toward) {
+        return toward;
+    }
+    AROUND.iter().map(|step| [item[0] + step[0], item[1] + step[1]]).find(|&cell| walkable(cell)).unwrap_or(toward)
+}
+
+/// How long the player may stand out of reach with the walk cell beside the item, after the last walk went out, before
+/// that walk is asked for again: the server refused it silently (rathena's walk delay after a hit or a skill), or the
+/// player never left the cell.
+const PICKUP_RETRY_MS: u64 = 1000;
+/// How many times a pickup's walk is asked for again before the pickup is dropped (the spot can't be reached).
+const PICKUP_RETRIES: u8 = 3;
+
+/// What a pending pickup does this frame.
+#[derive(Debug, PartialEq)]
+enum PickStep {
+    /// Not standing (a walk under way finishes first), or already walking beside the item.
+    Wait,
+    /// Within a cell: turn toward it (CZ_CHANGE_DIRECTION), then CZ_ITEM_PICKUP.
+    PickUp,
+    /// Within a cell but already asked for, or its walk retried PICKUP_RETRIES times: dropped, nothing sent.
+    Drop,
+    /// Farther: a walk beside it (`spot`), unless the walk cell is already there.
+    Walk,
+    /// Standing out of reach on no walk: the walk cell is cleared so the next frame walks again.
+    Retry,
+}
+
+/// A pending pickup, worked on only while the player stands: within a cell, asked for once per item; farther, a walk
+/// to `spot` beside it when the walk cell isn't already there (standing clears the walk cell, so each stop short of
+/// the item asks again). A walk that never happened (`since_walk`: ms since the last walk went out) is asked for again
+/// after PICKUP_RETRY_MS, PICKUP_RETRIES times (`retries` so far), then the pickup is dropped.
+fn pickup_step(
+    motion: PlayerMotion,
+    player: [i32; 2],
+    item: [i32; 2],
+    asked: bool,
+    walk_cell: Option<[i32; 2]>,
+    spot: [i32; 2],
+    since_walk: Option<u64>,
+    retries: u8,
+) -> PickStep {
+    if motion != PlayerMotion::Stand {
+        PickStep::Wait
+    } else if within_pickup(player, item) {
+        if asked { PickStep::Drop } else { PickStep::PickUp }
+    } else if walk_cell != Some(spot) {
+        PickStep::Walk
+    } else if since_walk.is_some_and(|ms| ms <= PICKUP_RETRY_MS) {
+        PickStep::Wait
+    } else if retries < PICKUP_RETRIES {
+        PickStep::Retry
+    } else {
+        PickStep::Drop
+    }
+}
+
+/// The cursor over an NPC: a warp portal's, or talking.
+fn npc_cursor(job: u16) -> cursor::Kind {
+    if job == WARP_JOB { cursor::Kind::Warp } else { cursor::Kind::Talk }
+}
+
+/// A right click on an inventory item with a modifier: Alt sends the stack on, Shift moves it into the favourites or
+/// out, Ctrl identifies it. None: no modifier (the description).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum InventoryRight {
+    QuickMove,
+    Favorite,
+    Identify,
+}
+
+fn inventory_right(alt: bool, shift: bool, ctrl: bool) -> Option<InventoryRight> {
+    if alt {
+        Some(InventoryRight::QuickMove)
+    } else if shift {
+        Some(InventoryRight::Favorite)
+    } else if ctrl {
+        Some(InventoryRight::Identify)
+    } else {
+        None
+    }
+}
+
+/// A window that a button opens and shuts: shut when it's open, else a new one.
+fn toggled<T>(window: Option<T>, open: impl FnOnce() -> T) -> Option<T> {
+    if window.is_some() { None } else { Some(open()) }
+}
+
+/// Where Alt + right press sends a stored stack: the inventory while its window is open, else the open cart window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StorageTo {
+    Inventory,
+    Cart,
+}
+
+fn storage_quick_target(inventory_open: bool, cart_open: bool) -> Option<StorageTo> {
+    if inventory_open { Some(StorageTo::Inventory) } else { cart_open.then_some(StorageTo::Cart) }
+}
+
+/// How many a move between the cart and the storage takes: none or less is one, more than there is all of them.
+fn between_one_and(asked: u32, have: u32) -> u32 {
+    asked.max(1).min(have)
+}
+
+/// The server's answers that end a quick move's wait: an item gone from the storage (amount 0 too: refused), the
+/// inventory or the cart, a move turned down, or an item added to a deal.
+fn frees_quick_move(event: &MapEvent) -> bool {
+    matches!(
+        event,
+        MapEvent::StorageRemoved { .. }
+            | MapEvent::ItemRemoved { .. }
+            | MapEvent::CartRemoved { .. }
+            | MapEvent::MoveFailed { .. }
+            | MapEvent::TradeAdded { .. }
+    )
+}
+
+/// Where Alt + right click sends a stack: the first that's open of the storage, a trade, the cart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum QuickTo {
+    Storage,
+    Trade,
+    Cart,
+}
+
+fn quick_target(storage: bool, trade: bool, cart: bool) -> Option<QuickTo> {
+    [(storage, QuickTo::Storage), (trade, QuickTo::Trade), (cart, QuickTo::Cart)].into_iter().find(|(open, _)| *open).map(|(_, to)| to)
+}
+
+/// An item's link on the chat line, as the chat shows links.
+// ponytail: the tag the chat already reads for item links; the official client's own link isn't knowable.
+fn item_link(id: u32, name: &str) -> String {
+    format!("<ITEM>{name}<INFO>{id}</INFO></ITEM>")
+}
+
+/// Magnifier and Novice Magnifier (rathena's ITEMID_MAGNIFIER and ITEMID_NOVICE_MAGNIFIER).
+const MAGNIFIERS: [u32; 2] = [611, 12325];
+/// "You don't have any Magnifier."
+const NO_MAGNIFIER: usize = 2735;
+
+/// What a left click on the world does (`Game::world_click`).
+enum WorldClick {
+    /// A warp portal: a press on it is a ground press.
+    Warp,
+    Talk(u32),
+    Attack(u32),
+    Swing(u32),
+    PickUp(u32),
+    Ground,
+}
+
+/// CZ_REQUEST_MOVE goes only more than this many whole milliseconds after the last one; a walk asked for sooner is
+/// dropped. The held button tries again as often.
+const MOVE_GAP_MS: u64 = 300;
+/// Two presses this close, the pointer not moved at all between them, make a double press.
+const DOUBLE_PRESS: Duration = Duration::from_millis(500);
+
+/// The start of the whole-ms clock (`whole_ms`), set as the client starts.
+static START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// Whole milliseconds of a monotonic clock, as the walk timers count them.
+fn whole_ms(at: Instant) -> u64 {
+    at.saturating_duration_since(*START).as_millis() as u64
+}
+
+thread_local! {
+    /// What `shown_ms` adds to `whole_ms`: the server's tick less REMOTE_DELAY, by `ServerClock`'s guess; 0 until it
+    /// knows the server's clock.
+    static SHOWN_OFFSET: std::cell::Cell<i64> = const { std::cell::Cell::new(0) };
+}
+
+/// The shown clock at `at`, whole ms: the server's tick `ServerClock` guesses then, less 72 (`actor::REMOTE_DELAY`).
+/// Walks keep their node times on it, as server ticks, so a change of the guess moves every walk under way on the next
+/// frame.
+fn shown_ms(at: Instant) -> u64 {
+    (whole_ms(at) as i64 + SHOWN_OFFSET.get()).max(0) as u64
+}
+
+/// The server's `tick` is at `at`: `shown_ms` follows from it.
+fn set_shown_clock(tick: u32, at: Instant) {
+    let delay = actor::REMOTE_DELAY.as_millis() as i64;
+    SHOWN_OFFSET.set(i64::from(tick) - whole_ms(at) as i64 - delay);
+}
+
+/// Whether a walk may go out at `now` (whole ms): more than MOVE_GAP_MS after the last one.
+fn may_move(last: Option<u64>, now: u64) -> bool {
+    last.is_none_or(|last| now > last + MOVE_GAP_MS)
+}
+
+/// Whether the held button walks toward the pointer now: held, nothing pending (an item being picked up), and more
+/// than MOVE_GAP_MS whole milliseconds since the last try.
+fn follows_pointer(held: bool, pending: bool, last_try: Option<u64>, now: u64) -> bool {
+    held && !pending && last_try.is_none_or(|last| now > last + MOVE_GAP_MS)
+}
+
+/// A walk goal clicked while the player is busy (`Actor::busy`: a swing, the pickup, a skill's motion, sitting), kept
+/// until that ends and then sent as it is, through the MOVE_GAP_MS rule. A map change clears it.
+#[derive(Default)]
+struct StoredWalk {
+    goal: Option<[i32; 2]>,
+    was_busy: bool,
+}
+
+impl StoredWalk {
+    /// A click found `goal`: it ends the pending pickup or skill, then is kept while busy (a later one replaces it).
+    /// The goal to send now, if not busy.
+    fn click<T>(&mut self, goal: [i32; 2], busy: bool, pending: &mut Option<T>) -> Option<[i32; 2]> {
+        *pending = None;
+        self.goal = busy.then_some(goal);
+        (!busy).then_some(goal)
+    }
+
+    /// Once a frame: the kept goal when the player has just stopped being busy, unless it died.
+    fn frame(&mut self, busy: bool, dead: bool) -> Option<[i32; 2]> {
+        let ended = std::mem::replace(&mut self.was_busy, busy) && !busy;
+        if ended && !dead { self.goal.take() } else { None }
+    }
+}
+
+/// The left button as the world reads it: once a frame, as the game polls it. A press is the button down now and up
+/// at the last read; `due` is a press since then that no window took. A press and release between two reads does
+/// nothing in the world.
+#[derive(Default)]
+struct ButtonRead {
+    was_down: bool,
+    due: bool,
+}
+
+impl ButtonRead {
+    /// This frame's read: whether the world takes a press now.
+    fn read(&mut self, down: bool) -> bool {
+        let pressed = down && !self.was_down && self.due;
+        (self.was_down, self.due) = (down, false);
+        pressed
+    }
+}
+
+/// A press now, after the last one counted (when, where, and whether the pointer moved off since): whether it's a
+/// double press, and the press the next one counts from. Presses come in pairs: after a double press the next one
+/// starts afresh, so pressing on in one spot acts on every other press.
+fn press_pair(last: Option<(Instant, [f32; 2], bool)>, now: Instant, cursor: [f32; 2]) -> (bool, Option<(Instant, [f32; 2], bool)>) {
+    let double = double_press(last, now);
+    (double, (!double).then_some((now, cursor, false)))
+}
+
+/// What a press on the ground (or a warp) or a held try does with the cell under the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GroundAct {
+    Walk,
+    Turn,
+    Nothing,
+}
+
+/// A press on the ground or a warp: nothing with Ctrl or the right button down; a turn with Shift, in a chat room or
+/// sitting; else a walk. Nothing where no cell is under the pointer.
+fn ground_press(ctrl: bool, shift: bool, sitting: bool, in_room: bool, right_down: bool, cell: bool) -> GroundAct {
+    match () {
+        _ if ctrl || right_down || !cell => GroundAct::Nothing,
+        _ if shift || in_room || sitting => GroundAct::Turn,
+        _ => GroundAct::Walk,
+    }
+}
+
+/// A held try, once MOVE_GAP_MS has passed with nothing pending and the pointer off the windows: None (no try, the
+/// try time left alone) with Ctrl down or no cell under the pointer; else a turn or a walk as a press decides, the
+/// right button aside.
+fn held_try(ctrl: bool, shift: bool, sitting: bool, in_room: bool, cell: bool) -> Option<GroundAct> {
+    (!ctrl && cell).then(|| ground_press(false, shift, sitting, in_room, false, true))
+}
+
+/// Whether a world press starts the hold (`walk_held`, the try time now): every press but one on something to attack.
+fn press_holds(click: &WorldClick) -> bool {
+    !matches!(click, WorldClick::Attack(_) | WorldClick::Swing(_))
+}
+
+/// Whether a press now, after the last one (when, and whether the pointer moved since), is a double press.
+fn double_press(last: Option<(Instant, [f32; 2], bool)>, now: Instant) -> bool {
+    last.is_some_and(|(at, _, moved)| !moved && now.saturating_duration_since(at) < DOUBLE_PRESS)
+}
+
+/// How far the pointer may wander from a right press and still count as still there (the camera's double click, a
+/// click not a drag), in canvas pixels: a hand's tremor on a mouse or trackpad, which a scaled window turns into
+/// fractions.
+// ponytail: an estimate; one canvas pixel was too strict on a scaled window.
+const POINTER_SLACK: f32 = 2.0;
+
+/// Whether the pointer at `to` is on another whole canvas pixel than at `from`: a left double press allows no slack.
+fn left_pixel(from: [f32; 2], to: [f32; 2]) -> bool {
+    from.map(f32::floor) != to.map(f32::floor)
+}
+
+/// Whether the pointer at `to` has moved off a press at `from`.
+fn moved_off(from: [f32; 2], to: [f32; 2]) -> bool {
+    (to[0] - from[0]).abs().max((to[1] - from[1]).abs()) >= POINTER_SLACK
+}
+
+fn offset(origin: [f32; 2], offset: [f32; 2]) -> [f32; 2] {
+    [origin[0] + offset[0], origin[1] + offset[1]]
+}
+
+fn contains(position: [f32; 2], size: [f32; 2], point: [f32; 2]) -> bool {
+    (0..2).all(|axis| point[axis] >= position[axis] && point[axis] < position[axis] + size[axis])
+}
+
+/// The button image for the pointer state `(position, mouse down)`.
+fn button_sprite(pointer: ([f32; 2], bool), position: [f32; 2], images: &ButtonImages) -> Sprite<'_> {
+    let image = match (contains(position, images[0].size, pointer.0), pointer.1) {
+        (true, true) => &images[2],
+        (true, false) => &images[1],
+        (false, _) => &images[0],
+    };
+    (image, position, image.size)
+}
+
+/// What circles a unit: spirit spheres (or coins), Millennium Shield shields, charms (element 1-4 and how many) and
+/// souls.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Orbs {
+    spheres: u16,
+    shields: u16,
+    charms: (u16, u16),
+    souls: u16,
+}
+
+/// Changes what circles a unit; a unit left with nothing leaves the map.
+fn change_orbs(spirits: &mut HashMap<Option<u32>, Orbs>, unit: Option<u32>, change: impl FnOnce(&mut Orbs)) {
+    let orbs = spirits.entry(unit).or_default();
+    change(orbs);
+    if orbs.charms.1 == 0 {
+        orbs.charms = (0, 0);
+    }
+    if *orbs == Orbs::default() {
+        spirits.remove(&unit);
+    }
+}
+
+/// Stores a unit's new Shadow Scar count; Critical Wound's streaks play on it when the count rises above the last, with effects on.
+// ponytail: the count is kept even when it falls, so a rise after a fall plays again.
+fn shadow_scars_rose(scars: &mut HashMap<u32, u16>, unit: u32, amount: u16, effects_on: bool) -> bool {
+    let last = scars.insert(unit, amount).unwrap_or(0);
+    effects_on && amount > last
+}
+
+/// The Royal Guard line, whose rage spheres rathena sends as shields (and as spheres when one comes into view).
+// ponytail: both packets go into the one sphere count for these jobs.
+fn guard_job(job: u16) -> bool {
+    matches!(job, 4066 | 4073 | 4082 | 4083 | 4102 | 4110 | 4258 | 4281)
+}
+
+/// Where `count` things circling a body at `height` are now: each one's center, and whether it's on the near side.
+fn orbit(count: u16, height: f32, turned: f32) -> impl Iterator<Item = ([f32; 2], bool)> {
+    (0..count).map(move |place| {
+        let angle = turned * SPIRIT_TURN + f32::from(place) * std::f32::consts::TAU / f32::from(count);
+        ([angle.cos() * SPIRIT_RADIUS, -height + angle.sin() * SPIRIT_RADIUS * SPIRIT_TILT], angle.sin() > 0.0)
+    })
+}
+
+/// Jobs whose spirits are coins: Gunslinger, Rebellion, their baby forms, Night Watch; anyone else's are spheres.
+// ponytail: inferred from who has Coin Flip; the server doesn't say.
+fn coin_job(job: u16) -> bool {
+    matches!(job, 24 | 4215 | 4228 | 4229 | 4306)
+}
+
+/// Splits NPC text into lines that fit `width`; `^RRGGBB` switches color. Returns colored pieces per line.
+/// A message box's lines: the client's messages break lines with runs of spaces; each part wraps at word ends.
+fn message_lines(font: &text::Font, text: &str, width: f32) -> Vec<String> {
+    text.split("  ")
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .flat_map(|part| wrap_colored(font, part, width).into_iter().map(|pieces| pieces.into_iter().map(|(_, piece)| piece).collect::<String>()))
+        .collect()
+}
+
+/// Opens a web page in the system's browser. A client driven over the control socket only notes it.
+fn open_page(game: &mut Game, page: &str) {
+    if control::driven() {
+        game.opened_page = Some(page.to_owned());
+        return;
+    }
+    // The address goes as one argument to a program that takes it as is; no shell reads it.
+    let opener = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(windows) {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(opener).arg(page).spawn();
+}
+fn wrap_colored(font: &text::Font, text: &str, width: f32) -> iteminfo::ColoredLines {
+    wrap_linked(font, text, width).into_iter().map(|pieces| pieces.into_iter().map(|(color, piece, _)| (color, piece)).collect()).collect()
+}
+
+/// Colour-coded text wrapped to `width`, item links in their colour and each piece with the link it's part of.
+fn wrap_linked(font: &text::Font, text: &str, width: f32) -> links::LinkedLines {
+    wrap_linked_by(font, text, width, false, links::Target::color)
+}
+
+/// `wrap_linked`, breaking between words or (`by_char`, as NPC text does) wherever the next character would pass
+/// `width`, links in `color_of` theirs.
+fn wrap_linked_by(font: &text::Font, text: &str, width: f32, by_char: bool, color_of: fn(&links::Target) -> [u8; 3]) -> links::LinkedLines {
+    let mut wrapped: links::LinkedLines = vec![Vec::new()];
+    let mut line_width = 0.0;
+    let mut color = [0, 0, 0];
+    for (part, item) in links::pieces(text) {
+        // An item's picture is one piece, never split: it starts the next line when it doesn't fit on this one.
+        if let Some(size) = npc_say::picture_size(item.as_ref()) {
+            if line_width + size > width {
+                wrapped.push(Vec::new());
+                line_width = 0.0;
+            }
+            line_width += size;
+            wrapped.last_mut().unwrap().push((color, part, item));
+            continue;
+        }
+        for (row, pieces) in wrap_plain(font, &part, width, line_width, &mut color, by_char).into_iter().enumerate() {
+            if row > 0 {
+                wrapped.push(Vec::new());
+                line_width = 0.0;
+            }
+            for (color, piece) in pieces {
+                line_width += font.width(&piece);
+                let color = item.as_ref().map_or(color, color_of);
+                wrapped.last_mut().unwrap().push((color, piece, item.clone()));
+            }
+        }
+    }
+    wrapped
+}
+
+/// Colour-coded text wrapped to `width` between words or `by_char`, its first line already `used` wide and `color` in
+/// force (left as the text leaves it).
+fn wrap_plain(font: &text::Font, text: &str, width: f32, used: f32, color: &mut [u8; 3], by_char: bool) -> iteminfo::ColoredLines {
+    let mut lines: iteminfo::ColoredLines = vec![Vec::new()];
+    let mut line_width = used;
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(code) =
+            rest.strip_prefix('^').filter(|code| code.len() >= 6 && code.is_char_boundary(6) && code[..6].chars().all(|digit| digit.is_ascii_hexdigit()))
+        {
+            let value = u32::from_str_radix(&code[..6], 16).unwrap();
+            *color = [(value >> 16) as u8, (value >> 8) as u8, value as u8];
+            rest = &code[6..];
+            continue;
+        }
+        // Next word (with its leading space) up to the next space or color code, or the next character.
+        // A letter goes with the marks on it; a word ends at a space, a colour code or, in Thai, the next letter.
+        let first = text::cluster_len(rest);
+        let word_end = rest[first..].find([' ', '^']).map_or(rest.len(), |index| index + first);
+        let end = if by_char { first } else { next_break(rest, first, word_end) };
+        let word = &rest[..end];
+        let word_width = font.width(word);
+        if line_width + word_width > width && line_width > 0.0 {
+            lines.push(Vec::new());
+            line_width = 0.0;
+        }
+        let word = if line_width == 0.0 && !by_char { word.trim_start() } else { word };
+        let line = lines.last_mut().unwrap();
+        // Characters of one colour make one piece.
+        match line.last_mut() {
+            Some((last, piece)) if by_char && last == color => piece.push_str(word),
+            _ => line.push((*color, word.to_owned())),
+        }
+        line_width += font.width(word);
+        rest = &rest[end..];
+    }
+    lines
+}
+
+/// Where the word that starts `rest` ends: `word_end`, or sooner where Thai text may break (`text::breaks_between`),
+/// from `first` bytes in.
+fn next_break(rest: &str, first: usize, word_end: usize) -> usize {
+    let mut before = rest[..first].chars().last();
+    for (at, character) in rest[first..word_end].char_indices() {
+        if before.is_some_and(|before| text::breaks_between(before, character)) {
+            return first + at;
+        }
+        before = Some(character);
+    }
+    word_end
+}
+
+/// A login refusal's (AC_REFUSE_LOGIN) line by code; none for 3 and codes the game's table doesn't know.
+fn login_refusal_message(code: u32) -> Option<usize> {
+    Some(match code {
+        0 => 6,
+        1 => 267,
+        2 => 8,
+        4 => 266,
+        5 => 310,
+        6 => 449,
+        7 => 439,
+        8 => 681,
+        9..=15 => 703 + code as usize - 9,
+        17 => 1380,
+        18 => 1381,
+        19 => 1751,
+        20 => 1752,
+        21 => 1786,
+        22..=27 | 30 => 3440,
+        28 => 2731,
+        29 => 2732,
+        33 => 2682,
+        36 => 3453,
+        99 => 368,
+        100 => 809,
+        101 => 810,
+        102 => 811,
+        103 => 859,
+        104 => 860,
+        105 => 1372,
+        106 => 1293,
+        108 => 1393,
+        109 => 1394,
+        110 => 2345,
+        112 => 2410,
+        242 => 3439,
+        243 => 3687,
+        244 => 4190,
+        _ => return None,
+    })
+}
+
+/// A login refusal's box: none for 16 (straight back to the login window); 6, 17 and 100 with the block's date in it;
+/// 3 and unknown codes "Rejected from Server." with the code after it.
+fn login_refusal_text(code: u32, date: &str, messages: &[String]) -> Option<String> {
+    let message = |id: usize| messages.get(id).map_or("", String::as_str);
+    match (code, login_refusal_message(code)) {
+        (16, _) => None,
+        (6 | 17 | 100, Some(id)) => Some(rustnarok_client::messages::fill(message(id), &[&date])),
+        (_, Some(id)) => Some(message(id).to_owned()),
+        (_, None) => Some(format!("{}({code})", message(9))),
+    }
+}
+
+/// An old client (5) or a deleted account (99): the client closes after the box.
+fn login_refusal_quits(code: u32) -> bool {
+    matches!(code, 5 | 99)
+}
+
+/// A ban notice's (SC_NOTIFY_BAN) line before a map.
+fn ban_message(code: u8) -> usize {
+    match code {
+        0 => 3,
+        1 => 4,
+        2 => 5,
+        3 => 241,
+        4 => 264,
+        5 => 305,
+        6 => 438,
+        7 => 439,
+        8 => 440,
+        9 => 529,
+        10 => 530,
+        11..=14 => 575 + usize::from(code) - 11,
+        16 => 606,
+        17 => 607,
+        18 => 678,
+        100 => 1123,
+        101 => 1178,
+        102 => 1179,
+        103..=105 => 1309 + usize::from(code) - 103,
+        108 => 1582,
+        109 => 1583,
+        110 => 1589,
+        113 => 2021,
+        114 => 2344,
+        116 => 3635,
+        _ => 3,
+    }
+}
+
+/// The char server refusing the account (HC_REFUSE_ENTER): the line, and whether it goes back to the server list
+/// (118, 119) rather than the login window.
+fn char_refusal(code: u8) -> (usize, bool) {
+    match code {
+        1 => (208, false),
+        111 => (1865, false),
+        118 => (3818, true),
+        119 => (2929, true),
+        _ => (9, false),
+    }
+}
+
+/// What a frame shows: images plus text to rasterize (with color), drawn in that order per layer (per window: see `window`).
+#[derive(Default)]
+struct Layer<'a> {
+    sprites: Vec<Sprite<'a>>,
+    texts: Vec<(String, [f32; 2], [u8; 3])>,
+    /// How see-through it is drawn, 0 (opaque) to 1: a window being dragged.
+    faded: f32,
+    /// Where each window after the first starts (sprites, texts): it covers the text of the windows before it.
+    windows: Vec<(usize, usize)>,
+    /// Where the layer sits among the windows (`front`), and each window after the first.
+    place: front::Place,
+    places: Vec<front::Place>,
+    /// The rectangle on screen each window after the first is cut to, if any (`clipped`).
+    clips: Vec<Option<[f32; 4]>>,
+}
+
+impl Layer<'_> {
+    /// Starts another window: what's drawn from here goes over everything drawn so far, text included.
+    fn window(&mut self) -> &mut Self {
+        let place = self.place;
+        self.window_at(place)
+    }
+
+    /// Starts `top`'s window, which sits where `top` does among the windows (`front::place`).
+    fn window_of(&mut self, top: Top) -> &mut Self {
+        self.window_at(front::place(top))
+    }
+
+    /// Starts the window Esc knows as `id` (`window_of`).
+    fn esc(&mut self, id: escape::WindowId) -> &mut Self {
+        self.window_of(Top::Esc(id))
+    }
+
+    fn window_at(&mut self, place: front::Place) -> &mut Self {
+        self.windows.push((self.sprites.len(), self.texts.len()));
+        self.places.push(place);
+        self.clips.push(None);
+        self
+    }
+
+    /// Goes on with the layer's window, what's drawn from here cut to `rect` on screen (`None`: not cut).
+    fn clipped(&mut self, rect: Option<[f32; 4]>) -> &mut Self {
+        self.window();
+        *self.clips.last_mut().unwrap() = rect;
+        self
+    }
+
+    /// A layer for `top`'s window.
+    fn of(top: Top) -> Self {
+        Self { place: front::place(top), ..Self::default() }
+    }
+
+    /// A layer over every window (`front::Place::Over`).
+    fn over() -> Self {
+        Self { place: front::Place::Over, ..Self::default() }
+    }
+
+    /// White text with a black outline, as the client draws names and chat over the world.
+    fn outlined(&mut self, text: &str, position: [f32; 2]) {
+        self.outlined_in(text, position, CHAT_WHITE);
+    }
+
+    fn outlined_in(&mut self, text: &str, position: [f32; 2], color: [u8; 3]) {
+        for [dx, dy] in [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]] {
+            self.texts.push((text.to_owned(), offset(position, [dx, dy]), [0, 0, 0]));
+        }
+        self.texts.push((text.to_owned(), position, color));
+    }
+}
+
+struct App {
+    grf: Grf,
+    /// NPC and monster sprite names by job ID, from the client's Lua tables.
+    job_names: HashMap<u16, String>,
+    /// Sprite scale by monster job. A job that isn't listed is drawn at 1×.
+    monster_sizes: HashMap<u16, f32>,
+    /// Shadow width by sprite job, in cells (`actor::shadow_factor`).
+    shadow_factors: HashMap<u16, f32>,
+    location_radii: HashMap<u16, f32>,
+    /// Pets' tables and what they say.
+    pets: pet::Data,
+    /// The achievements (the translation's achievements.lub) and the titles they give, by ID.
+    achievement_info: HashMap<u32, lua::AchievementInfo>,
+    /// Laphine boxes by the box's item ID.
+    synthesis_boxes: HashMap<u32, lua::SynthesisBox>,
+    upgrade_boxes: HashMap<u32, lua::UpgradeBox>,
+    title_names: HashMap<u32, String>,
+    /// Random options' texts by option ID (empty without the table: then items show no option rows).
+    random_option_texts: HashMap<u16, String>,
+    /// Item names and resources by item ID, and the client's numbered messages.
+    items: HashMap<u32, ItemInfo>,
+    /// The battlegrounds the queue window lists.
+    battlegrounds: Vec<lua::Battleground>,
+    /// The cards' words in item names.
+    card_names: inventory::CardNames,
+    /// Card illustration names (`num2cardillustnametable.txt`).
+    card_pictures: iteminfo::CardPictures,
+    /// What each reform item can turn into, from the client's reform list.
+    reforms: HashMap<u32, Vec<lua::ReformInfo>>,
+    /// Enchant tables from the client's Lua, by table number.
+    enchant_tables: HashMap<u64, lua::EnchantTable>,
+    /// The styling shop's rows (stylingshopinfo). Empty when the files aren't in the data.
+    styling_shop: lua::StylingShop,
+    /// The attendance check's event; no rewards when the data has none.
+    attendance: lua::Attendance,
+    /// The package boxes and their sets (SelectPackageItem_Cln); empty when the data has none.
+    packages: std::rc::Rc<lua::Packages>,
+    messages: Vec<String>,
+    /// Item icons by file, loaded when first shown.
+    icons: HashMap<String, Option<Texture>>,
+    modifiers: ModifiersState,
+    /// Maps with the indoor camera.
+    indoor: HashSet<String>,
+    /// Maps with no big minimap (`data\ExceptionMinimapNameTable.txt`).
+    minimap_exceptions: HashSet<String>,
+    /// Maps with their own camera table; the view the player left; whether it's written (not when driven).
+    viewpoints: HashMap<String, rustnarok_client::map::Viewpoint>,
+    saved_view: SavedView,
+    save_view: bool,
+    look_tables: LookTables,
+    /// Job names shown to players.
+    pc_job_names: HashMap<u16, String>,
+    /// Castle names by id, for the guild window's list.
+    agit_names: HashMap<u8, String>,
+    /// Maps' display names, and the world maps with their box colors.
+    map_names: HashMap<String, String>,
+    worlds: (Vec<rustnarok_client::lua::World>, [[u8; 4]; 2]),
+    /// Skill names and icons, the skill window's layout, and status icon files (the client's Lua tables).
+    skill_info: HashMap<u16, SkillInfo>,
+    /// Skills' descriptions, line by line.
+    skill_descriptions: HashMap<u16, Vec<String>>,
+    skill_trees: SkillTrees,
+    /// The client's reputation groups and reputations.
+    reputation_tables: reputation::Tables,
+    /// The client's navigation tables: maps, the ways between them, NPCs and monsters.
+    navi_tables: lua::NaviTables,
+    status_icon_files: HashMap<u16, (u8, String)>,
+    /// What each status icon says when pointed at.
+    state_infos: HashMap<u16, lua::StateInfo>,
+    /// Which effects things play.
+    effect_table: effects::Table,
+    /// Quests' titles, descriptions and summaries.
+    quest_texts: HashMap<u32, quest::QuestText>,
+    quest_filters: quest::Filters,
+    /// Sound out, the player's sound settings, and the music each map plays.
+    audio: Option<sound::Audio>,
+    sound: sound::Settings,
+    music: HashMap<String, String>,
+    /// /effect: effects are drawn and heard; off, they still play, unseen and silent.
+    graphics: options::GraphicsSettings,
+    /// Keys to actions, from the game's hotkey tables and the player's UserKeys file.
+    keybinds: shortcuts::Shortcuts,
+    /// Print Screen writes the next frame here and keeps running.
+    print_screen: Option<std::path::PathBuf>,
+    /// The file a screenshot was just saved to, for its chat line.
+    shot_saved: Option<String>,
+    /// The FPS and ping corner's numbers (Extras > FPS and ping).
+    meter: meter::Meter,
+    cursor_look: cursor::Cursor,
+    /// The client's loading pictures, and the loading screen while it's up.
+    loading_images: Vec<String>,
+    loading: Option<Loading>,
+    font: Font,
+    proxy: EventLoopProxy<NetEvent>,
+    gpu: Option<Gpu>,
+    assets: Option<Assets>,
+    scene: Scene,
+    char_session: Option<CharSession>,
+    /// When the wait up now began, and when the server list opened (their time limits).
+    wait_began: Instant,
+    server_list_opened: Instant,
+    /// The login servers the data folder's clientinfo.xml lists, and the one picked.
+    connections: Vec<rustnarok_client::clientinfo::Connection>,
+    connection: usize,
+    /// Which char server we picked (going back to character select reconnects to it), and leaving was agreed.
+    char_server: usize,
+    quitting: bool,
+    /// Tab is held down (the fourth shortcut modifier).
+    tab_held: bool,
+    /// The key pressed last. An auto-repeat fires its shortcut only for this key.
+    last_key: Option<Key>,
+    /// The game went back to character select at least once.
+    returned: bool,
+    /// The slot of the character last played, selected again back at character select.
+    /// The login that's in progress: what the char and map servers need to see.
+    account: Option<LoginAccepted>,
+    /// The character chosen to play, until its map is entered.
+    playing: Option<Character>,
+    /// Connected to the map server, waiting to enter: session and map name; and what the server sent meanwhile (the
+    /// achievements, at login), handled once the game is on.
+    entering: Option<(MapSession, String)>,
+    early_events: Vec<MapEvent>,
+    /// Map packets heard since the last frame, applied at the start of the next.
+    frame_events: Vec<MapEvent>,
+    /// The last game frame was drawn after every command, packet and input since: `state` needn't draw another.
+    frame_current: bool,
+    /// Our guess of the server's tick, to place walks in time; and whether a map has loaded since the last
+    /// ZC_NOTIFY_TIME (the first one after a load sets the clock outright).
+    server_clock: actor::ServerClock,
+    map_loaded: bool,
+    fields: [String; 2],
+    /// Remember the ID for next time (the login window's save box).
+    save_id: bool,
+    /// The login window's account drop-down: the pick (of LOGIN_ACCOUNTS), and whether its list is open.
+    // ponytail: the pick isn't sent with the login (rathena has no account class).
+    account_kind: usize,
+    account_list: bool,
+    focus: usize,
+    cursor: [f32; 2],
+    /// Trackpad scroll pixels short of a whole notch (`pixel_rows`).
+    wheel_carry: f64,
+    mouse_down: bool,
+    /// Clicks on the char-server list, so a second one on the same row enters it.
+    server_clicks: window::Clicks,
+    /// The right button is down: a left press on the ground then neither walks nor turns.
+    right_down: bool,
+    button: ButtonRead,
+    /// Dev switch RUSTNAROK_CLIENT_CLICKS: when (after entering the map), where, and where to drag to, last first.
+    auto_input: Vec<ScriptedInput>,
+    blink_start: Instant,
+    drawn_blink_phase: u128,
+    started: Instant,
+    screenshot: Option<String>,
+    /// The character select's dev switches (RUSTNAROK_CLIENT_MAKE, RUSTNAROK_CLIENT_DELETE) ran.
+    scripted: bool,
+}
+
+impl App {
+    /// A map's music, as mp3nametable.txt names it, or off the maps the title's (bgm\01.mp3).
+    fn play_music(&mut self, map: Option<&str>) {
+        let Some(audio) = &mut self.audio else { return };
+        let file = map.and_then(|map| self.music.get(&map_key(map))).map_or("bgm\\01.mp3", String::as_str);
+        audio.play_music(Some(&sound::music_path(file)));
+    }
+
+    fn blink_phase(&self) -> u128 {
+        self.blink_start.elapsed().as_millis() / CARET_BLINK.as_millis()
+    }
+
+    /// Milliseconds since the client started, as the server's tick packets expect.
+    fn client_tick(&self) -> u32 {
+        self.started.elapsed().as_millis() as u32
+    }
+
+    fn wait(&mut self, wait: Wait) {
+        let scene = std::mem::replace(&mut self.scene, Scene::Login);
+        self.wait_began = Instant::now();
+        self.scene = Scene::Waiting(wait, Box::new(scene));
+    }
+
+    /// Cancel on the wait box, or a wait past its limit: disconnected, "Failed to Connect to Server.", the login window.
+    fn give_up(&mut self) {
+        self.char_session = None;
+        self.entering = None;
+        self.message(self.message_text(CONNECT_FAILED), Scene::Login);
+    }
+
+    fn message(&mut self, text: impl Into<String>, back: Scene) {
+        self.scene = Scene::Message(text.into(), Box::new(back));
+    }
+
+    /// The Login button or Enter: the button's sound, then an ID under 4 bytes or a password under 6 says so and stays;
+    /// else the login goes out.
+    fn submit_login(&mut self) {
+        if let Some(audio) = &mut self.audio {
+            audio.play(&self.grf, BUTTON_SOUND, 1.0);
+        }
+        if let Some((id, least)) = login_refusal(&self.fields[0], &self.fields[1]) {
+            let text = rustnarok_client::messages::fill(&self.message_text(id), &[&least]);
+            self.message(text, Scene::Login);
+            return;
+        }
+        self.send_login();
+    }
+
+    /// Sends the login (the dev switch's too, which skips the button's checks).
+    fn send_login(&mut self) {
+        self.wait(Wait::Login);
+        let proxy = self.proxy.clone();
+        let [id, password] = self.fields.clone();
+        let (server, version) = self.login_server();
+        set_langtype(self.connections.get(self.connection));
+        std::thread::spawn(move || {
+            let _ = proxy.send_event(NetEvent::Login(net::login(&server, version, &id, &password)));
+        });
+    }
+
+    /// Where to log in, and the client version to say: RUSTNAROK_CLIENT_SERVER, else the connection picked from
+    /// clientinfo.xml, else the local default.
+    fn login_server(&self) -> (String, u32) {
+        let connection = self.connections.get(self.connection);
+        let version = connection.map_or(0, |connection| connection.version);
+        let server = std::env::var("RUSTNAROK_CLIENT_SERVER").ok().or_else(|| connection.map(|connection| connection.server()));
+        (server.unwrap_or_else(|| DEFAULT_SERVER.to_owned()), version)
+    }
+
+    /// Takes a connection: its loading pictures, if it names any, and on to the login window.
+    fn choose_connection(&mut self, picked: usize) {
+        self.connection = picked;
+        if let Some(pictures) = self.connections.get(picked).map(|connection| &connection.loading).filter(|pictures| !pictures.is_empty()) {
+            self.loading_images = pictures.iter().map(|picture| format!("{UI}{picture}")).collect();
+        }
+        self.scene = Scene::Login;
+    }
+
+    /// OK, Enter, or a double click: the button sound, then the picked char server.
+    fn confirm_server(&mut self) {
+        if let Some(audio) = &mut self.audio {
+            audio.play(&self.grf, "버튼소리.wav", 1.0);
+        }
+        self.enter_char_server();
+    }
+
+    fn enter_char_server(&mut self) {
+        let (server, selected, accepted) = {
+            let Scene::ServerSelect { accepted, selected, .. } = &self.scene else { return };
+            let Some(server) = accepted.char_servers.get(*selected).cloned() else { return };
+            (server, *selected, accepted.clone())
+        };
+        remember_server(selected);
+        // That server's own attendance file, when the data has one; a scenario's event (the switch) wins over both.
+        if std::env::var_os("RUSTNAROK_CLIENT_ATTENDANCE").is_none() {
+            self.attendance = lua::server_attendance(&|path| self.grf.read(path), &server.name);
+        }
+        let proxy = self.proxy.clone();
+        self.account = Some(accepted.clone());
+        self.char_server = selected;
+        match CharSession::connect(&server, &accepted, move |event| {
+            let _ = proxy.send_event(NetEvent::Char(event));
+        }) {
+            Ok(session) => {
+                self.char_session = Some(session);
+                self.wait(Wait::CharServer);
+            }
+            Err(_) => self.message("서버에 접속할 수 없습니다.", Scene::Login),
+        }
+    }
+
+    fn start_game(&mut self) {
+        let Scene::CharSelect(select) = &self.scene else { return };
+        if !select.unlocked() {
+            return;
+        }
+        let Some(character) = select.selected_character().cloned() else { return };
+        match self.char_session.as_mut().map(|session| session.select(character.slot)) {
+            Some(Ok(())) => {
+                self.playing = Some(character);
+                self.wait(Wait::Start);
+            }
+            _ => self.message(self.messages.get(DISCONNECTED_MESSAGE).cloned().unwrap_or_default(), Scene::Login),
+        }
+    }
+
+    fn back_to_login(&mut self) {
+        self.char_session = None;
+        self.entering = None;
+        self.scene = Scene::Login;
+    }
+
+    fn message_text(&self, id: usize) -> String {
+        self.messages.get(id).cloned().unwrap_or_default()
+    }
+
+    /// Does what a click or key on the character select asked for.
+    fn select_action(&mut self, action: char_select::Action) {
+        use char_select::Action;
+        if !matches!(action, Action::Close) && matches!(&self.scene, Scene::CharSelect(select) if !select.unlocked()) {
+            return;
+        }
+        let sent = match action {
+            Action::Start => return self.start_game(),
+            Action::Make(slot) => {
+                let male = self.account.as_ref().is_none_or(|account| account.sex == 1);
+                if let Scene::CharSelect(select) = std::mem::replace(&mut self.scene, Scene::Login) {
+                    self.scene = Scene::CharMake(Box::new(char_make::Make::new(&self.grf, &self.look_tables, slot, male)), select);
+                }
+                return;
+            }
+            Action::Notice => {
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.message(self.message_text(char_select::NOTICE_MESSAGE), back);
+                return;
+            }
+            Action::Reserve(id) => self.char_session.as_mut().map(|session| session.reserve_delete(id)),
+            Action::CancelReserve(id) => self.char_session.as_mut().map(|session| session.cancel_delete(id)),
+            Action::Delete(id) => return self.ask(DELETE_QUESTION, Then::AskBirthdate(id)),
+            Action::Close => return self.ask(QUIT_MESSAGE, Then::BackToLogin),
+            Action::Move(from, to, moves) => return self.ask(MOVE_QUESTION, Then::Move(from, to, moves)),
+            Action::Rename(id) => {
+                let Scene::CharSelect(select) = &self.scene else { return };
+                let renames = select.characters.iter().find(|character| character.id == id).map_or(0, |character| character.renames);
+                // ponytail: the prompt's text is the rename count message; the real client's rename window may differ.
+                let text = rustnarok_client::messages::fill(&self.message_text(RENAME_PROMPT), &[&renames]);
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.scene = Scene::Prompt { text, input: String::new(), then: Then::ConfirmName(id), back: Box::new(back) };
+                return;
+            }
+        };
+        match sent {
+            Some(Ok(())) => self.wait(Wait::Quiet),
+            _ => self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login),
+        }
+    }
+
+    /// Runs autostart (`RUSTNAROK_CLIENT_AUTOSTART=<slot>`) and `RUSTNAROK_CLIENT_MAKE`/`DELETE` once PIN state 0 is in.
+    fn finish_char_select_entry(&mut self) {
+        let first = !std::mem::replace(&mut self.scripted, true);
+        if !first {
+            return;
+        }
+        if std::env::var("RUSTNAROK_CLIENT_AUTOSTART").ok().and_then(|slot| slot.parse::<usize>().ok()).is_some() {
+            self.start_game();
+        }
+        self.run_select_switches();
+    }
+
+    fn apply_pin_action(&mut self, action: pin::PinAction) {
+        let sent = match action {
+            pin::PinAction::None => return,
+            pin::PinAction::Check { seed, pin } => self.char_session.as_mut().map(|session| session.check_pin(seed, &pin)),
+            pin::PinAction::Make { seed, pin } => self.char_session.as_mut().map(|session| session.make_pin(seed, &pin)),
+            pin::PinAction::Change { seed, old_pin, new_pin } => self.char_session.as_mut().map(|session| session.change_pin(seed, &old_pin, &new_pin)),
+            pin::PinAction::Message(id) => {
+                let text = self.message_text(id);
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.message(text, back);
+                return;
+            }
+            pin::PinAction::Close => return self.back_to_login(),
+        };
+        if !matches!(sent, Some(Ok(()))) {
+            self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login);
+        }
+    }
+
+    /// The syllable the input method is composing, shown where text is typed.
+    fn compose(&mut self, text: String) {
+        match &mut self.scene {
+            Scene::Game(game) if game.dialog.is_none() && !game.storage.typing && !game.chat_mode.chat_line_open() => game.chat.preedit.clear(),
+            Scene::Game(game) if game.dialog.is_none() && !game.storage.typing => game.chat.preedit = text,
+            Scene::CharMake(make, _) => make.preedit = text,
+            _ => {}
+        }
+    }
+
+    /// Text the input method finished (Hangul): it goes where typing goes.
+    fn commit(&mut self, text: &str) {
+        let typed = text.chars().filter(|character| !character.is_control());
+        match &mut self.scene {
+            // The Amount box first, over any NPC talk behind it.
+            Scene::Game(game) if game.amount.is_some() => game.amount.as_mut().unwrap().type_text(text),
+            Scene::Game(game) => match &mut game.dialog {
+                // The NPC's input box takes it; plain dialogs don't.
+                Some(dialog) => {
+                    if let Some(input) = &mut dialog.input {
+                        input.type_text(&typed.collect::<String>());
+                    }
+                }
+                None if game.storage.typing => game.storage.type_text(text),
+                None if game.pet_window.typing => game.pet_window.name_text.get_or_insert_with(String::new).push_str(text),
+                None if game.homunculus_window.typing => game.homunculus_window.name_text.get_or_insert_with(String::new).push_str(text),
+                None if game.quest_window.typing => game.quest_window.type_text(text),
+                None if game.booking.as_ref().is_some_and(|window| window.focus.is_some()) => game.booking.as_mut().unwrap().type_text(text),
+                None if game.guild_window.typing.is_some() => {
+                    if let Some(guild) = &game.guild {
+                        game.guild_window.type_text(guild, text);
+                    }
+                }
+                None if game.party_dialog.as_ref().is_some_and(|dialog| dialog.typing) => game.party_dialog.as_mut().unwrap().type_text(text),
+                None if game.reason_box.is_some() => game.reason_box.as_mut().unwrap().type_text(text),
+                None if game.guild_companion.typing() => game.guild_companion.create.as_mut().unwrap().type_text(text),
+                None if game.navi_window.as_ref().is_some_and(|window| window.typing) => game.navi_window.as_mut().unwrap().type_text(text),
+                None if game.catalog.as_ref().is_some_and(|catalog| catalog.focus.is_some()) => game.catalog.as_mut().unwrap().type_text(text),
+                None if game.room_make.is_some() => game.room_make.as_mut().unwrap().type_text(text),
+                None if game.macro_window.as_ref().is_some_and(|window| window.editing.is_some()) => {
+                    game.macro_window.as_ref().unwrap().type_text(&mut game.macro_lines, text)
+                }
+                None if game.vend_setup.as_ref().is_some_and(vend::Setup::typing) => game.vend_setup.as_mut().unwrap().type_text(text),
+                None if game.buying_setup.as_ref().is_some_and(|setup| setup.focus.is_some()) => game.buying_setup.as_mut().unwrap().type_text(text),
+                None if game.mail.typing() => game.mail.type_text(text),
+                None if game.room.is_some() => game.room.as_mut().unwrap().input.push_str(text),
+                None if !game.chat_mode.chat_line_open() => {}
+                None => game.chat.type_text(&typed.collect::<String>()),
+            },
+            Scene::CharMake(make, _) => make.type_text(text),
+            Scene::Prompt { input, then: Then::ConfirmName(_), .. } => {
+                let room = NAME_MOST - input.chars().count().min(NAME_MOST);
+                input.extend(typed.take(room));
+            }
+            _ => {}
+        }
+    }
+
+    /// RUSTNAROK_CLIENT_MAKE and RUSTNAROK_CLIENT_DELETE, once the first character list is in.
+    fn run_select_switches(&mut self) {
+        let slot_and = |name: &str| {
+            let value = std::env::var(name).ok()?;
+            let (slot, rest) = value.split_once(':').unwrap_or((&value, ""));
+            Some((slot.parse::<usize>().ok()?, rest.to_owned()))
+        };
+        if let Some((slot, name)) = slot_and("RUSTNAROK_CLIENT_MAKE") {
+            if let Scene::CharSelect(select) = &mut self.scene {
+                select.selected = slot;
+            }
+            self.select_action(char_select::Action::Make(slot as u8));
+            if let Scene::CharMake(make, _) = &mut self.scene
+                && !name.is_empty()
+            {
+                make.type_text(&name);
+                self.make_action(char_make::Action::Make);
+            }
+        }
+        if let Some((slot, step)) = slot_and("RUSTNAROK_CLIENT_DELETE") {
+            let Scene::CharSelect(select) = &mut self.scene else { return };
+            select.selected = slot;
+            let Some(id) = select.selected_character().map(|character| character.id) else { return };
+            match step.as_str() {
+                "reserve" => self.select_action(char_select::Action::Reserve(id)),
+                "cancel" => self.select_action(char_select::Action::CancelReserve(id)),
+                // The question, and the birthdate prompt after it.
+                "ask" => self.select_action(char_select::Action::Delete(id)),
+                "prompt" => {
+                    self.select_action(char_select::Action::Delete(id));
+                    self.answer();
+                }
+                birthdate => {
+                    let sent = self.char_session.as_mut().map(|session| session.delete(id, birthdate.trim_start_matches('-')));
+                    if let Some(Ok(())) = sent {
+                        self.wait(Wait::Making);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Does what a click or key on character creation asked for.
+    fn make_action(&mut self, action: char_make::Action) {
+        match action {
+            char_make::Action::Make => {
+                let Scene::CharMake(make, _) = &self.scene else { return };
+                let (name, slot, color, hair, job, sex) = (make.name.trim().to_owned(), make.slot, make.color, make.hair, u32::from(make.job()), make.sex());
+                match self.char_session.as_mut().map(|session| session.make(&name, slot, color, hair, job, sex)) {
+                    Some(Ok(())) => self.wait(Wait::Making),
+                    _ => self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login),
+                }
+            }
+            char_make::Action::Refused(line) => {
+                let text = self.message_text(line);
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.message(text, back);
+            }
+            char_make::Action::Back => {
+                if let Scene::CharMake(_, select) = std::mem::replace(&mut self.scene, Scene::Login) {
+                    self.scene = Scene::CharSelect(select);
+                }
+            }
+        }
+    }
+
+    /// Puts a question (message `id`) with OK and Cancel over the current scene.
+    /// Esc on a screen before a map: its question (`pre_map_escape`).
+    fn escape_before_map(&mut self) {
+        if let Some((question, then)) = pre_map_escape(&self.scene) {
+            self.ask(question, then);
+        }
+    }
+
+    fn ask(&mut self, id: usize, then: Then) {
+        let text = self.message_text(id);
+        let back = std::mem::replace(&mut self.scene, Scene::Login);
+        self.scene = Scene::Confirm(text, then, Box::new(back));
+    }
+
+    /// OK (or Enter) on a question or a prompt.
+    fn answer(&mut self) {
+        let (then, input, back) = match std::mem::replace(&mut self.scene, Scene::Login) {
+            Scene::Confirm(_, then, back) => (then, String::new(), back),
+            Scene::Prompt { input, then, back, .. } => (then, input, back),
+            scene => return self.scene = scene,
+        };
+        self.scene = *back;
+        match then {
+            Then::BackToLogin => self.back_to_login(),
+            Then::Quit => self.quitting = true,
+            Then::AskBirthdate(id) => {
+                let text = self.message_text(BIRTHDATE_MESSAGE);
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.scene = Scene::Prompt { text, input: String::new(), then: Then::Delete(id), back: Box::new(back) };
+            }
+            Then::Delete(id) => match self.char_session.as_mut().map(|session| session.delete(id, &input)) {
+                Some(Ok(())) => self.wait(Wait::Making),
+                _ => self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login),
+            },
+            Then::Move(from, to, moves) => {
+                if let Scene::CharSelect(select) = &mut self.scene {
+                    select.moved_to = Some(usize::from(to));
+                }
+                match self.char_session.as_mut().map(|session| session.move_slot(u16::from(from), u16::from(to), moves)) {
+                    Some(Ok(())) => self.wait(Wait::Quiet),
+                    _ => self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login),
+                }
+            }
+            Then::ConfirmName(id) => {
+                let name = input.trim().to_owned();
+                if name.is_empty() {
+                    return;
+                }
+                let text = rustnarok_client::messages::fill(&self.message_text(RENAME_QUESTION), &[&name]);
+                let back = std::mem::replace(&mut self.scene, Scene::Login);
+                self.scene = Scene::Confirm(text, Then::Rename(id, name), Box::new(back));
+            }
+            Then::Rename(id, name) => match self.char_session.as_mut().map(|session| session.rename(id, &name)) {
+                Some(Ok(())) => self.wait(Wait::Quiet),
+                _ => self.message(self.message_text(DISCONNECTED_MESSAGE), Scene::Login),
+            },
+        }
+    }
+
+    /// Cancel (or Escape) on a question or a prompt.
+    fn dismiss(&mut self) {
+        if let Scene::Confirm(_, _, back) | Scene::Prompt { back, .. } = std::mem::replace(&mut self.scene, Scene::Login) {
+            self.scene = *back;
+        }
+    }
+
+    /// Back to the scene under a finished request.
+    fn settle(&mut self) {
+        self.scene = match std::mem::replace(&mut self.scene, Scene::Login) {
+            Scene::Waiting(_, inner) => *inner,
+            scene => scene,
+        };
+    }
+}
+
+/// A layer's window with its text rasterized, where it sits among the windows, and the rectangle it is cut to.
+type Composed<'a> = (Vec<Sprite<'a>>, Vec<(Texture, [f32; 2])>, f32, front::Place, Option<[f32; 4]>);
+
+/// Rasterizes each layer's text, one piece per window (see `Layer::window`).
+fn compose<'a>(gpu: &Gpu, font: &Font, layers: Vec<Layer<'a>>) -> Vec<Composed<'a>> {
+    layers
+        .into_iter()
+        .flat_map(|layer| {
+            let places = std::iter::once(layer.place).chain(layer.places.iter().copied());
+            let clips = std::iter::once(None).chain(layer.clips.iter().copied());
+            window_spans(&layer.windows, layer.sprites.len(), layer.texts.len())
+                .into_iter()
+                .zip(places.zip(clips))
+                .map(|((sprites, texts), (place, clip))| {
+                    let texts = layer.texts[texts].iter().map(|(text, position, color)| (gpu.text(font, text, *color), *position)).collect();
+                    (layer.sprites[sprites].to_vec(), texts, layer.faded, place, clip)
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Puts the windows in `front`'s order: the ones newly shown on top and the closed ones out of it first, then the
+/// pieces under the windows, the windows bottom up, and what's over them, each group in the order it was drawn.
+fn order_windows(composed: &mut [Composed], front: &mut front::Front) {
+    let mut shown = Vec::new();
+    for (sprites, texts, _, place, _) in composed.iter() {
+        if let front::Place::Window(key) = place
+            && !(sprites.is_empty() && texts.is_empty())
+            && !shown.contains(key)
+        {
+            shown.push(*key);
+        }
+    }
+    front.sync(&shown);
+    composed.sort_by_key(|piece| front.draw_key(piece.3));
+}
+
+/// Each window's sprites and texts, from where each starts (see `Layer::window`).
+fn window_spans(starts: &[(usize, usize)], sprites: usize, texts: usize) -> Vec<(std::ops::Range<usize>, std::ops::Range<usize>)> {
+    let mut from = (0, 0);
+    starts
+        .iter()
+        .copied()
+        .chain([(sprites, texts)])
+        .map(|to| {
+            let span = (from.0..to.0, from.1..to.1);
+            from = to;
+            span
+        })
+        .collect()
+}
+
+/// Everything to draw, in order: each layer's sprites, then its text, over the layers before it; and how opaque each is and what it is cut to.
+fn flatten<'a>(composed: &'a [Composed<'a>]) -> (Vec<Sprite<'a>>, Vec<render::Shade>) {
+    let mut sprites = Vec::new();
+    let mut alphas = Vec::new();
+    for (layer, texts, faded, _, clip) in composed {
+        sprites.extend(layer.iter().copied().chain(texts.iter().map(|(texture, position)| (texture, *position, texture.size))));
+        alphas.resize(sprites.len(), (1.0 - faded, *clip));
+    }
+    (sprites, alphas)
+}
+
+/// The middle of the screen, where picking splits it in quarters.
+fn screen_middle() -> [f32; 2] {
+    [screen()[0] / 2.0, screen()[1] / 2.0]
+}
+
+/// Takes the units `going` (dying or fading out) out of the clickable boxes; those still on a `screen` this size keep
+/// their sprite's box apart, so the state shows them while they're drawn.
+fn fading_apart(
+    boxes: Vec<picking::Target<Owner>>,
+    going: impl Fn(u32) -> bool,
+    screen: [f32; 2],
+) -> (Vec<picking::Target<Owner>>, HashMap<u32, picking::Rect>) {
+    let (fading, clickable): (Vec<_>, Vec<_>) = boxes.into_iter().partition(|target| matches!(target.owner, Owner::Unit(id) if going(id)));
+    let on_screen = |[left, top, right, bottom]: picking::Rect| right > 0.0 && bottom > 0.0 && left < screen[0] && top < screen[1];
+    let fading = fading
+        .into_iter()
+        .filter(|target| on_screen(target.sprite))
+        .filter_map(|target| match target.owner {
+            Owner::Unit(id) => Some((id, target.sprite)),
+            _ => None,
+        })
+        .collect();
+    (clickable, fading)
+}
+
+/// The unit or item the pointer is on (see `picking::pick`), the player aside (only skills aim at oneself).
+fn hovered(hit_boxes: &[picking::Target<Owner>], cursor: [f32; 2], players_first: bool) -> Option<Owner> {
+    picking::pick(hit_boxes.iter().copied().filter(|target| target.owner != Owner::Player), cursor, players_first, screen_middle())
+}
+
+/// What the pointer is on for its name: as `hovered`, and with nothing else there, ourselves (the game names the own
+/// character too).
+// ponytail: whoever stands over us is named before us; the game's own order between us and them isn't known.
+fn hovered_named(hit_boxes: &[picking::Target<Owner>], cursor: [f32; 2], players_first: bool) -> Option<Owner> {
+    hovered(hit_boxes, cursor, players_first)
+        .or_else(|| picking::pick(hit_boxes.iter().copied().filter(|target| target.owner == Owner::Player), cursor, players_first, screen_middle()))
+}
+
+/// The unit the pointer is on, the player included: what skills and taming aim at.
+fn hovered_unit(hit_boxes: &[picking::Target<Owner>], cursor: [f32; 2], players_first: bool) -> Option<Owner> {
+    picking::pick(hit_boxes.iter().copied().filter(|target| !matches!(target.owner, Owner::Item(_))), cursor, players_first, screen_middle())
+}
+
+impl ApplicationHandler<NetEvent> for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.gpu.is_some() {
+            return;
+        }
+        // RUSTNAROK_CLIENT_WINDOW=<width>x<height> opens the window at another size (wide screens in tests).
+        let size = std::env::var("RUSTNAROK_CLIENT_WINDOW").ok().and_then(|size| {
+            let (width, height) = size.split_once('x')?;
+            Some(LogicalSize::new(width.parse().ok()?, height.parse().ok()?))
+        });
+        let attributes = Window::default_attributes()
+            .with_title("MYgene Client")
+            .with_inner_size(size.unwrap_or(LogicalSize::new(1024.0, 768.0)))
+            .with_min_inner_size(LogicalSize::new(512.0, 384.0))
+            .with_fullscreen(self.graphics.fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
+        #[cfg(target_os = "macos")]
+        set_dock_icon();
+        let gpu = Gpu::new(Arc::new(event_loop.create_window(attributes).expect("create window")));
+        // The client draws its own cursor.
+        gpu.window.set_cursor_visible(false);
+        // Hangul is typed through the input method.
+        gpu.window.set_ime_allowed(true);
+        self.assets = Some(Assets::load(&gpu, &self.grf, &self.font, &self.messages));
+        self.gpu = Some(gpu);
+
+        if let Some((id, password)) = std::env::var("RUSTNAROK_CLIENT_LOGIN").ok().as_deref().and_then(|login| login.split_once(':')) {
+            self.fields = [id.into(), password.into()];
+            self.send_login();
+        }
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: NetEvent) {
+        // A command marks the frame old itself (`control::run`), unless it only reads.
+        if !matches!(event, NetEvent::Control(_)) {
+            self.frame_current = false;
+        }
+        match event {
+            NetEvent::Control(request) => control::run(self, event_loop, request),
+            NetEvent::Addon(addon::Action::Whisper { to, text }) => {
+                if let Scene::Game(game) = &mut self.scene {
+                    let _ = game.session.whisper(&to, &text);
+                }
+            }
+            // ponytail: in the game every map packet waits for the next frame, so none overtakes a move queued before
+            // it; only the moves, the stops and the clock need to. They wait as long as frames do.
+            NetEvent::Map(event) if matches!(self.scene, Scene::Game(_)) => self.frame_events.push(event),
+            event => {
+                control::observe(&event);
+                self.net_event(event);
+            }
+        }
+        if let Some(gpu) = &self.gpu {
+            gpu.window.request_redraw();
+        }
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        let Some(gpu) = &mut self.gpu else { return };
+        if !matches!(event, WindowEvent::RedrawRequested) {
+            self.frame_current = false;
+        }
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => gpu.resize(),
+            WindowEvent::Moved(_) => gpu.moved(),
+            // Driven over the control socket: the real mouse and keyboard would stray into the commands.
+            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } | WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. }
+                if control::driven() => {}
+            WindowEvent::ModifiersChanged(_) | WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) if control::driven() => {}
+            // RUSTNAROK_CLIENT_CURSOR pins the pointer for screenshots.
+            WindowEvent::CursorMoved { .. } | WindowEvent::CursorLeft { .. } if std::env::var_os("RUSTNAROK_CLIENT_CURSOR").is_some() => {}
+            // Screen pixels to the canvas, through its place in the window (black bars above and below in one narrower than 4:3).
+            WindowEvent::CursorMoved { position, .. } => {
+                let [left, top, width, height] = render::viewport([gpu.config.width, gpu.config.height]);
+                gpu.window.request_redraw();
+                self.cursor = [(position.x as f32 - left) * screen()[0] / width, (position.y as f32 - top) * screen()[1] / height];
+                self.pointer_moved();
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Right, .. } => {
+                gpu.window.request_redraw();
+                self.right_button(state);
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = modifiers.state();
+                // On a Mac, Option+E, U, I, N and ` are dead keys on most layouts: the input method would take them (typing
+                // ´ into the chat box) and the shortcut never fires. No input method while Option is held.
+                // ponytail: not tried mid-Hangul-syllable; winit drops its marked text when turned off, so Option there may
+                // lose the syllable. Committing the preedit first would fix it.
+                if cfg!(target_os = "macos") {
+                    gpu.window.set_ime_allowed(!self.modifiers.alt_key());
+                }
+            }
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor = [-1.0; 2];
+                gpu.window.request_redraw();
+            }
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                gpu.window.request_redraw();
+                self.left_button(event_loop, state);
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let rows = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => wheel_rows(y.into()),
+                    MouseScrollDelta::PixelDelta(position) => pixel_rows(&mut self.wheel_carry, position.y / f64::from(screen_scale())),
+                };
+                self.wheel(rows);
+                if let Some(gpu) = &self.gpu {
+                    gpu.window.request_redraw();
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                gpu.window.request_redraw();
+                self.key(&(&event).into());
+            }
+            WindowEvent::Ime(Ime::Preedit(text, _)) => {
+                gpu.window.request_redraw();
+                self.compose(text);
+            }
+            WindowEvent::Ime(Ime::Commit(text)) => {
+                gpu.window.request_redraw();
+                self.compose(String::new());
+                self.commit(&text);
+            }
+            // Shown again after being covered or minimised: draw now, not when the slow covered pace comes round.
+            WindowEvent::Occluded(false) => gpu.window.request_redraw(),
+            // A game frame asked for too soon after the last waits for `request_frame`, which asks again once it's due. A
+            // command that draws (`state`, a screenshot) calls `redraw` itself.
+            WindowEvent::RedrawRequested if self.loading.is_none() && matches!(self.scene, Scene::Game(_)) && gpu.too_soon() => {}
+            WindowEvent::RedrawRequested => self.redraw(event_loop),
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if self.quitting {
+            return event_loop.exit();
+        }
+        // A loading screen is up: load now.
+        if self.loading.as_ref().is_some_and(|loading| loading.shown) {
+            match self.loading.take().unwrap().target {
+                LoadTarget::Enter { position, direction } => self.enter_map(position, direction),
+                LoadTarget::Change { map, position } => self.change_map(map, position),
+            }
+            if let Scene::Game(game) = &self.scene {
+                let map = game.map.clone();
+                self.play_music(Some(&map));
+            }
+            if let Some(gpu) = &self.gpu {
+                gpu.window.request_redraw();
+            }
+        }
+        self.auto_input(event_loop);
+        self.read_button();
+        // The char server hears from the client every 12 s at character select and creation.
+        if let Some(session) = &mut self.char_session
+            && matches!(self.scene.base(), Scene::CharSelect(_) | Scene::CharMake(..))
+        {
+            let _ = session.keep_alive(Instant::now());
+        }
+        // Waits past their limits.
+        let end = match &self.scene {
+            Scene::Waiting(wait, _) if self.loading.is_none() => wait.end(self.wait_began.elapsed()),
+            Scene::ServerSelect { .. } => Wait::ServerList.end(self.server_list_opened.elapsed()),
+            _ => WaitEnd::Keep,
+        };
+        match end {
+            WaitEnd::Keep => {}
+            WaitEnd::GiveUp => self.give_up(),
+            WaitEnd::Quit => self.message(self.message_text(CONNECT_FAILED), Scene::Quit),
+        }
+        let tick = self.client_tick();
+        match &mut self.scene {
+            Scene::Game(game) => {
+                // Animate continuously and keep the map connection alive.
+                let _ = game.session.keep_alive(Instant::now(), tick);
+                // The view the player leaves is kept for the next map of its kind.
+                self.saved_view.follow(&game.camera_goal, Instant::now(), self.save_view);
+                // The held button follows the pointer: another walk each time more than MOVE_GAP_MS has passed since
+                // the last try, not over a window, nor while an attack or a pickup is on its way.
+                let now = Instant::now();
+                game.attack_step(now);
+                game.pending_step(now);
+                game.queued_dialog_press(now);
+                // The walk cell goes with a change of the player's own motion.
+                let action = game.player.animation(control::now()).0;
+                if clears_walk_cell(game.player_motion, action) {
+                    game.walk_cell = None;
+                }
+                game.player_motion = (action, game.player.dead);
+                // The goal kept while busy goes out as it is when the player stops being busy (not on dying).
+                if let Some(goal) = game.stored_walk.frame(game.player.busy(control::now()), game.player.dead) {
+                    game.send_walk(goal, now);
+                }
+                // Each try decides again: Ctrl does nothing, Shift, a chat room or sitting turn, else a walk.
+                if follows_pointer(game.walk_held, game.pending.is_some() || game.attack.is_some(), game.last_walk_try, whole_ms(now))
+                    && !game.world_locked()
+                    && let Some(assets) = &self.assets
+                    && !game.on_ui(self.cursor, assets.message.size)
+                {
+                    let cell = game.ground_cell(self.cursor);
+                    let (ctrl, shift) = (self.modifiers.control_key(), self.modifiers.shift_key());
+                    if let (Some(cell), Some(act)) = (cell, held_try(ctrl, shift, game.player.sitting, game.room.is_some(), cell.is_some())) {
+                        game.last_walk_try = Some(whole_ms(now));
+                        match act {
+                            GroundAct::Walk => drop(game.walk_toward(cell, now)),
+                            GroundAct::Turn => game.turn_to(cell),
+                            GroundAct::Nothing => {}
+                        }
+                    }
+                }
+                if game.entered.elapsed() > Duration::from_secs(1) {
+                    if let Some(cell) = game.auto_walk.take() {
+                        let _ = game.session.walk(cell);
+                    }
+                    // Through the chat line, so the client's commands (/organize, %) work too.
+                    let say_at = std::env::var("RUSTNAROK_CLIENT_SAY_AT").ok().and_then(|seconds| seconds.parse().ok()).unwrap_or(1.0);
+                    if let Some(texts) = game.auto_say.take_if(|_| game.entered.elapsed().as_secs_f32() >= say_at) {
+                        let before = self.graphics.clone();
+                        for text in texts.split('|') {
+                            game.chat.input = text.to_owned();
+                            let _ = game.send_chat(false, false, &self.messages, &mut self.graphics);
+                        }
+                        if before != self.graphics {
+                            self.graphics.save();
+                        }
+                    }
+                    // Dev switch RUSTNAROK_CLIENT_GUILD=window: the guild window, once the guild is known.
+                    if game.guild.is_some()
+                        && !game.guild_window.frame.open
+                        && game.entered.elapsed() > Duration::from_secs(3)
+                        && std::env::var("RUSTNAROK_CLIENT_GUILD").is_ok_and(|order| order.split(',').any(|part| part == "window"))
+                        && !std::mem::replace(&mut game.guild_shown, true)
+                    {
+                        game.guild_window.open(screen());
+                        game.raise(Panel::Guild);
+                        game.ask_guild_pages();
+                    }
+                    // Dev switch RUSTNAROK_CLIENT_ROOM=window:<title> (the room maker, typed in) or make:<title> (and OK).
+                    if game.entered.elapsed() > Duration::from_secs(2)
+                        && game.room.is_none()
+                        && game.room_make.is_none()
+                        && let Some((how, title)) = std::env::var("RUSTNAROK_CLIENT_ROOM")
+                            .ok()
+                            .and_then(|room| room.split_once(':').map(|(how, title)| (how.to_owned(), title.to_owned())))
+                        && !game.signs.values().any(|sign| sign.title == title)
+                        && !std::mem::replace(&mut game.room_tried, true)
+                    {
+                        let mut make = chatroom::Make::default();
+                        make.type_text(&title);
+                        game.room_make = Some(make);
+                        if how == "make" {
+                            game.make_room();
+                        }
+                    }
+                    if let Some(name) = std::env::var("RUSTNAROK_CLIENT_TRADE").ok().and_then(|trade| trade.strip_prefix("ask:").map(str::to_owned))
+                        && game.trade_with.is_empty()
+                        && game.trade.is_none()
+                        && game.entered.elapsed() > Duration::from_secs(3)
+                    {
+                        game.ask_trade(&name);
+                    }
+                    if let Some(whispers) = std::env::var("RUSTNAROK_CLIENT_WHISPER").ok().filter(|_| game.whispered.is_empty() && game.chat.whisper.is_empty())
+                    {
+                        let before = self.graphics.clone();
+                        for whisper in whispers.split(';') {
+                            let (to, text) = whisper.split_once('|').unwrap_or((whisper, "hi"));
+                            game.chat.whisper = to.to_owned();
+                            game.chat.input = text.to_owned();
+                            let _ = game.send_chat(false, false, &self.messages, &mut self.graphics);
+                        }
+                        if before != self.graphics {
+                            self.graphics.save();
+                        }
+                    }
+                }
+                if game.entered.elapsed() > Duration::from_millis(1500) {
+                    if let Some(name) = game.auto_talk.take()
+                        && let Some((&id, _)) = game.units.iter().find(|(_, actor)| actor.kind == NPC && actor.name.contains(&name))
+                    {
+                        let _ = game.session.talk(id);
+                    }
+                    game.end_progress(false);
+                    if game.auto_next > 0 && game.dialog.as_ref().is_some_and(|dialog| dialog.button != DialogButton::None) {
+                        game.auto_next -= 1;
+                        game.press_dialog_button(false);
+                    }
+                    if let Some(dialog) = &mut game.dialog
+                        && let Some(menu) = &mut dialog.menu
+                        && let Some(choice) = game.auto_menu.pop()
+                    {
+                        menu.selected = choice.saturating_sub(1).min(menu.items.len().saturating_sub(1));
+                        game.choose(false);
+                    }
+                    let me = game.player.cell;
+                    let distance = |cell: [i32; 2]| (cell[0] - me[0]).abs().max((cell[1] - me[1]).abs());
+                    if game.auto_attack
+                        && let Some((&id, _)) = game.units.iter().filter(|(_, actor)| actor.kind == MONSTER).min_by_key(|(_, actor)| distance(actor.cell))
+                    {
+                        game.auto_attack = false;
+                        game.attack(id);
+                    }
+                    if game.auto_pick_up
+                        && let Some((&id, _)) = game.ground.iter().min_by_key(|(_, item)| distance(item.at))
+                    {
+                        game.auto_pick_up = false;
+                        game.pick_up(id);
+                    }
+                    if game.entered.elapsed() >= Duration::from_secs(3)
+                        && !game.skills.is_empty()
+                        && let Some((id, level)) = game.auto_skill.take()
+                    {
+                        game.use_skill(id, level);
+                        if game.targeting.is_some() {
+                            game.aim_skill(SkillTarget::Unit(game.account_id));
+                        }
+                    }
+                    if let Some(&(at, slot)) = game.auto_keys.first()
+                        && game.entered.elapsed() >= at
+                    {
+                        game.auto_keys.remove(0);
+                        game.press_hotkey(slot, &self.messages);
+                    }
+                    if game.entered.elapsed() > Duration::from_millis(2500) && std::mem::take(&mut game.auto_wear) {
+                        let wearable: Vec<(u16, u32)> = game
+                            .inventory
+                            .items
+                            .iter()
+                            .filter(|item| item.location != 0 && item.worn == 0 && item.identified && item.kind != net::ITEM_CARD)
+                            .map(|item| (item.index, item.location))
+                            .collect();
+                        for (index, location) in wearable {
+                            let _ = game.session.wear(index, location);
+                        }
+                    }
+                }
+                let next = self.gpu.as_ref().map_or_else(|| Instant::now() + FRAME_TIME, Gpu::request_frame);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            }
+            Scene::Login => {
+                let phase = self.blink_phase();
+                if phase != self.drawn_blink_phase
+                    && let Some(gpu) = &self.gpu
+                {
+                    gpu.window.request_redraw();
+                }
+                let next_toggle = self.blink_start + CARET_BLINK * (phase as u32 + 1);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next_toggle));
+            }
+            // The select and creation screens animate (the selected card, the characters, the caret).
+            scene if matches!(scene.base(), Scene::CharSelect(_) | Scene::CharMake(..)) => {
+                let next = self.gpu.as_ref().map_or_else(|| Instant::now() + FRAME_TIME, Gpu::request_frame);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(next));
+            }
+            _ => event_loop.set_control_flow(ControlFlow::Wait),
+        }
+    }
+}
+
+/// The README's logo as the Dock icon: run outside tools/bundle.sh's app (cargo run, the test driver), macOS shows a
+/// terminal's "exec" icon instead. The bundled app keeps its icon.icns.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::ClassType;
+    if std::env::current_exe().is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/")) {
+        return;
+    }
+    let Some(main_thread) = objc2_foundation::MainThreadMarker::new() else { return };
+    let data = objc2_foundation::NSData::with_bytes(include_bytes!("../assets/icon.png"));
+    if let Some(image) = objc2_app_kit::NSImage::initWithData(objc2_app_kit::NSImage::alloc(), &data) {
+        unsafe { objc2_app_kit::NSApplication::sharedApplication(main_thread).setApplicationIconImage(Some(&image)) };
+    }
+}
+
+/// Appends `text` to the crash log at `path`. A log already over `cap` bytes first moves to `crash.log.old` (replacing
+/// an older one), so the two stay under about twice the cap and the newest crash is kept whole.
+fn append_crash(path: &std::path::Path, text: &str, cap: u64) {
+    use std::io::Write as _;
+    if path.parent().map_or(Ok(()), std::fs::create_dir_all).is_err() {
+        return;
+    }
+    if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > cap) {
+        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    }
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = file.write_all(text.as_bytes());
+    }
+}
+
+/// The connection's langtype (RUSTNAROK_CLIENT_LANGTYPE overrides it) picks the code page of chat, names and the data's
+/// own words; its PACKETVER (RUSTNAROK_CLIENT_PACKETVER overrides it) the packets.
+fn set_langtype(connection: Option<&rustnarok_client::clientinfo::Connection>) {
+    net::set_packetver(connection.map_or(0, |connection| connection.packetver));
+    let langtype = std::env::var("RUSTNAROK_CLIENT_LANGTYPE").ok().and_then(|langtype| langtype.parse().ok());
+    let langtype = langtype.unwrap_or_else(|| connection.map_or(0, |connection| connection.langtype));
+    net::set_codepage(rustnarok_client::clientinfo::codepage(langtype));
+    net::set_langtype(langtype);
+}
+
+fn main() {
+    std::sync::LazyLock::force(&START);
+    // Every panic, also a caught one (a packet skipped), goes to crash.log in the settings folder with its backtrace:
+    // a bundled app's stderr goes nowhere. Over 1 MB it moves to crash.log.old, so a stream of unreadable packets
+    // can't fill the disk.
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(path) = settings_path("crash.log") {
+            let seconds = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+            let thread = std::thread::current().name().unwrap_or("unnamed").to_owned();
+            let text = format!("unix time {seconds}, thread {thread}: {info}\n{}\n", std::backtrace::Backtrace::force_capture());
+            append_crash(&path, &text, 1 << 20);
+        }
+        report(info);
+    }));
+    // Started as Ragnarok.app: work in the bundle's folder, where data.grf is (Finder starts apps in /).
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(folder) = exe.ancestors().find(|path| path.extension().is_some_and(|extension| extension == "app")).and_then(|bundle| bundle.parent())
+    {
+        let _ = std::env::set_current_dir(folder);
+    }
+    let grf_path = std::env::var("RUSTNAROK_CLIENT_GRF").unwrap_or_else(|_| "data.grf".into());
+    // A client folder's DATA.INI: the archives it lists.
+    let grf = match grf_path.to_ascii_lowercase().ends_with(".ini") {
+        true => Grf::open_data_ini(std::path::Path::new(&grf_path), None),
+        false => Grf::open(&grf_path),
+    };
+    let mut grf = grf.unwrap_or_else(|error| panic!("{grf_path}: {error}"));
+    // Like the official client, loose files in the data folder (here, a translation) go before the archive.
+    let overlay = std::env::var("RUSTNAROK_CLIENT_DATA").unwrap_or_else(|_| ".".into());
+    if overlay != "none" {
+        let found = grf.add_overlay(std::path::Path::new(&overlay));
+        if found > 0 {
+            eprintln!("{found} files from the data folder at {overlay}");
+        }
+    }
+    // Before any table loads, as a Thai client's tables are in Thai; the login sets it again for the connection picked.
+    let connections = rustnarok_client::clientinfo::load(&grf);
+    set_langtype(connections.first());
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut event_loop = EventLoop::<NetEvent>::with_user_event();
+    // A client driven over the control socket opens without taking the keyboard from the app in use.
+    #[cfg(target_os = "macos")]
+    winit::platform::macos::EventLoopBuilderExtMacOS::with_activate_ignoring_other_apps(&mut event_loop, !mcp::scripted());
+    let event_loop = event_loop.build().expect("event loop");
+    control::listen(event_loop.create_proxy());
+    if overlay != "none" {
+        addon::start(std::path::Path::new(&overlay), event_loop.create_proxy());
+    }
+    let pets = pet::Data::load(&grf);
+    // ponytail: without the translation's achievements.lub the window lists nothing and names achievements by ID.
+    let mut achievement_info = lua::achievements(&grf).unwrap_or_default();
+    // MYgene custom achievement title.
+    if let Some(info) = achievement_info.get_mut(&900001) {
+        info.reward_title = 2000;
+    }
+    if let Some(mut info) = achievement_info.get(&900001).cloned() {
+        info.title = "The Hidden Burden".to_string();
+        info.summary = "Discover a forgotten dimension.".to_string();
+        info.details = "Unburdened by the laws of this world.".to_string();
+        info.objectives = vec![("Discover the Mysterious Keeper".to_string(), 1)];
+        info.reward_item = 0;
+        info.reward_buff = 0;
+        info.reward_title = 2001;
+        info.score = 0;
+        achievement_info.insert(900002, info);
+    }
+
+    let synthesis_boxes = lua::synthesis_boxes(&grf).unwrap_or_else(|error| {
+        eprintln!("no laphine synthesis table: {error}");
+        HashMap::new()
+    });
+    let upgrade_boxes = lua::upgrade_boxes(&grf).unwrap_or_else(|error| {
+        eprintln!("no laphine upgrade table: {error}");
+        HashMap::new()
+    });
+    let mut title_names = lua::titles(&grf).unwrap_or_default();
+    title_names.entry(2000).or_insert_with(
+        || "Novice Tower Conqueror".to_string()
+    );
+    title_names.insert(2001, "Dimensional Wanderer".to_string());
+    let random_option_texts = lua::random_options(&grf).unwrap_or_else(|error| {
+        eprintln!("random option texts: {error}");
+        HashMap::new()
+    });
+    let job_names = lua::job_names(&grf).unwrap_or_else(|error| {
+        eprintln!("no NPC/monster sprite names: {error}");
+        HashMap::new()
+    });
+    let monster_sizes = lua::monster_sizes(&grf);
+    let shadow_factors = lua::shadow_factors(&grf).unwrap_or_else(|error| {
+        eprintln!("no shadow table: {error}");
+        HashMap::new()
+    });
+    let location_radii = lua::location_radii(&grf).unwrap_or_else(|error| {
+        eprintln!("no NPC location radii: {error}");
+        HashMap::new()
+    });
+    let items = lua::item_info(&grf).unwrap_or_else(|error| {
+        eprintln!("no item names: {error}");
+        HashMap::new()
+    });
+    let card_names = inventory::CardNames::load(&grf);
+    let card_pictures = iteminfo::CardPictures::load(&grf);
+    let battlegrounds = lua::entry_queue(&grf).unwrap_or_else(|error| {
+        eprintln!("no battleground list: {error}");
+        Vec::new()
+    });
+    // ItemDBNameTbl is shared with the enchant window: it calls lua::item_db_names on the same file.
+    let item_names = grf.read(lua::ITEM_DB_NAMES).and_then(lua::item_db_names).unwrap_or_else(|error| {
+        eprintln!("no item name table: {error}");
+        HashMap::new()
+    });
+    let reforms = grf.read(lua::ITEM_REFORM).and_then(|bytes| lua::reform_table(bytes, &item_names)).unwrap_or_else(|error| {
+        eprintln!("no item reform list: {error}");
+        HashMap::new()
+    });
+    let enchant_tables = lua::enchants(&grf).unwrap_or_else(|error| {
+        eprintln!("no enchant tables: {error}");
+        HashMap::new()
+    });
+    let styling_shop = lua::load_styling_shop(&grf).unwrap_or_else(|error| {
+        eprintln!("no styling shop: {error}");
+        lua::StylingShop::default()
+    });
+    // RUSTNAROK_CLIENT_ATTENDANCE=<file> reads the attendance check's event from that file (a scenario's own).
+    let attendance = match std::env::var("RUSTNAROK_CLIENT_ATTENDANCE") {
+        Ok(path) => std::fs::read(path).and_then(lua::attendance_table),
+        Err(_) => lua::attendance(&grf),
+    }
+    .unwrap_or_default();
+    // RUSTNAROK_CLIENT_PACKAGES=<file> reads the package boxes from that file (a scenario's own).
+    let packages = match std::env::var("RUSTNAROK_CLIENT_PACKAGES") {
+        Ok(path) => std::fs::read(path).and_then(lua::package_table),
+        Err(_) => lua::packages(&grf),
+    };
+    let packages = std::rc::Rc::new(packages.unwrap_or_else(|error| {
+        eprintln!("no package boxes: {error}");
+        HashMap::new()
+    }));
+    let mut messages = messages::load(&grf).unwrap_or_else(|error| {
+        eprintln!("no client messages: {error}");
+        Vec::new()
+    });
+    // MYgene English UI foundation: translate only known UI labels and basic
+    // notifications, preserving the original GRF tables and all network encodings.
+    // Compatibility switch: MYGENE_LANGUAGE=original keeps the source messages.
+    if std::env::var("MYGENE_LANGUAGE").as_deref() != Ok("original") {
+        rustnarok_client::messages::apply_mygene_english(&mut messages);
+    }
+    let indoor = rustnarok_client::map::indoor_maps(&grf).unwrap_or_default();
+    let minimap_exceptions = minimap_window::load_exceptions(&grf);
+    let viewpoints = rustnarok_client::map::viewpoints(&grf).unwrap_or_default();
+    // A client the harness drives starts from the default view and keeps it to itself.
+    let driven = mcp::scripted();
+    let saved_view = if driven {
+        SavedView::harness()
+    } else {
+        settings_path("camera").and_then(|path| std::fs::read_to_string(path).ok()).map_or_else(SavedView::default, |text| SavedView::parse(&text))
+    };
+    let pc_job_names = lua::pc_job_names(&grf).unwrap_or_else(|error| {
+        eprintln!("no job names: {error}");
+        HashMap::new()
+    });
+    let agit_names = lua::agit_names(&grf).unwrap_or_else(|error| {
+        eprintln!("no castle names: {error}");
+        HashMap::new()
+    });
+    let map_names = rustnarok_client::map::map_names(&grf).unwrap_or_default();
+    let skill_descriptions = lua::skill_descriptions(&grf).unwrap_or_else(|error| {
+        eprintln!("no skill descriptions: {error}");
+        HashMap::new()
+    });
+    let skill_info = lua::skill_info(&grf).unwrap_or_else(|error| {
+        eprintln!("no skill names: {error}");
+        HashMap::new()
+    });
+    let skill_trees = lua::skill_trees(&grf).unwrap_or_default();
+    let reputation_tables = reputation::Tables::load(&grf);
+    let navi_tables = lua::navigation(&grf).unwrap_or_default();
+    let status_icon_files = lua::status_icons(&grf).unwrap_or_default();
+    let state_infos = lua::state_info(&grf).unwrap_or_else(|error| {
+        eprintln!("no status icon descriptions: {error}");
+        HashMap::new()
+    });
+    let mut look_tables = lua::look_tables(&grf).unwrap_or_else(|error| {
+        eprintln!("no equipment sprite names: {error}");
+        LookTables::default()
+    });
+    look_tables.item_views = items.iter().map(|(&id, info)| (id, info.class_num)).collect();
+    let cursor_look = cursor::Cursor::load(&grf);
+    let mut loading_images: Vec<String> =
+        grf.paths().filter(|path| path.starts_with(&format!("{UI}loading")) && path.ends_with(".jpg")).map(str::to_owned).collect();
+    loading_images.sort();
+    let music = sound::music_table(&grf);
+    let worlds = rustnarok_client::lua::worlds(&grf).unwrap_or_default();
+    // Several servers: the list comes first, as in the official client (dev logins take the first).
+    let picking = connections.len() > 1 && std::env::var_os("RUSTNAROK_CLIENT_SERVER").is_none() && std::env::var_os("RUSTNAROK_CLIENT_LOGIN").is_none();
+    let quest_texts = quest::texts(&grf);
+    let quest_filters = quest::Filters::load(&grf);
+    let sound = sound::Settings::load();
+    let mut graphics = options::GraphicsSettings::load();
+    // A saved skin no longer there (or named in another case) is the basic look again, and forgotten.
+    if !game_settings::skins().contains(&graphics.skin) {
+        graphics.skin.clear();
+    }
+    grf.set_skin(&graphics.skin, &game_settings::skin_folder(&graphics.skin));
+    set_ui_rows(graphics.ui_rows());
+    let font = Font::named(&graphics.font);
+    let keybinds = shortcuts::Shortcuts::load(&grf);
+    let mut app = App {
+        grf,
+        job_names,
+        monster_sizes,
+        shadow_factors,
+        location_radii,
+        pets,
+        achievement_info,
+        synthesis_boxes,
+        upgrade_boxes,
+        title_names,
+        random_option_texts,
+        items,
+        battlegrounds,
+        card_names,
+        card_pictures,
+        reforms,
+        enchant_tables,
+        styling_shop,
+        attendance,
+        packages,
+        messages,
+        icons: HashMap::new(),
+        modifiers: ModifiersState::empty(),
+        indoor,
+        minimap_exceptions,
+        viewpoints,
+        saved_view,
+        save_view: !driven,
+        look_tables,
+        pc_job_names,
+        agit_names,
+        map_names,
+        worlds,
+        quest_texts,
+        quest_filters,
+        skill_info,
+        skill_descriptions,
+        skill_trees,
+        reputation_tables,
+        navi_tables,
+        status_icon_files,
+        state_infos,
+        effect_table: effects::Table::load(),
+        // Driven or screenshot runs stay quiet unless RUSTNAROK_CLIENT_SOUND=1.
+        audio: (std::env::var("RUSTNAROK_CLIENT_SOUND").is_ok_and(|sound| sound == "1")
+            || std::env::var_os("RUSTNAROK_CLIENT_SCREENSHOT").is_none() && !mcp::scripted())
+        .then(|| sound::Audio::new(&sound))
+        .flatten(),
+        sound,
+        music,
+        graphics,
+        keybinds,
+        print_screen: None,
+        shot_saved: None,
+        meter: meter::Meter::default(),
+        cursor_look,
+        loading_images,
+        loading: None,
+        font,
+        proxy: event_loop.create_proxy(),
+        gpu: None,
+        assets: None,
+        scene: if picking { Scene::Connections { selected: 0 } } else { Scene::Login },
+        connections,
+        connection: 0,
+        char_session: None,
+        wait_began: Instant::now(),
+        server_list_opened: Instant::now(),
+        char_server: 0,
+        quitting: false,
+        tab_held: false,
+        last_key: None,
+        returned: false,
+        account: None,
+        playing: None,
+        entering: None,
+        early_events: Vec::new(),
+        frame_events: Vec::new(),
+        frame_current: false,
+        server_clock: actor::ServerClock::default(),
+        map_loaded: false,
+        fields: [saved_id().unwrap_or_default(), String::new()],
+        save_id: saved_id().is_some(),
+        account_kind: 0,
+        account_list: false,
+        focus: usize::from(saved_id().is_some()),
+        cursor: std::env::var("RUSTNAROK_CLIENT_CURSOR")
+            .ok()
+            .and_then(|cursor| {
+                let (x, y) = cursor.split_once(',')?;
+                Some([x.parse().ok()?, y.parse().ok()?])
+            })
+            .unwrap_or([-1.0; 2]),
+        wheel_carry: 0.0,
+        mouse_down: false,
+        server_clicks: window::Clicks::default(),
+        right_down: false,
+        button: ButtonRead::default(),
+        auto_input: {
+            let start = std::env::var("RUSTNAROK_CLIENT_CLICKS_AT").ok().and_then(|seconds| seconds.parse().ok()).unwrap_or(4);
+            let point = |text: &str| -> Option<[f32; 2]> {
+                let (x, y) = text.trim().split_once(',')?;
+                Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+            };
+            let steps = std::env::var("RUSTNAROK_CLIENT_CLICKS").unwrap_or_default();
+            let steps: Vec<_> = steps
+                .split(';')
+                .filter(|step| !step.trim().is_empty())
+                .enumerate()
+                .filter_map(|(order, step)| {
+                    // "r" first: the right button.
+                    let (right, step) = step.trim().strip_prefix('r').map_or((false, step), |rest| (true, rest));
+                    let (from, to) = match step.split_once('>') {
+                        Some((from, to)) => (point(from)?, Some(point(to)?)),
+                        None => (point(step)?, None),
+                    };
+                    Some((Duration::from_secs(start + order as u64), right, from, to))
+                })
+                .collect();
+            steps.into_iter().rev().collect()
+        },
+        blink_start: Instant::now(),
+        drawn_blink_phase: u128::MAX,
+        started: Instant::now(),
+        screenshot: std::env::var("RUSTNAROK_CLIENT_SCREENSHOT").ok(),
+        scripted: false,
+    };
+    if !picking && !app.connections.is_empty() {
+        app.choose_connection(0);
+    }
+    app.play_music(None);
+    event_loop.run_app(&mut app).expect("run");
+}
+
+/// Puts the real look, plus the window's picks, on the stylist's preview.
+fn dress_stylist(window: &mut stylist::Window, grf: &Grf, tables: &LookTables, look: &Look, items: &HashMap<u32, ItemInfo>, shop: &lua::StylingShop) {
+    window.dress(grf, tables, look, shop, |id| items.get(&id).map(|info| info.class_num as u16).unwrap_or(0));
+}
+
+/// Locks a pair of units (Blade Stop, Cursed Circle), or lets go of every pair that holds either of them.
+fn lock_pair(locks: &mut Vec<(u32, u32)>, source: u32, target: u32, on: bool) {
+    if !on {
+        locks.retain(|&(a, b)| ![a, b].iter().any(|id| *id == source || *id == target));
+    } else if !locks.contains(&(source, target)) {
+        locks.push((source, target));
+    }
+}
+
+/// How many units a unit is locked with.
+fn locked_with(locks: &[(u32, u32)], id: u32) -> usize {
+    locks.iter().filter(|&&(source, target)| source == id || target == id).count()
+}
+
+/// The share of a window (a combo's) still left.
+fn share_left(start: Instant, length: Duration, now: Instant) -> f32 {
+    1.0 - (now.saturating_duration_since(start).as_secs_f32() / length.as_secs_f32().max(f32::EPSILON)).min(1.0)
+}
+
+/// What an NPC deal's result says, and in which colour (None: nothing). Selling: done or failed. Buying: done, zeny,
+/// weight, the item limits, RODEX, the exchange results.
+fn deal_result(sold: bool, result: u8) -> Option<(usize, [u8; 3])> {
+    match (sold, result) {
+        (_, 0) => Some((54, CHAT_ITEM)),
+        (true, 1) => Some((57, CHAT_ERROR)),
+        (true, _) => None,
+        (false, 1) => Some((55, CHAT_ERROR)),
+        (false, 2) => Some((56, CHAT_ERROR)),
+        (false, 3) => Some((221, CHAT_ERROR)),
+        (false, 9) => Some((1940, CHAT_ERROR)),
+        (false, 10) => Some((2917, CHAT_ITEM)),
+        (false, 11) => Some((3554, CHAT_ERROR)),
+        (false, 12) => Some((3555, CHAT_ITEM)),
+        (false, 13) => Some((3557, CHAT_ERROR)),
+        (false, 14) => Some((3556, CHAT_ERROR)),
+        (false, _) => None,
+    }
+}
+
+/// Turning on the spot toward rathena direction `target` (0 north, counting counter-clockwise): the body and the head
+/// (0 straight, 1 right, 2 left) after. Ahead or behind, the body turns. 45° aside, the head turns, or the body when the
+/// head already looks that way. 90° to 135° aside, the body turns one sector short and the head looks the rest.
+#[cfg(test)]
+fn turn_toward(body: u8, head: u8, target: u8) -> (u8, u8) {
+    turned((body + 8 - target) % 8, body, head, target)
+}
+
+/// The turn for a body `r` sectors from `target` (the table above).
+fn turned(r: u8, body: u8, head: u8, target: u8) -> (u8, u8) {
+    match r {
+        1 if head == 1 => (target, 0),
+        1 => (body, 1),
+        2 | 3 => ((target + 1) % 8, 1),
+        7 if head == 2 => (target, 0),
+        7 => (body, 2),
+        5 | 6 => ((target + 7) % 8, 2),
+        _ => (target, 0),
+    }
+}
+
+/// Why an item can't be dropped on the ground now: `Some(None)` quietly, `Some(Some(message))` saying so; `None` when
+/// it can. In order: a wear asked for under 2 s ago, a deal or talk under way, the equipment window, the storage, the
+/// mail window, the ammunition worn.
+fn ground_drop_refused(since_wear: Option<Duration>, busy: bool, equipment: bool, storage: bool, mail: bool, ammo: bool) -> Option<Option<usize>> {
+    if since_wear.is_some_and(|since| since < WEAR_PAUSE) || busy {
+        Some(None)
+    } else if equipment {
+        Some(Some(DROP_EQUIPMENT_OPEN))
+    } else if storage {
+        Some(None)
+    } else if mail {
+        Some(Some(DROP_MAIL_OPEN))
+    } else if ammo {
+        Some(Some(DROP_AMMO_WORN))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gospel_messages() {
+        assert_eq!([0x15, 0x19, 0x1C, 0x20, 0x28].map(skill_message), [Some(889), Some(893), Some(894), Some(898), Some(915)]);
+        assert_eq!([0, 0x1A, 0x1B, 0x21, 0x27].map(skill_message), [None; 5]);
+    }
+
+    #[test]
+    fn an_npc_with_a_monster_sprite_is_an_npc() {
+        // rathena sends 0xC for an NPC whose look is a monster's (the Lost Novice on prt_maze02): clicks must talk to it.
+        assert_eq!(actor_kind(NPC_MOB_SPRITE), NPC);
+        assert_eq!(actor_kind(MONSTER), MONSTER);
+        assert_eq!(actor_kind(NPC), NPC);
+    }
+
+    #[test]
+    fn caps_the_crash_log() {
+        let dir = std::env::temp_dir().join(format!("rustnarok-crash-{}", std::process::id()));
+        let path = dir.join("crash.log");
+        let _ = std::fs::remove_dir_all(&dir);
+        // Under the cap: entries add up in crash.log.
+        append_crash(&path, "first\n", 10);
+        append_crash(&path, "second\n", 10);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\nsecond\n");
+        // Past it: the old log moves to crash.log.old and a new one holds only the latest entry.
+        append_crash(&path, "third\n", 10);
+        assert_eq!(std::fs::read_to_string(dir.join("crash.log.old")).unwrap(), "first\nsecond\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "third\n");
+        // Again: the older crash.log.old is replaced.
+        append_crash(&path, "fourth fourth\n", 10);
+        append_crash(&path, "fifth\n", 10);
+        assert_eq!(std::fs::read_to_string(dir.join("crash.log.old")).unwrap(), "third\nfourth fourth\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "fifth\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lists_the_numbers_shown_on_the_player() {
+        let now = Instant::now();
+        let number = |target, amount, ago: u64, kind| Damage {
+            target,
+            source: None,
+            amount,
+            start: now - Duration::from_millis(ago),
+            kind,
+            flinch: None,
+            drift: [0.0; 2],
+        };
+        let hit = DamageKind::Hit { taken: true, sp: false };
+        let damages = [number(None, 12, 500, hit), number(Some(7), 30, 100, hit), number(None, 40, 3500, hit), number(None, 25, 0, DamageKind::Critical)];
+        // Ours, under 3 s old: not another unit's, not an old one.
+        assert_eq!(hits_taken(&damages, now), [(12, "hit", 500), (25, "critical", 0)]);
+        // Not one that lands later.
+        assert_eq!(hits_taken(&damages, now - Duration::from_millis(100)), [(12, "hit", 400)]);
+    }
+
+    #[test]
+    fn the_left_hand_is_never_drawn_as_a_shield() {
+        // A unit packet's shield field is the left hand: a dagger there is no shield.
+        let look = unit_look(&net::Unit { job: 12, weapon: 1201, shield: 1201, ..net::Unit::default() });
+        assert_eq!((look.shield, look.left), (0, 1201));
+        let look = unit_look(&net::Unit { job: 7, shield: 2101, ..net::Unit::default() });
+        assert_eq!((look.shield, look.left), (2101, 2101));
+        // A sprite change's second value is the left hand only on the Assassin line; a weapon there keeps the shield.
+        let mut knight = Look { job: 7, shield: 2102, ..Look::default() };
+        assert!(change_look(&mut knight, net::LOOK_WEAPON, 1101, 1201));
+        assert_eq!((knight.weapon, knight.left, knight.shield), (1101, 0, 2102));
+        change_look(&mut knight, net::LOOK_WEAPON, 1101, 2101);
+        assert_eq!(knight.shield, 2101);
+        let mut assassin = Look { job: 12, ..Look::default() };
+        change_look(&mut assassin, net::LOOK_WEAPON, 1201, 1201);
+        assert_eq!((assassin.left, assassin.shield), (1201, 0));
+    }
+
+    #[test]
+    fn a_window_covers_the_text_of_the_windows_before_it() {
+        // Two windows: the first's 3 sprites and 2 texts, then the second's 1 sprite and 1 text.
+        assert_eq!(window_spans(&[(3, 2)], 4, 3), [(0..3, 0..2), (3..4, 2..3)]);
+        assert_eq!(window_spans(&[], 4, 3), [(0..4, 0..3)]);
+    }
+
+    #[test]
+    fn the_head_turns_before_the_body() {
+        // Facing north (0): north-east (7) is 45° right: the head looks right, then the body turns.
+        assert_eq!(turn_toward(0, 0, 7), (0, 1));
+        assert_eq!(turn_toward(0, 1, 7), (7, 0));
+        // East (6), 90° right: the body to north-east, the head right; south-east (5), 135°: the body east.
+        assert_eq!(turn_toward(0, 0, 6), (7, 1));
+        assert_eq!(turn_toward(0, 0, 5), (6, 1));
+        // Left: north-west (1) the head; west (2) and south-west (3) one sector short.
+        assert_eq!(turn_toward(0, 0, 1), (0, 2));
+        assert_eq!(turn_toward(0, 2, 1), (1, 0));
+        assert_eq!(turn_toward(0, 0, 2), (1, 2));
+        assert_eq!(turn_toward(0, 0, 3), (2, 2));
+        // Ahead and behind: the body, the head straight.
+        assert_eq!(turn_toward(0, 2, 0), (0, 0));
+        assert_eq!(turn_toward(0, 1, 4), (4, 0));
+    }
+
+    #[test]
+    fn some_things_open_keep_items_off_the_ground() {
+        let refused = |since: Option<u64>, open: [bool; 5]| ground_drop_refused(since.map(Duration::from_millis), open[0], open[1], open[2], open[3], open[4]);
+        assert_eq!(refused(None, [false; 5]), None);
+        assert_eq!(refused(Some(2000), [false; 5]), None);
+        assert_eq!(refused(Some(1999), [false; 5]), Some(None));
+        assert_eq!(refused(None, [true, true, false, false, false]), Some(None), "a trade first, quietly");
+        assert_eq!(refused(None, [false, true, true, true, true]), Some(Some(DROP_EQUIPMENT_OPEN)));
+        assert_eq!(refused(None, [false, false, true, true, true]), Some(None), "the storage, quietly");
+        assert_eq!(refused(None, [false, false, false, true, true]), Some(Some(DROP_MAIL_OPEN)));
+        assert_eq!(refused(None, [false, false, false, false, true]), Some(Some(DROP_AMMO_WORN)));
+    }
+
+    #[test]
+    fn saves_where_the_windows_were_left() {
+        let saved = window_places([("inventory", [0.0, 120.0], false), ("status", [185.5, 300.0], true)].into_iter());
+        assert_eq!(saved, "inventory 0 120 0\nstatus 185.5 300 1\n");
+        let read = parse_window_places(&saved);
+        assert_eq!((read["inventory"], read["status"]), (([0.0, 120.0], false), ([185.5, 300.0], true)));
+        assert!(parse_window_places("broken line\nskills 1 2 0").contains_key("skills"));
+        // The sizes ride along and read back.
+        let sizes = size_lines([8, 4], [6, 5], 13, (248.0, [2, 7]));
+        let read = parse_window_places(&sizes);
+        assert_eq!(
+            [INVENTORY_SIZE, CART_SIZE, STORAGE_SIZE, SHOP_SIZE, SHOP_DEAL_SIZE].map(|name| read[name].0),
+            [[8.0, 4.0], [6.0, 5.0], [0.0, 13.0], [248.0, 2.0], [0.0, 7.0]]
+        );
+    }
+
+    #[test]
+    fn colours_names_by_who_they_are() {
+        // NPCs by type or job, monsters by job and level against ours, our own summons, players.
+        assert_eq!(name_color(NPC, 100, 0, false, 50), NPC_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 10_005, 0, false, 50), NPC_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 1002, 50, false, 50), MONSTER_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 1002, 60, false, 50), MONSTER_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 1002, 61, false, 50), STRONG_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 1002, 35, false, 50), MONSTER_NAME_COLOR);
+        assert_eq!(name_color(MONSTER, 1002, 34, false, 50), WEAK_NAME_COLOR);
+        assert_eq!(name_color(HOMUNCULUS, 6001, 10, true, 50), SUMMON_NAME_COLOR);
+        assert_eq!(name_color(HOMUNCULUS, 6001, 10, false, 50), CHAT_WHITE);
+        assert_eq!(name_color(PLAYER, 4008, 99, false, 50), CHAT_WHITE);
+    }
+
+    #[test]
+    fn canvas_grows_with_the_window_at_a_whole_scale() {
+        assert_eq!(canvas([2048, 1536], 2.0, None), ([1024.0, 768.0], 2.0), "the classic window on Retina");
+        assert_eq!(canvas([2880, 1800], 2.0, None), ([1440.0, 900.0], 2.0), "full screen: more room, same-sized HUD");
+        assert_eq!(canvas([3841, 2160], 2.0, None), ([1920.0, 1080.0], 2.0), "an odd pixel is left over, not stretched into");
+        assert_eq!(canvas([1920, 1080], 1.0, None), ([1920.0, 1080.0], 1.0));
+        let (small, scale) = canvas([1000, 1000], 1.0, None);
+        assert_eq!(small, [1024.0, 1024.0], "smaller than 1024 wide shrinks to fit");
+        assert!(scale < 1.0);
+    }
+
+    /// The Extras' UI scale: the canvas stays the classic 768 rows, so the interface grows with the window.
+    #[test]
+    fn canvas_keeps_768_rows_with_the_ui_scale() {
+        const CLASSIC: Option<f32> = Some(768.0);
+        assert_eq!(canvas([2048, 1536], 2.0, CLASSIC), ([1024.0, 768.0], 2.0), "the classic window: as without it");
+        assert_eq!(canvas([2880, 1800], 2.0, CLASSIC), ([1228.0, 768.0], 1800.0 / 768.0), "a 1440x900 window on Retina");
+        assert_eq!(canvas([1440, 900], 1.0, CLASSIC).0, [1228.0, 768.0], "the same canvas on a plain display");
+        assert_eq!(canvas([3456, 2234], 2.0, CLASSIC), ([1188.0, 768.0], 2234.0 / 768.0), "full screen on a 16 inch MacBook Pro");
+        assert_eq!(canvas([3840, 2160], 1.0, CLASSIC), ([1365.0, 768.0], 2.8125), "4K with no display scale");
+        assert_eq!(canvas([1920, 1080], 1.0, CLASSIC), ([1365.0, 768.0], 1.40625));
+        // Narrower than 4:3, the width is what fits: 1024 columns, more rows.
+        assert_eq!(canvas([2048, 2048], 2.0, CLASSIC), ([1024.0, 1024.0], 2.0));
+        // Smaller than the classic window, it shrinks to fit either way.
+        assert_eq!(canvas([1000, 1000], 1.0, CLASSIC), canvas([1000, 1000], 1.0, None));
+        // Every size keeps the classic canvas at least, and never a pixel more than the window has.
+        for size in [[1024, 768], [1367, 771], [1728, 1117], [2560, 1440], [3440, 1440], [5120, 2880], [801, 2000]] {
+            let ([width, height], scale) = canvas(size, 1.0, CLASSIC);
+            assert!(width >= 1024.0 && height >= 768.0 && (width == 1024.0 || height == 768.0), "{size:?}: {width}x{height}");
+            assert!(width * scale <= size[0] as f32 + 0.01 && height * scale <= size[1] as f32 + 0.01, "{size:?}");
+        }
+    }
+
+    /// The UI scale's sizes: the canvas keeps the size's rows where the window is big enough for it.
+    #[test]
+    fn canvas_keeps_the_ui_sizes_rows() {
+        // A 1440x900 window on Retina: 864 rows fit; 960 and up would be under the display's own scale, so as without it.
+        assert_eq!(canvas([2880, 1800], 2.0, Some(864.0)), ([1382.0, 864.0], 1800.0 / 864.0));
+        assert_eq!(canvas([2880, 1800], 2.0, Some(960.0)), canvas([2880, 1800], 2.0, None));
+        assert_eq!(canvas([1440, 900], 1.0, Some(864.0)).0, [1382.0, 864.0], "the same canvas on a plain display");
+        // Full screen on a 16 inch MacBook Pro, each size: the interface 1.45, 1.29, 1.16 and 1.06 times its own, then as it is.
+        let rows = |rows: f32| canvas([3456, 2234], 2.0, Some(rows));
+        assert_eq!(rows(768.0), ([1188.0, 768.0], 2234.0 / 768.0));
+        assert_eq!(rows(864.0), ([1336.0, 864.0], 2234.0 / 864.0));
+        assert_eq!(rows(960.0), ([1485.0, 960.0], 2234.0 / 960.0));
+        assert_eq!(rows(1050.0), ([1624.0, 1050.0], 2234.0 / 1050.0));
+        assert_eq!(rows(1200.0), canvas([3456, 2234], 2.0, None));
+        // 4K with no display scale: every size grows it, the smallest by half.
+        assert_eq!(canvas([3840, 2160], 1.0, Some(1440.0)), ([2560.0, 1440.0], 1.5));
+        assert_eq!(canvas([3840, 2160], 1.0, Some(1200.0)), ([2133.0, 1200.0], 1.8));
+        // Narrower than 4:3, the width decides; and never past what the classic 1024x768 fits at.
+        assert_eq!(canvas([2048, 4000], 1.0, Some(960.0)), ([1280.0, 2500.0], 1.6));
+        assert_eq!(canvas([1100, 800], 1.0, Some(864.0)), ([1100.0, 800.0], 1.0));
+    }
+
+    #[test]
+    fn rings_where_a_unit_teleported_or_logged_out() {
+        assert_eq!(vanish_effect(3, 0), Some(304));
+        assert_eq!(vanish_effect(3, actor::OPTION_INVISIBLE), None);
+        assert_eq!(vanish_effect(2, 0), Some(314));
+        assert_eq!(vanish_effect(2, actor::OPTION_INVISIBLE), Some(314), "a hidden GM's logout shows");
+        assert_eq!((vanish_effect(0, 0), vanish_effect(1, 0)), (None, None));
+    }
+
+    #[test]
+    fn faces_the_way_it_entered_after_a_warp() {
+        // Entered facing north-east (5), then sat facing south: a warp (same map or not) stands it facing 5 again.
+        let mut player = Actor::new("Me".into(), None, [10, 10], 5, 150);
+        player.set_direction(0);
+        player.sitting = true;
+        let mut camera = Camera { target: [50.0, 0.0, 50.0], distance: 200.0, pitch: 45f32.to_radians(), yaw: 1.0, ground: f32::MIN };
+        after_warp(&mut player, &mut camera, [400.0, 3.0, 410.0], [40, 41], 5);
+        assert_eq!((player.cell, player.direction, player.sitting, player.moving()), ([40, 41], 5, false, false));
+        // The view cuts to the new spot at once, not gliding across the map; turn, tilt and zoom stay.
+        assert_eq!((camera.target, camera.distance, camera.yaw), ([400.0, 3.0, 410.0], 200.0, 1.0));
+    }
+
+    #[test]
+    fn shows_the_attack_and_turning_cursors_only_when_they_apply() {
+        assert_eq!(monster_cursor(false, false), cursor::Kind::Attack);
+        assert_eq!(monster_cursor(true, false), cursor::Kind::Default);
+        assert_eq!(monster_cursor(true, true), cursor::Kind::Attack);
+        // The right button held: no key and Ctrl turn (Ctrl isn't asked); Shift tilts; Alt doesn't.
+        assert!(turning_cursor(true, false, false) && !turning_cursor(true, true, false) && !turning_cursor(true, false, true));
+        assert!(!turning_cursor(false, false, false));
+    }
+
+    #[test]
+    fn a_hidden_npc_can_be_clicked_on_its_feet() {
+        // xSize to each side and ySize up, the warp's 59.7 sprite px per 50.
+        let ([left, top], [right, bottom]) = hidden_npc_pick([5, 10]);
+        assert!((right - 5.97).abs() < 1e-3 && (left + right).abs() < 1e-6 && (top + 11.94).abs() < 1e-3 && bottom == 0.0);
+        // rathena sends no size: a point on the feet, grown to a unit's least box around it.
+        assert_eq!(hidden_npc_pick([0, 0]), ([0.0, 0.0], [0.0, 0.0]));
+        let half = picking::UNIT_MIN / 2.0;
+        assert_eq!(picking::area([100.0, 200.0, 100.0, 200.0], picking::UNIT_MIN), [100.0 - half, 200.0 - half, 100.0 + half, 200.0 + half]);
+        let npc = |kind, job| {
+            let mut actor = Actor::new(String::new(), None, [0, 0], 0, 150);
+            (actor.kind, actor.job) = (kind, job);
+            actor
+        };
+        assert!(hidden_npc(&npc(NPC, 111)) && !hidden_npc(&npc(NPC, 139)) && !hidden_npc(&npc(MONSTER, 111)));
+    }
+
+    #[test]
+    fn picks_warps_in_a_box_around_their_feet() {
+        let camera = |distance: f32| Camera { target: [100.0, 0.0, 100.0], distance, pitch: 45f32.to_radians(), yaw: 0.0, ground: f32::MIN };
+        let size = |distance: f32| {
+            let [left, top, right, bottom] = warp_pick_rect(&camera(distance).view(4.0 / 3.0), [100.0, 0.0, 100.0]).unwrap();
+            [(right - left) * 1024.0, (bottom - top) * 768.0]
+        };
+        // About 166 by 166 screen pixels at the default distance, centred on the feet; smaller farther out.
+        let [width, height] = size(300.0);
+        assert!((width - 166.0).abs() < 8.0 && (height - 166.0).abs() < 8.0, "{width} {height}");
+        assert!((width - height).abs() < 1e-4, "square pick box: {width} vs {height}");
+        let far = size(400.0);
+        assert!(far[0] < width * 0.8 && far[1] < height * 0.8, "{far:?}");
+    }
+
+    #[test]
+    fn snaps_the_cursor_to_the_middle_of_what_it_points_at() {
+        let first_run = Snaps { snap: false, item: false, skill: true };
+        let all = Snaps { snap: true, item: true, skill: true };
+        let box_at = |kind: SnapTo| Some((kind, [10.0, 20.0, 50.0, 100.0]));
+        // Aiming a skill at a unit: a monster with /skillsnap; not aiming: only with /snap.
+        assert_eq!(snap_point(box_at(SnapTo::Monster), true, false, first_run), Some([30.0, 60.0]));
+        assert_eq!(snap_point(box_at(SnapTo::Monster), false, false, first_run), None);
+        assert_eq!(snap_point(box_at(SnapTo::Monster), false, false, all), Some([30.0, 60.0]));
+        assert_eq!(snap_point(box_at(SnapTo::Monster), true, false, Snaps { skill: false, ..all }), None);
+        // Items with /itemsnap; pets, players and the like never; our homunculus only for Potion Pitcher.
+        assert_eq!(
+            (snap_point(box_at(SnapTo::Item), false, false, first_run), snap_point(box_at(SnapTo::Item), false, false, all)),
+            (None, Some([30.0, 60.0]))
+        );
+        assert_eq!(snap_point(box_at(SnapTo::Other), true, false, all), None);
+        assert_eq!(snap_point(box_at(SnapTo::OurHomunculus), true, false, all), None);
+        assert_eq!(snap_point(box_at(SnapTo::OurHomunculus), true, true, first_run), Some([30.0, 60.0]));
+        assert_eq!(snap_point(None, true, false, all), None);
+    }
+
+    #[test]
+    fn dead_players_lie_there_until_revived() {
+        let now = Instant::now();
+        let mut player = Actor::new("Someone".into(), None, [10, 10], 0, 150);
+        player.kind = PLAYER;
+        fall(&mut player, now);
+        assert!(player.dead && player.remove_at.is_none(), "a player's body stays");
+        player.revive();
+        assert!(!player.dead);
+        let mut monster = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        monster.kind = MONSTER;
+        fall(&mut monster, now);
+        // No sprite here, so no death to play: the corpse fades at once, over 6.12 s, then goes.
+        assert_eq!(monster.remove_at, Some(now + Duration::from_millis(6120)));
+        assert!(monster.fading(now) && !monster.fading(now - Duration::from_millis(1)));
+        assert_eq!(monster.alpha(now), 1.0);
+        assert!((monster.alpha(now + Duration::from_millis(3060)) - 0.5).abs() < 0.001);
+        assert_eq!(monster.alpha(now + Duration::from_millis(7000)), 0.0);
+    }
+
+    #[test]
+    fn drops_items_with_a_hop_and_lets_them_glint() {
+        // 15 units up, a little higher at about 87 ms, on the ground by about 0.42 s, and staying there.
+        assert_eq!(item_fall_height(0.0), 15.0);
+        assert!(item_fall_height(3.6) > 16.0 && item_fall_height(3.6) < 16.1);
+        assert!(item_fall_height(17.4) > 0.0 && item_fall_height(17.6) == 0.0 && item_fall_height(100.0) == 0.0);
+        // A yellow glint for 2 ticks in every 92.
+        assert_eq!([0.0, 89.9, 90.0, 91.9, 92.0, 182.5].map(item_glints), [false, false, true, true, false, true]);
+        // No picture of its own: the apple.
+        let mut items = HashMap::new();
+        assert_eq!(ground_sprite(&items, 501, true), FALLBACK_ITEM_SPRITE);
+        items.insert(501, ItemInfo { resource: "빨간포션".into(), ..ItemInfo::default() });
+        assert_eq!((ground_sprite(&items, 501, true), ground_sprite(&items, 501, false)), ("빨간포션", FALLBACK_ITEM_SPRITE));
+    }
+
+    #[test]
+    fn units_spawned_in_view_fade_in() {
+        let ms = |ms: u64| Duration::from_millis(ms);
+        let byte = |since: Duration| (actor::spawn_alpha(since) * 255.0).round() as u32;
+        assert_eq!([byte(ms(0)), byte(Duration::from_secs_f32(1.0 / 60.0)), byte(ms(383)), byte(ms(400)), byte(ms(1000))], [68, 76, 252, 255, 255]);
+        let now = Instant::now();
+        let mut poring = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        poring.fade_in = Some(now);
+        assert!(poring.shadowless(now + ms(383)) && !poring.shadowless(now + ms(400)));
+        // Which units fade, which get the rings, which simply show.
+        assert_eq!(arrival(true, false, false, MONSTER, 0), Arrival::Fade);
+        assert_eq!(arrival(true, false, false, NPC, 0), Arrival::Fade);
+        assert_eq!(arrival(true, false, false, PLAYER, 0), Arrival::Rings);
+        assert_eq!(arrival(true, false, false, PLAYER, GM_HIDE), Arrival::Plain);
+        assert_eq!(arrival(false, false, false, MONSTER, 0), Arrival::Plain, "already there or walking in");
+        assert_eq!(arrival(true, true, false, MONSTER, 0), Arrival::Plain, "known to the client");
+        assert_eq!(arrival(true, false, true, PLAYER, 0), Arrival::Plain, "our own character");
+        // Turned round: the two job ranges and their edges.
+        assert_eq!([21063, 21064, 21088, 21089, 22550, 22551, 22668, 22669].map(turned_round), [false, true, true, false, false, true, true, false]);
+    }
+
+    #[test]
+    fn draws_player_jobs_as_players() {
+        // Any unit with a player job (0–30, 4001–5999) is drawn as a player; other jobs only on players.
+        assert_eq!([0, 30, 31, 4000, 4001, 5999, 6000].map(|job| drawn_as_player(MONSTER, job)), [true, true, false, false, true, true, false]);
+        assert!(drawn_as_player(NPC, 4008) && !drawn_as_player(NPC, 45) && drawn_as_player(PLAYER, 1002));
+        // A type 0 change gives a monster another job.
+        let mut poring = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        (poring.kind, poring.job) = (MONSTER, 1002);
+        assert!(take_job(&mut poring, 1031) && poring.job == 1031);
+        assert!(!take_job(&mut poring, 1031), "the same job: nothing to load");
+        // A move entry with new headgear changes a known player's look; a stand entry does too, for a player only.
+        let unit = net::Unit { id: 150_014, kind: PLAYER, job: 7, sex: 1, head_top: 5, ..net::Unit::default() };
+        let mut player = Actor::new("Someone".into(), None, [10, 10], 0, 150);
+        player.look = Some(unit_look(&net::Unit { head_top: 0, ..unit.clone() }));
+        assert_eq!(refreshed_look(&player, &unit, true).map(|look| look.head_top), Some(5));
+        player.look = refreshed_look(&player, &unit, true);
+        assert_eq!(refreshed_look(&player, &unit, true), None, "already so");
+        let clone = net::Unit { kind: MONSTER, head_top: 9, ..unit.clone() };
+        assert!(refreshed_look(&player, &clone, false).is_none() && refreshed_look(&player, &clone, true).is_some());
+    }
+
+    #[test]
+    fn players_in_view_lie_sit_or_stand() {
+        let now = Instant::now();
+        let mut player = Actor::new("Someone".into(), None, [10, 10], 0, 150);
+        player.kind = PLAYER;
+        take_posture(&mut player, Some(1), now);
+        assert!(player.dead && player.remove_at.is_none());
+        take_posture(&mut player, Some(2), now);
+        assert!(!player.dead && player.sitting);
+        take_posture(&mut player, Some(0), now);
+        assert!(!player.dead && !player.sitting);
+        take_posture(&mut player, None, now);
+        assert!(!player.dead && !player.sitting, "no state byte: as it was");
+        // A monster's byte is ignored.
+        let mut poring = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        poring.kind = MONSTER;
+        take_posture(&mut poring, Some(1), now);
+        take_posture(&mut poring, Some(2), now);
+        assert!(!poring.dead && !poring.sitting && poring.remove_at.is_none());
+    }
+
+    #[test]
+    fn a_returning_unit_leaves_its_fading_copy() {
+        let now = Instant::now();
+        let mut units = HashMap::new();
+        let mut leaving = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        leaving.fade_out(now, OUT_OF_SIGHT_FADE_MS);
+        units.insert(110_000_001, leaving);
+        units.insert(110_000_002, Actor::new("Lunatic".into(), None, [12, 10], 0, 150));
+        leave_behind(&mut units, 110_000_001);
+        leave_behind(&mut units, 110_000_002);
+        assert!(!units.contains_key(&110_000_001) && units[&(110_000_001 | LEFT_BEHIND)].remove_at.is_some());
+        assert!(units.contains_key(&110_000_002), "a unit not fading stays itself");
+    }
+
+    #[test]
+    fn dying_units_leave_the_click_boxes_but_keep_their_box_on_screen() {
+        let unit = |id, sprite| picking::Target { owner: Owner::Unit(id), kind: picking::Kind::Monster, sprite, area: sprite, depth: 1.0 };
+        let boxes = vec![unit(1, [10.0, 10.0, 50.0, 60.0]), unit(2, [100.0, 100.0, 140.0, 150.0]), unit(3, [1030.0, 100.0, 1070.0, 150.0])];
+        let (clickable, fading) = fading_apart(boxes, |id| id != 1, [1024.0, 768.0]);
+        assert!(clickable.len() == 1 && clickable[0].owner == Owner::Unit(1), "only the living can be clicked");
+        assert_eq!(fading, HashMap::from([(2, [100.0, 100.0, 140.0, 150.0])]), "the one off screen isn't drawn there");
+    }
+
+    #[test]
+    fn units_out_of_sight_fade_quickly() {
+        let now = Instant::now();
+        let mut unit = Actor::new("Poring".into(), None, [10, 10], 0, 150);
+        assert!(!unit.fading(now) && unit.alpha(now) == 1.0);
+        unit.fade_out(now, OUT_OF_SIGHT_FADE_MS);
+        assert_eq!(unit.remove_at, Some(now + Duration::from_millis(510)));
+        assert!((unit.alpha(now + Duration::from_millis(255)) - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn places_the_pvp_counter() {
+        let screen = [1024.0, 768.0];
+        assert_eq!(counter_glyphs(3, 12, screen), [(3, [919.0, 718.0]), (GLYPH_SEPARATOR, [944.0, 728.0]), (1, [969.0, 738.0]), (2, [994.0, 738.0])]);
+        // A two-digit rank ends at the same place; the count stops at 9999.
+        let glyphs = counter_glyphs(12, 15_000, screen);
+        assert_eq!(&glyphs[..2], [(1, [894.0, 718.0]), (2, [919.0, 718.0])]);
+        assert_eq!(glyphs[3..].iter().map(|(digit, _)| *digit).collect::<Vec<_>>(), [9, 9, 9, 9]);
+    }
+
+    #[test]
+    fn spells_the_first_place_clock() {
+        let colon = GLYPH_SEPARATOR;
+        assert_eq!(clock_glyphs(59), [0, 0, colon, 5, 9]);
+        assert_eq!(clock_glyphs(61), [0, 1, colon, 0, 1]);
+        assert_eq!(clock_glyphs(3 * 3600 + 2 * 60 + 1), [0, 3, colon, 0, 2, colon, 0, 1]);
+        assert_eq!(clock_glyphs(2 * 86_400), [0, 2, colon, 0, 0, colon, 0, 0, colon, 0, 0]);
+        assert_eq!(clock_glyphs(0), [0, 0, colon, 0, 0]);
+        assert_eq!(clock_glyphs(3661), [0, 1, colon, 0, 1, colon, 0, 1]);
+        assert_eq!(clock_glyphs(90_061), [0, 1, colon, 0, 1, colon, 0, 1, colon, 0, 1]);
+    }
+
+    #[test]
+    fn tells_when_the_rank_crosses_the_top_ten() {
+        assert_eq!(rank_line(11, 10), Some(RANK_UP));
+        assert_eq!(rank_line(10, 11), Some(RANK_DOWN));
+        assert_eq!(rank_line(0, 11), Some(RANK_DOWN), "a first rank outside the top ten");
+        assert_eq!(rank_line(0, 3), Some(RANK_UP));
+        assert_eq!(rank_line(5, 3), None);
+    }
+
+    #[test]
+    fn keeps_a_messages_last_sentence() {
+        assert_eq!(last_sentence("Stats are limited. Are you sure?"), "Are you sure?");
+        assert_eq!(last_sentence("Are you sure?"), "Are you sure?");
+    }
+
+    #[test]
+    fn tells_what_a_map_turns_off() {
+        let miracle = net::MAP_SUN_MOON_STAR_MIRACLE;
+        assert_eq!(arrival_notices(miracle, 0), Vec::<usize>::new(), "prontera: nothing");
+        assert_eq!(arrival_notices(miracle | net::MAP_NO_COSTUME, 4047), [NO_COSTUME_NOTICE]);
+        assert_eq!(arrival_notices(0, 4047), [NO_MIRACLE_NOTICE], "a Star Gladiator where the Miracle is off");
+        assert_eq!(arrival_notices(0, 4302), [NO_MIRACLE_NOTICE], "a Sky Emperor too");
+        assert_eq!(arrival_notices(0, 4008), Vec::<usize>::new(), "anyone else: nothing");
+        assert_eq!(arrival_notices(net::MAP_NO_COSTUME, 4316), [NO_COSTUME_NOTICE, NO_MIRACLE_NOTICE]);
+    }
+
+    #[test]
+    fn keeps_what_circles_a_unit() {
+        let mut spirits = HashMap::new();
+        change_orbs(&mut spirits, None, |orbs| orbs.spheres = 5);
+        change_orbs(&mut spirits, None, |orbs| orbs.charms = (3, 2));
+        change_orbs(&mut spirits, Some(7), |orbs| orbs.souls = 4);
+        assert_eq!(spirits[&None], Orbs { spheres: 5, charms: (3, 2), ..Orbs::default() });
+        // A 0 clears only its kind; a unit with nothing left leaves.
+        change_orbs(&mut spirits, None, |orbs| orbs.charms = (3, 0));
+        assert_eq!(spirits[&None], Orbs { spheres: 5, ..Orbs::default() });
+        change_orbs(&mut spirits, Some(7), |orbs| orbs.souls = 0);
+        assert!(!spirits.contains_key(&Some(7)));
+        change_orbs(&mut spirits, None, |orbs| orbs.spheres = 0);
+        assert!(spirits.is_empty());
+        assert!(guard_job(4066) && !guard_job(4054));
+        // Shadow Scars: the counts 1, 2, 2, 3, 1, 2 play the streaks at the 1st, 2nd, 4th and 6th; none with effects off.
+        let mut scars = HashMap::new();
+        let rose = [1, 2, 2, 3, 1, 2].map(|amount| shadow_scars_rose(&mut scars, 7, amount, true));
+        assert_eq!(rose, [true, true, false, true, false, true]);
+        assert!(!shadow_scars_rose(&mut scars, 7, 3, false) && scars[&7] == 3);
+        // A glow on black: black goes clear, a dim red stays red, half as opaque.
+        let image = render::glow(image::RgbaImage::from_pixel(1, 1, image::Rgba([128, 0, 0, 255])));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 128]);
+        assert_eq!(render::glow(image::RgbaImage::new(1, 1)).get_pixel(0, 0).0, [0; 4]);
+    }
+
+    #[test]
+    fn str_textures_lose_their_black() {
+        // An STR texture's black key: blank_box.bmp's black goes clear; a BMP's (8, 0, 0) stays, a TGA's goes.
+        let black = |rgb: [u8; 3], tga: bool| {
+            render::key_out_black(image::RgbaImage::from_pixel(1, 1, image::Rgba([rgb[0], rgb[1], rgb[2], 255])), tga).get_pixel(0, 0).0
+        };
+        assert_eq!(black([0, 0, 0], false), [0; 4]);
+        assert_eq!(black([7, 7, 7], false), [0; 4]);
+        assert_eq!(black([8, 0, 0], false), [8, 0, 0, 255]);
+        assert_eq!(black([8, 0, 0], true), [0; 4]);
+        assert_eq!(black([0, 0, 16], true), [0, 0, 16, 255]);
+    }
+
+    #[test]
+    fn locks_and_lets_go_of_pairs() {
+        // Cursed Circle: one Sura (1) catches two units; the release names the last one and the Sura.
+        let mut locks = Vec::new();
+        lock_pair(&mut locks, 1, 2, true);
+        lock_pair(&mut locks, 1, 3, true);
+        lock_pair(&mut locks, 1, 3, true);
+        assert_eq!((locked_with(&locks, 1), locked_with(&locks, 2), locked_with(&locks, 4)), (2, 1, 0));
+        lock_pair(&mut locks, 3, 1, false);
+        assert!(locks.is_empty());
+        // Blade Stop: either side lets go of the pair.
+        lock_pair(&mut locks, 5, 6, true);
+        lock_pair(&mut locks, 6, 0, false);
+        assert!(locks.is_empty());
+        // A combo window empties as it runs out.
+        let start = Instant::now();
+        let length = Duration::from_millis(800);
+        assert_eq!(share_left(start, length, start), 1.0);
+        assert_eq!(share_left(start, length, start + Duration::from_millis(200)), 0.75);
+        assert_eq!(share_left(start, length, start + Duration::from_secs(2)), 0.0);
+    }
+
+    #[test]
+    fn rounds_or_floors_the_facing_by_unit() {
+        let attack = actor::attack_action(0, 0, 1);
+        // By the job drawn, whatever the unit's type: a player (job 0) rounds standing, walking and sitting, floors in
+        // the ready stance or attacking; drawn as job 1002 it floors.
+        assert!(rounds_facing(0, actor::IDLE) && rounds_facing(0, actor::WALK) && rounds_facing(0, actor::SIT));
+        assert!(!rounds_facing(0, actor::READY) && !rounds_facing(0, attack));
+        assert!(!rounds_facing(1002, actor::IDLE) && !rounds_facing(1002, actor::WALK));
+        // An NPC with job 1 rounds walking; a monster with job 100 rounds standing, floors walking.
+        assert!(rounds_facing(1, actor::WALK) && rounds_facing(100, actor::IDLE) && !rounds_facing(100, actor::WALK));
+        assert!(rounds_facing(4008, actor::SIT) && !rounds_facing(WARP_JOB, actor::IDLE));
+        // 6018–6052: standing, walking or sitting; not the ready stance.
+        assert!(rounds_facing(6020, actor::WALK) && !rounds_facing(6020, actor::READY) && !rounds_facing(6020, attack));
+    }
+
+    #[test]
+    fn a_press_moves_the_window_it_reached_in_the_esc_order() {
+        use escape::WindowId::*;
+        assert_eq!(esc_reached(Some(Top::Esc(Minimap)), false), Some(Minimap));
+        assert_eq!(esc_reached(Some(Top::Panel(Panel::Inventory)), false), Some(Inventory));
+        // The storage, the hotbar and what isn't a window aren't Esc's.
+        assert_eq!(esc_reached(Some(Top::Panel(Panel::Storage)), false), None);
+        assert_eq!(esc_reached(Some(Top::Panel(Panel::Hotkeys)), false), None);
+        assert_eq!(esc_reached(Some(Top::Chat), false), None);
+        assert_eq!(esc_reached(None, false), None);
+        // The game menu, the new-quest notice, a chat tab's settings and the booking board are entries too.
+        assert_eq!(esc_reached(Some(Top::GameMenu), false), Some(GameMenu));
+        assert_eq!(esc_reached(Some(Top::QuestIcon), false), Some(QuestNotice));
+        assert_eq!(esc_reached(Some(Top::ChatSettings), false), Some(ChatSettings));
+        assert_eq!(esc_reached(Some(Top::PartyBooking), false), Some(PartyBooking));
+        // A press anywhere while the right-click menu is up is the menu's.
+        assert_eq!(esc_reached(Some(Top::Panel(Panel::Inventory)), true), Some(Menu));
+    }
+
+    #[test]
+    fn the_say_window_is_there_only_once_something_was_said() {
+        // A menu alone: no say window, no button. The script's close takes the menu away and ends the talk.
+        let mut alone = Dialog { menu: Some(npc_menu::Menu::new(vec!["Yes".into(), "No".into()])), ..Dialog::new(7) };
+        assert!(!alone.say_window() && alone.button == DialogButton::None);
+        assert!(alone.close());
+        assert!(alone.menu.is_none() && alone.button == DialogButton::None);
+        // Text, then a menu: both; the close leaves the window with its Close button, and the expired menu is removed.
+        let mut said = Dialog { said: true, menu: Some(npc_menu::Menu::new(vec!["Yes".into()])), ..Dialog::new(7) };
+        assert!(said.say_window());
+        assert!(!said.close());
+        assert!(said.button == DialogButton::Close && said.menu.is_none());
+        // An input box alone has no say window either, and survives a close.
+        let mut input = Dialog { input: Some(npc_input::Input::new(false)), ..Dialog::new(7) };
+        assert!(!input.say_window());
+        assert!(!input.close());
+        assert!(input.input.is_some() && input.button == DialogButton::None);
+        // A warp list is the menu's box alone, whatever was said.
+        assert!(!Dialog { said: true, warp: Some((27, Vec::new())), ..Dialog::new(0) }.say_window());
+    }
+
+    #[test]
+    fn a_click_opens_a_link_only_where_nothing_covers_it() {
+        // The chat log is nothing's (`top_at` gives None there), the NPC window and the chat's own parts are theirs.
+        assert!(takes_link(None) && takes_link(Some(Top::NpcDialog)) && takes_link(Some(Top::Chat)));
+        // A window drawn over the log keeps its links from the click.
+        assert!(!takes_link(Some(Top::Esc(escape::WindowId::ItemInfo))) && !takes_link(Some(Top::Panel(Panel::Inventory))));
+    }
+
+    #[test]
+    fn moves_items_with_a_modifier() {
+        assert_eq!(
+            [inventory_right(true, true, false), inventory_right(false, true, true), inventory_right(false, false, true), inventory_right(false, false, false)],
+            [Some(InventoryRight::QuickMove), Some(InventoryRight::Favorite), Some(InventoryRight::Identify), None]
+        );
+        // A stored stack: to the open inventory, else the open cart window, else nowhere.
+        assert_eq!(storage_quick_target(true, true), Some(StorageTo::Inventory));
+        assert_eq!(storage_quick_target(false, true), Some(StorageTo::Cart));
+        assert_eq!(storage_quick_target(false, false), None);
+        // The five answers that free the quick move's lock; others don't.
+        for event in [
+            MapEvent::StorageRemoved { index: 1, amount: 0 },
+            MapEvent::ItemRemoved { index: 1, amount: 1 },
+            MapEvent::CartRemoved { index: 1, amount: 1 },
+            MapEvent::MoveFailed { index: 1, amount: 1 },
+            MapEvent::TradeAdded { index: 1, result: 0 },
+        ] {
+            assert!(frees_quick_move(&event));
+        }
+        assert!(!frees_quick_move(&MapEvent::StorageClosed));
+        // Cart and storage: none moves one, too many moves all.
+        assert_eq!([0, 3, 9].map(|asked| between_one_and(asked, 5)), [1, 3, 5]);
+        // Esc never closes the storage.
+        assert_eq!(esc_panel(Panel::Storage), None);
+        assert_eq!(quick_target(true, true, true), Some(QuickTo::Storage));
+        assert_eq!(quick_target(false, true, true), Some(QuickTo::Trade));
+        assert_eq!(quick_target(false, false, true), Some(QuickTo::Cart));
+        assert_eq!(quick_target(false, false, false), None);
+        // Our Shift-click's link reads back as a link to the item.
+        let (shown, runs) = links::split(&links::mark(&item_link(512, "Apple"), &|_| String::new()));
+        assert_eq!((shown.as_str(), runs[0].1.item().map(|item| item.id)), ("Apple", Some(512)));
+    }
+
+    #[test]
+    fn heal_numbers_keep_the_depth_test() {
+        assert!(number_depth_tested(DamageKind::Heal { color: HEAL_GREEN }) && number_depth_tested(DamageKind::Heal { color: HEAL_BLUE }));
+        assert!(!number_depth_tested(DamageKind::Hit { taken: false, sp: false }));
+        assert!(!number_depth_tested(DamageKind::Hit { taken: true, sp: false }));
+        assert!(!number_depth_tested(DamageKind::Hit { taken: false, sp: true }));
+        assert!(!number_depth_tested(DamageKind::Critical));
+        assert!(!number_depth_tested(DamageKind::Miss { red: true }));
+        assert!(!number_depth_tested(DamageKind::Lucky));
+        assert!(!number_depth_tested(DamageKind::Combo));
+    }
+
+    #[test]
+    fn effect_number_colours_and_potions() {
+        assert_eq!(number_color(331), Some([0x00, 0xFF, 0x00]));
+        assert_eq!(number_color(332), Some([0x00, 0x00, 0xFF]));
+        assert_eq!(number_color(657), Some([0x00, 0xFF, 0x00]));
+        assert_eq!(number_color(658), Some([0x00, 0x00, 0xFF]));
+        assert_eq!(number_color(659), Some([0xFF, 0x00, 0x00]));
+        assert_eq!(number_color(660), Some([0xFF, 0x00, 0xFF]));
+        assert_eq!(number_color(661), Some([0x00, 0x00, 0x00]));
+        assert_eq!(number_color(662), Some([0xFF, 0xFF, 0xFF]));
+        assert_eq!(number_color(663), Some([0xFF, 0xFF, 0x00]));
+        assert_eq!(number_color(664), Some([0xFF, 0x55, 0xB1]));
+        for other in [0, 1, 312, 330, 333, 656, 665, 1143, 2371] {
+            assert_eq!(number_color(other), None, "effect {other} has no number color");
+        }
+        // Potions keep green and SP Recovery keeps blue.
+        assert_eq!(HEAL_GREEN, [0x00, 0xFF, 0x00]);
+        assert_eq!(HEAL_BLUE, [0x00, 0x00, 0xFF]);
+        // Negative num is clamped to 0.
+        let num: i32 = -50;
+        assert_eq!(num.max(0), 0);
+        let num_zero: i32 = 0;
+        assert_eq!(num_zero.max(0), 0);
+        let num_pos: i32 = 1234;
+        assert_eq!(num_pos.max(0), 1234);
+    }
+
+    #[test]
+    fn effect_numbers_target_and_unknown_aid() {
+        let account_id = 150008;
+        let unit_id = 2000001;
+        let unknown_aid = 9999999;
+        let in_view = |id| id == unit_id;
+
+        // On unit in view: effect 657, num 1234 -> green "1234" over unit
+        assert_eq!(effect_number(unit_id, 657, Some(1234), account_id, &in_view), Some((Some(unit_id), 1234, [0x00, 0xFF, 0x00])));
+
+        // On player (account_id): target is None (player)
+        assert_eq!(effect_number(account_id, 657, Some(1234), account_id, &in_view), Some((None, 1234, [0x00, 0xFF, 0x00])));
+
+        // Unknown AID: shows nothing
+        assert_eq!(effect_number(unknown_aid, 657, Some(1234), account_id, &in_view), None);
+
+        // Effect without number (0x01f3): shows nothing
+        assert_eq!(effect_number(unit_id, 657, None, account_id, &in_view), None);
+
+        // Effect with non-number ID (e.g. 312, 1143): shows nothing
+        assert_eq!(effect_number(unit_id, 312, Some(100), account_id, &in_view), None);
+        assert_eq!(effect_number(unit_id, 1143, Some(100), account_id, &in_view), None);
+
+        // Clamped negative number
+        assert_eq!(effect_number(unit_id, 659, Some(-50), account_id, &in_view), Some((Some(unit_id), 0, [0xFF, 0x00, 0x00])));
+    }
+
+    #[test]
+    fn glides_and_keeps_the_view() {
+        // A tenth of the way a 60th of a second, the same at any frame rate.
+        assert!((follow_step(Duration::from_secs_f32(1.0 / 60.0)) - 0.1).abs() < 1e-4);
+        assert!((follow_step(Duration::from_secs_f32(2.0 / 60.0)) - 0.19).abs() < 1e-4);
+        // The view left on each kind of map, within that kind's limits.
+        let outdoors = CameraGoal::arrive(false, None, [80.0, 500.0], false, false);
+        assert_eq!((outdoors.pitch, outdoors.distance(), outdoors.yaw), (65.0, 400.0, 0.0));
+        let indoors = CameraGoal::arrive(true, None, [20.0, 400.0], false, false);
+        assert_eq!((indoors.pitch, indoors.distance(), indoors.yaw), (35.0, 300.0, YAW_INDOOR));
+        // /zoom: outdoors out to 480, indoors no further.
+        let mut far = CameraGoal::arrive(false, None, [45.0, 450.0], true, false);
+        assert!((far.distance() - 450.0).abs() < 0.01);
+        far.set_distance(1000.0);
+        assert_eq!(far.distance(), ZOOM_OUT_DISTANCE);
+        assert_eq!(far.distance(), 480.0);
+        far.zoom_out = false;
+        far.set_distance(far.distance());
+        assert_eq!(far.distance(), 400.0);
+        assert_eq!(CameraGoal::arrive(true, None, [45.0, 450.0], true, false).distance(), 300.0);
+        assert_eq!(CameraGoal::arrive(true, None, [45.0, 1000.0], true, false).distance(), 300.0);
+        // The far zoom: out to 800 indoors and out, back within the range when it's switched off.
+        let mut farther = CameraGoal::arrive(true, None, [45.0, 1000.0], false, true);
+        assert_eq!(farther.distance(), FAR_ZOOM_DISTANCE);
+        farther.set_far(false);
+        assert_eq!(farther.distance(), 300.0);
+        farther.set_far(true);
+        farther.set_distance(1000.0);
+        assert_eq!(farther.distance(), 800.0);
+        // A map's own table starts it, and holds it.
+        let table = rustnarok_client::map::Viewpoint {
+            distance: [210.0, 260.0],
+            distance_in: 250.0,
+            yaw: [45.0, 65.0],
+            yaw_in: 50.0,
+            pitch: [35.0, 45.0],
+            pitch_in: 40.0,
+        };
+        let mut own = CameraGoal::arrive(false, Some(table), [80.0, 500.0], true, false);
+        assert_eq!((own.pitch, own.distance(), own.yaw), (40.0, 250.0, 50.0));
+        own.steer(100.0, 0.0, false, false, false);
+        assert_eq!(own.yaw, 65.0);
+        // Saved views: read back, followed per kind of map.
+        let mut saved = SavedView::parse("50 350 45 280");
+        assert_eq!((saved.of(false), saved.of(true)), ([50.0, 350.0], [45.0, 280.0]));
+        assert_eq!(SavedView::parse(&saved.text()), SavedView { changed: None, ..saved });
+        assert_eq!(SavedView::parse("junk"), SavedView::default());
+        // A first run: 400 outdoors, 300 indoors, tilted 45; the harness's client 300 both ways.
+        assert_eq!(SavedView::default().views, [[45.0, 400.0], [45.0, 300.0]]);
+        assert_eq!(SavedView::harness().views, [[45.0, 300.0]; 2]);
+        // Arriving, a saved tilt is kept within 25 to 65 outdoors and 35 to 55 indoors.
+        assert_eq!(CameraGoal::arrive(true, None, [60.0, 300.0], false, false).pitch, 55.0);
+        assert_eq!(CameraGoal::arrive(false, None, [60.0, 400.0], false, false).pitch, 60.0);
+        assert_eq!(CameraGoal::arrive(true, None, [20.0, 300.0], false, false).pitch, 35.0);
+        assert_eq!(CameraGoal::arrive(false, None, [45.0, 400.0], false, false).distance(), 400.0);
+        let now = Instant::now();
+        saved.follow(&outdoors, now, false);
+        assert_eq!((saved.of(false), saved.of(true)), ([65.0, 400.0], [45.0, 280.0]));
+        assert!(saved.changed.is_some());
+        saved.follow(&outdoors, now + VIEW_SAVE_AFTER, false);
+        assert!(saved.changed.is_none());
+    }
+
+    #[test]
+    fn steers_the_camera_at_the_games_rates() {
+        let now = Instant::now();
+        let mut outdoors = CameraGoal::new(false);
+        // A degree a pixel, unlimited outdoors; Alt does nothing.
+        outdoors.steer(360.0, 0.0, false, false, false);
+        outdoors.steer(90.0, 0.0, false, false, true);
+        assert_eq!(outdoors.yaw, 360.0);
+        // Shift tilts half a degree a pixel, once a frame, 50 to 65 (25 to 65 with Ctrl).
+        let drag = |goal: &mut CameraGoal, dx: f32, dy: f32, ctrl: bool, shift: bool| {
+            goal.steer(dx, dy, ctrl, shift, false);
+            goal.drag_frame();
+        };
+        drag(&mut outdoors, 0.0, 200.0, false, true);
+        assert_eq!(outdoors.pitch, 65.0);
+        drag(&mut outdoors, 0.0, -400.0, false, true);
+        assert_eq!(outdoors.pitch, 50.0);
+        // A pixel a frame drops its half degree each frame: ten frames, no tilt. Five in one frame: two steps.
+        for _ in 0..10 {
+            drag(&mut outdoors, 0.0, 1.0, true, true);
+        }
+        assert_eq!(outdoors.pitch, 50.0);
+        drag(&mut outdoors, 0.0, 5.0, true, true);
+        assert_eq!(outdoors.pitch, 52.0);
+        // Moves within one frame add up before the halving.
+        outdoors.steer(0.0, 1.0, true, true, false);
+        outdoors.steer(0.0, 1.0, true, true, false);
+        outdoors.drag_frame();
+        assert_eq!(outdoors.pitch, 53.0);
+        drag(&mut outdoors, 0.0, -400.0, true, true);
+        assert_eq!(outdoors.pitch, 25.0);
+        // Ctrl zooms (down comes closer) and turns too; 230 to 400 units.
+        drag(&mut outdoors, 10.0, 400.0, true, false);
+        assert_eq!((outdoors.distance(), outdoors.yaw), (230.0, 370.0));
+        drag(&mut outdoors, 0.0, -1000.0, true, false);
+        assert_eq!(outdoors.distance(), 400.0);
+        // The wheel: one step however far, at most every 15 ms; with Shift it tilts.
+        outdoors.wheel(3, now, false, false);
+        assert!((outdoors.distance() - 375.7).abs() < 0.01);
+        outdoors.wheel(1, now + Duration::from_millis(5), false, false);
+        assert!((outdoors.distance() - 375.7).abs() < 0.01);
+        // (Shift alone keeps to 50..65: the 25 it had comes up to 50.)
+        outdoors.wheel(-1, now + Duration::from_millis(20), false, true);
+        assert_eq!(outdoors.pitch, 50.0);
+        // A double right-click with the pointer still: Ctrl the distance, Shift the tilt, otherwise the turn.
+        outdoors.press([5.0, 5.0], now, false, false);
+        outdoors.press([5.0, 5.0], now + Duration::from_millis(200), true, true);
+        assert_eq!((outdoors.distance(), outdoors.pitch), (300.0, PITCH_RESET));
+        // After a double click the next press starts a new pair: the third press of a triple click doesn't reset,
+        // the fourth (its pair) turns back.
+        outdoors.press([5.0, 5.0], now + Duration::from_millis(300), false, false);
+        assert_eq!(outdoors.yaw, 370.0);
+        outdoors.press([5.0, 5.0], now + Duration::from_millis(350), false, false);
+        assert_eq!(outdoors.yaw, 360.0);
+        outdoors.yaw = 30.0;
+        outdoors.pointer_moved([9.0, 5.0]);
+        outdoors.press([9.0, 5.0], now + Duration::from_millis(400), false, false);
+        assert_eq!(outdoors.yaw, 30.0, "moved: not a double click");
+        // A hand's tremor between the presses still makes one.
+        outdoors.pointer_moved([9.6, 5.4]);
+        outdoors.press([9.6, 5.4], now + Duration::from_millis(500), false, false);
+        assert_eq!(outdoors.yaw, 0.0, "a tremor isn't a move");
+        // Indoors: the turn stays within 25 to 65 and isn't reset; the tilt is fixed at 60 without Ctrl.
+        let mut indoors = CameraGoal::new(true);
+        indoors.steer(100.0, 0.0, false, false, false);
+        assert_eq!(indoors.yaw, 65.0);
+        indoors.steer(0.0, -50.0, false, true, false);
+        indoors.drag_frame();
+        assert_eq!(indoors.pitch, 60.0);
+        indoors.press([5.0, 5.0], now, false, false);
+        indoors.press([5.0, 5.0], now + Duration::from_millis(100), false, false);
+        assert_eq!(indoors.yaw, 65.0);
+        indoors.steer(0.0, -1000.0, true, false, false);
+        indoors.drag_frame();
+        assert_eq!(indoors.distance(), 300.0);
+    }
+
+    #[test]
+    fn opens_menus_and_orders_companions() {
+        assert!(menu_opens(false, false, false, false));
+        assert!(!menu_opens(true, false, false, false) && !menu_opens(false, true, false, false));
+        assert!(!menu_opens(false, false, true, false) && !menu_opens(false, false, false, true));
+        // Without Shift the first press marks the monster and the second sends the attack; with Shift at once.
+        assert_eq!(companion_mark(None, 1, 9, false), (Some((1, 9)), false));
+        assert_eq!(companion_mark(Some((1, 9)), 1, 9, false), (None, true));
+        assert_eq!(companion_mark(Some((1, 8)), 1, 9, false), (Some((1, 9)), false));
+        assert_eq!(companion_mark(None, 1, 9, true), (None, true));
+    }
+
+    #[test]
+    fn hits_sound_by_body_or_weapon() {
+        // A Knight (7 from Swordman 1), a Hunter (11 from Archer 3), a Priest (8 from Acolyte 4).
+        assert_eq!(hit_sound(Some(&[7, 1, 0]), None, 0), "player_metal.wav");
+        assert_eq!(hit_sound(Some(&[11, 3, 0]), Some(1), 0), "player_wooden_male.wav");
+        assert_eq!(hit_sound(Some(&[8, 4, 0]), None, 0), "player_clothes.wav");
+        // On a monster: the attacker's weapon type, bare hands and monsters picking one of four.
+        assert_eq!(hit_sound(None, Some(1), 0), "_hit_sword.wav");
+        assert_eq!(hit_sound(None, Some(11), 0), "_hit_arrow.wav");
+        assert_eq!(hit_sound(None, Some(8), 0), "_hit_mace.wav");
+        assert_eq!(hit_sound(None, Some(0), 6), "_hit_fist3.wav");
+        assert_eq!(hit_sound(None, None, 3), "_enemy_hit_normal4.wav");
+    }
+
+    #[test]
+    fn states_sound_as_they_start_and_break() {
+        assert_eq!(state_sounds((0, 0), (6, 0)), ["_stonecurse.wav"]);
+        assert_eq!(state_sounds((6, 0), (1, 0)), Vec::<&str>::new(), "stone setting in after the wait");
+        assert_eq!(state_sounds((1, 0), (0, 0)), ["_stone_explosion.wav"]);
+        assert_eq!(state_sounds((2, 0), (0, 0)), ["_frozen_explosion.wav"]);
+        assert_eq!(state_sounds((0, 0x01), (3, 0x13)), ["_stun.wav", "_curse.wav", "_blind.wav"]);
+    }
+
+    #[test]
+    fn sounds_fall_off_with_distance() {
+        assert_eq!([heard(0.0), heard(8.0), heard(16.0), heard(50.0)], [1.0, 1.0, 0.5, 0.0]);
+        assert!((heard(30.0) - 40.0 / 150.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn skills_reach_by_level_and_world_distance() {
+        // r1 + listed − r2, the learned level capped at MaxLv.
+        let ranges = [1, 2, 3, 4, 5];
+        assert_eq!(skill_range(&ranges, Some(5), 3, 7, 11), 9.0);
+        assert_eq!(skill_range(&ranges, Some(5), 3, 4, 11), 10.0);
+        assert_eq!(skill_range(&ranges, None, 3, 7, 11), 14.0, "no MaxLv: no cap, and r2 is 0 past the table");
+        assert_eq!(skill_range(&ranges, Some(0), 3, 7, 11), 14.0, "MaxLv 0: r2 is 0");
+        assert_eq!(skill_range(&ranges, Some(5), 9, 3, 3), 1.0, "r1 is 1 past the table");
+        // No ranges in the entry (or no entry): listed + 1.
+        assert_eq!(skill_range(&[], Some(5), 5, 5, 1), 2.0);
+        assert_eq!(skill_range(&[], None, 5, 5, 3), 4.0);
+        // range × 5 + 5.5 world units: 9 cells reach 10.1 cells away, not 10.2.
+        assert!(skill_in_reach(10.1 * world::CELL, 9.0) && !skill_in_reach(10.2 * world::CELL, 9.0));
+        assert!(!skill_in_reach(f32::NAN, 9.0));
+        // On a unit, the distance takes the height: range 9 at (10, 0), 7.0 height units in, 7.5 out.
+        let gat = |rise: f32| rustnarok_client::map::Gat {
+            width: 32,
+            height: 32,
+            cells: (0..32 * 32).map(|index| ([if index % 32 >= 11 { rise } else { 0.0 }; 4], 0)).collect(),
+        };
+        let reach = |rise| skill_in_reach(world::attack_distance(&gat(rise), world::drawn_point([1.0, 1.0]), world::drawn_point([11.0, 1.0])), 9.0);
+        assert!(reach(-7.0) && !reach(-7.5));
+    }
+
+    #[test]
+    fn walks_a_skill_into_range_without_a_path() {
+        // Toward where the target is drawn, range 9 short: as a chase, no path needed.
+        let open = rustnarok_client::map::Gat { width: 64, height: 64, cells: vec![([0.0; 4], 0); 64 * 64] };
+        let walk =
+            |gat: &rustnarok_client::map::Gat, from: [f32; 2], aim: [f32; 2]| world::chase_cell(gat, world::drawn_point(from), world::drawn_point(aim), 9);
+        assert_eq!(walk(&open, [30.0, 32.0], [40.0, 32.0]), [31, 32]);
+        assert_eq!(walk(&open, [29.0, 25.0], [40.0, 32.0]), [32, 27]);
+        // A ground skill on wall cells: it walks up all the same.
+        let walled = rustnarok_client::map::Gat {
+            width: 64,
+            height: 64,
+            cells: (0..64 * 64).map(|index| ([0.0; 4], u8::from(index % 64 >= 48 || [index % 64, index / 64] == [50, 32]))).collect(),
+        };
+        assert_eq!(walk(&walled, [35.0, 32.0], [55.0, 32.0]), [46, 32]);
+        assert_eq!(walk(&walled, [35.0, 20.0], [50.0, 32.0]), [43, 26]);
+    }
+
+    #[test]
+    fn reaches_big_monsters_sooner() {
+        assert_eq!(reach_to(30.0, 1181, 0.0), 10.0);
+        assert_eq!(reach_to(30.0, 1284, 2.0), 10.0);
+        assert_eq!(reach_to(30.0, 1002, 1.0), 22.0);
+        assert_eq!(reach_to(5.0, 1002, 2.0), 0.0);
+        assert_eq!(reach_to(30.0, 1002, 0.0), 30.0);
+        // The cell a unit skill sends, shifted by the angle toward the target.
+        assert_eq!(
+            [0.0, 24.9, 25.0, 70.0, 205.0, 250.0, 340.0].map(|theta| shift_by_angle(theta, 2)),
+            [[0, 2], [0, 2], [2, 2], [2, 0], [-2, 2], [-2, 0], [0, 2]]
+        );
+        // Straight east of the player (θ 90): x + s; s = 5 for job 1181, the radius else, nothing for others.
+        let [from, aim] = [world::drawn_point([10.0, 10.0]), world::drawn_point([20.0, 10.0])];
+        assert_eq!(big_walk_cell([11, 10], 1181, 0.0, from, aim), [16, 10]);
+        assert_eq!(big_walk_cell([11, 10], 1900, 2.0, from, aim), [13, 10]);
+        assert_eq!(big_walk_cell([11, 10], 1002, 0.0, from, aim), [11, 10]);
+    }
+
+    #[test]
+    fn the_cooldown_fan_clears_clockwise_from_twelve() {
+        let dark = |image: &RgbaImage, x: u32, y: u32| image.get_pixel(x, y)[3] == 170;
+        // A quarter in: 12 to 3 o'clock is clear, the rest dark.
+        let fan = cooldown_fan(0.25);
+        assert!(!dark(&fan, 20, 4) && !dark(&fan, 28, 12) && dark(&fan, 28, 20) && dark(&fan, 12, 28) && dark(&fan, 4, 12) && dark(&fan, 12, 4));
+        assert!(dark(&cooldown_fan(0.0), 20, 4) && !dark(&cooldown_fan(1.0), 4, 12));
+    }
+
+    #[test]
+    fn a_press_takes_by_shift_and_skill() {
+        let takes = |at, support, shift| aim_takes(at, support, shift, false, false);
+        // Enemy skills: monsters without Shift, players with it, never yourself.
+        assert!(takes(AimAt::Monster, false, false) && !takes(AimAt::Monster, false, true));
+        assert!(takes(AimAt::Player, false, true) && !takes(AimAt::Player, false, false));
+        assert!(!takes(AimAt::Me, false, false) && !takes(AimAt::Me, false, true));
+        // Support skills the other way round; yourself without Shift.
+        assert!(takes(AimAt::Player, true, false) && takes(AimAt::Monster, true, true) && !takes(AimAt::Monster, true, false));
+        assert!(takes(AimAt::Me, true, false) && !takes(AimAt::Me, true, true));
+        // /noshift takes both whatever Shift does; a PvP map lets players in.
+        assert!(aim_takes(AimAt::Monster, false, true, true, false) && aim_takes(AimAt::Player, false, false, true, false));
+        assert!(aim_takes(AimAt::Player, false, false, false, true) && !aim_takes(AimAt::Me, false, false, true, true));
+    }
+
+    #[test]
+    fn aims_where_the_pointer_is() {
+        // Ground skills ignore the unit under the pointer; unit skills need one, and a press without lets go.
+        assert!(matches!(aim_use(true, Some(9), Some([3, 4])), Some(SkillTarget::Cell([3, 4]))));
+        assert!(matches!(aim_use(false, Some(9), Some([3, 4])), Some(SkillTarget::Unit(9))));
+        assert!(aim_use(false, None, Some([3, 4])).is_none() && aim_use(true, Some(9), None).is_none());
+        // The wheel: up raises, down lowers, 1 to the learned level; not for a skill without a level to pick.
+        assert_eq!([aim_level(10, 10, 2, true), aim_level(8, 10, -1, true), aim_level(10, 10, -1, true), aim_level(1, 10, 3, true)], [8, 9, 10, 1]);
+        assert_eq!(aim_level(5, 10, 2, false), 5);
+    }
+
+    #[test]
+    fn a_zero_wheel_delta_does_not_scroll() {
+        // A gesture's start and end (0.0, also -0.0) are no notch; any other delta one, its sign flipped.
+        assert_eq!([0.0, -0.0, -0.1, -40.0, 0.1, 3.0].map(wheel_rows), [0, 0, 1, 1, -1, -1]);
+    }
+
+    #[test]
+    fn trackpad_pixels_add_up_to_notches() {
+        let mut carry = 0.0;
+        let mut rows = |deltas: &[f64]| deltas.iter().map(|&delta| pixel_rows(&mut carry, delta)).sum::<i32>();
+        // One notch per 96 pixels, the rest kept for the next delta; a zero delta (a gesture's start or end) is none.
+        assert_eq!(rows(&[-10.0; 9]), 0);
+        assert_eq!(rows(&[-10.0, 0.0, -0.0]), 1);
+        assert_eq!(rows(&[-92.0]), 1);
+        assert_eq!(rows(&[-300.0]), 3);
+        // Turning the other way drops what was left: 12 pixels down don't take away from the way up.
+        assert_eq!(rows(&[90.0]), 0);
+        assert_eq!(rows(&[6.0]), -1);
+        // A swipe as macOS sends it, many deltas of a few pixels: 120 of 4 pixels are 5 notches, not 120.
+        assert_eq!(rows(&[-4.0; 120]), 5);
+    }
+
+    #[test]
+    fn turns_toward_a_cells_centre() {
+        let toward = |dx: i32, dy: i32| direction_toward([10.0, 10.0], [10 + dx, 10 + dy]);
+        // x east, y north: 3 east 1 north is east, 1 east 3 north north, 2 east 1 north north-east; its own cell north.
+        assert_eq!([toward(3, 1), toward(1, 3), toward(2, 1), toward(-3, 1), toward(0, 0)], [6, 0, 7, 2, 0]);
+        // Counted from the exact facing: east (90°) to east is ahead; from 89° a sector off, so only the head turns.
+        assert_eq!([sectors_from(90.0, 6), sectors_from(89.0, 6)], [0, 7]);
+        assert_eq!(turned(7, 6, 0, 6), (6, 2));
+    }
+
+    #[test]
+    fn talks_and_picks_up_from_close() {
+        // Talking: standing or sitting; walking, a swing, the pickup (Other), a flinch, a cast or a skill's motion, nothing.
+        assert!(may_talk(PlayerMotion::Stand, false) && may_talk(PlayerMotion::Other, true));
+        let busy = [PlayerMotion::Walk, PlayerMotion::Other, PlayerMotion::Flinch, PlayerMotion::Cast, PlayerMotion::Skill];
+        assert!(busy.iter().all(|&motion| !may_talk(motion, false)));
+        assert!(within_pickup([5, 5], [6, 6]) && within_pickup([5, 5], [5, 5]));
+        assert!(!within_pickup([5, 5], [7, 5]) && !within_pickup([5, 5], [6, 7]));
+        assert_eq!([npc_cursor(WARP_JOB), npc_cursor(86)], [cursor::Kind::Warp, cursor::Kind::Talk]);
+    }
+
+    #[test]
+    fn chases_slow_and_fast_targets() {
+        // Slow when 4/3 of the player's ms per cell, truncated, is less than the target's.
+        assert!(!slow_target(150.0, 200.0) && slow_target(150.0, 201.0));
+        assert!(!slow_target(100.0, 133.0) && slow_target(100.0, 134.0));
+        // A walk goes out only to a new cell, more than the gap after the last chase walk.
+        let (mut walk_cell, mut last) = (None, None);
+        assert_eq!(chase_walk([39, 32], &mut walk_cell, &mut last, CHASE_GAP_MS, 1000), Some([39, 32]));
+        assert_eq!(chase_walk([39, 32], &mut walk_cell, &mut last, CHASE_GAP_MS, 2000), None, "the same cell");
+        assert_eq!(chase_walk([39, 33], &mut walk_cell, &mut last, CHASE_GAP_MS, 1450), None, "450 ms isn't more than 450");
+        assert_eq!(chase_walk([39, 33], &mut walk_cell, &mut last, CHASE_GAP_MS, 1451), Some([39, 33]));
+        assert_eq!(chase_walk([39, 34], &mut walk_cell, &mut last, ATTACK_GAP_MS, 2651), None);
+        assert_eq!(chase_walk([39, 34], &mut walk_cell, &mut last, ATTACK_GAP_MS, 2652), Some([39, 34]));
+        // A re-click on the monster being chased: the walk cell and the last walk are the player's, so nothing new.
+        assert_eq!(chase_walk([39, 34], &mut walk_cell, &mut last, CHASE_GAP_MS, 4000), None);
+        // A walk the move limit drops still set the walk cell: not asked for again while the cell stays.
+        assert!(!may_move(Some(4000), 4100));
+        assert_eq!(chase_walk([38, 34], &mut walk_cell, &mut last, CHASE_GAP_MS, 4100), Some([38, 34]));
+        assert_eq!(chase_walk([38, 34], &mut walk_cell, &mut last, CHASE_GAP_MS, 4700), None);
+        // Arrived mid-step: the drawn position crosses into the walk cell halfway from (37, 34) to (38, 34).
+        let arrived = |x: f32| Some(world::floor_cell(world::drawn_point([x, 34.0]))) == walk_cell;
+        assert!(!arrived(37.49) && arrived(37.5));
+        // The walk cell goes with the player's own motion, except starting a walk, and never while dead.
+        assert!(clears_walk_cell((actor::WALK, false), actor::IDLE));
+        assert!(clears_walk_cell((actor::IDLE, false), actor::SIT));
+        assert!(clears_walk_cell((actor::WALK, false), 5));
+        assert!(!clears_walk_cell((actor::IDLE, false), actor::WALK));
+        assert!(!clears_walk_cell((actor::READY, false), actor::IDLE));
+        assert!(!clears_walk_cell((8, true), actor::IDLE));
+        // 0x0139 swaps slow and fast and brings an ended single swing back as one swing, a Ctrl attack kept up.
+        let single = Attack { held: false, sent: true, fast: true, ..Attack::new(5, false) };
+        let again = rearmed(None, Some(single), 5);
+        assert!(!again.fast && !again.sent && again.action() == net::ACT_ATTACK);
+        let kept = Attack { sent: true, fast: false, ..Attack::new(5, true) };
+        let again = rearmed(None, Some(kept), 5);
+        assert!(again.fast && again.action() == net::ACT_ATTACK_REPEAT);
+        assert!(rearmed(None, None, 7).fast);
+    }
+
+    #[test]
+    fn works_on_an_attack_only_in_some_motions() {
+        use PlayerMotion::*;
+        // Any job: standing, walking, flinching; not its own swing, the pickup or sitting.
+        for job in [0, 7, 4008] {
+            assert!([Stand, Walk, Flinch].into_iter().all(|motion| attack_works(motion, job, false)));
+            assert!(!attack_works(Other, job, false) && !attack_works(Cast, job, false) && !attack_works(Skill, job, false));
+        }
+        // Casting too for Sage, Professor and Baby Sage.
+        assert!([16, 4017, 4039].into_iter().all(|job| attack_works(Cast, job, false) && !attack_works(Skill, job, false)));
+        // Casting and skill motions for Gunslinger, Ninja, Taekwon and later.
+        assert!([24, 25, 4046, 4211, 4360].into_iter().all(|job| attack_works(Cast, job, false) && attack_works(Skill, job, false)));
+        assert!(!attack_works(Cast, 4361, false));
+        // Ice Wall and traps: skill motions too, never casting.
+        assert!(attack_works(Skill, 0, true) && !attack_works(Cast, 16, true) && !attack_works(Other, 0, true));
+    }
+
+    #[test]
+    fn decides_presses_and_held_tries_on_the_ground() {
+        use GroundAct::*;
+        // (ctrl, shift, sitting, chat room, right button, cell)
+        assert_eq!(ground_press(false, false, false, false, false, true), Walk);
+        assert_eq!(ground_press(true, false, false, false, false, true), Nothing);
+        assert_eq!(ground_press(false, false, false, false, true, true), Nothing, "the right button down");
+        assert_eq!(ground_press(false, false, false, false, false, false), Nothing, "no cell");
+        for (shift, sitting, room) in [(true, false, false), (false, true, false), (false, false, true), (true, true, true)] {
+            assert_eq!(ground_press(false, shift, sitting, room, false, true), Turn);
+            assert_eq!(ground_press(true, shift, sitting, room, false, true), Nothing);
+        }
+        // Every mix: a press walks only with nothing of these.
+        for bits in 0..64u8 {
+            let [ctrl, shift, sitting, room, right, cell] = [0, 1, 2, 3, 4, 5].map(|bit| bits & (1 << bit) != 0);
+            let expected = if ctrl || right || !cell {
+                Nothing
+            } else if shift || sitting || room {
+                Turn
+            } else {
+                Walk
+            };
+            assert_eq!(ground_press(ctrl, shift, sitting, room, right, cell), expected, "{bits:06b}");
+            // A held try: none with Ctrl or no cell (the try time stays); else the press's answer without the right button.
+            let held = held_try(ctrl, shift, sitting, room, cell);
+            assert_eq!(held, (!ctrl && cell).then(|| ground_press(false, shift, sitting, room, false, true)), "{bits:06b}");
+        }
+        // Letting go of Shift mid-hold walks at the next try.
+        assert_eq!([held_try(false, true, false, false, true), held_try(false, false, false, false, true)], [Some(Turn), Some(Walk)]);
+        // The hold starts on every press but an attack.
+        assert!([WorldClick::Ground, WorldClick::Warp, WorldClick::Talk(1), WorldClick::PickUp(2)].iter().all(press_holds));
+        assert!(!press_holds(&WorldClick::Attack(3)) && !press_holds(&WorldClick::Swing(3)));
+    }
+
+    #[test]
+    fn keeps_one_pending_action() {
+        // (ends the attack, drops a pending skill or pickup)
+        assert_eq!(press_ends(&WorldClick::Attack(5), false), (true, true));
+        assert_eq!(press_ends(&WorldClick::PickUp(9), false), (true, false));
+        assert_eq!(press_ends(&WorldClick::Ground, false), (true, false));
+        assert_eq!(press_ends(&WorldClick::Warp, false), (true, false));
+        assert_eq!(press_ends(&WorldClick::Talk(7), false), (false, false), "an NPC click leaves the attack");
+        assert_eq!(press_ends(&WorldClick::Attack(5), true), (false, false), "a double press does nothing");
+        assert_eq!(press_ends(&WorldClick::Ground, true), (false, false));
+    }
+
+    #[test]
+    fn sends_an_attack_more_than_1200_ms_apart() {
+        let kept = Attack::new(5, true);
+        assert_eq!(attack_send(&kept, None, 0), AttackSend::Send);
+        assert_eq!(attack_send(&kept, Some(1000), 2200), AttackSend::Wait);
+        assert_eq!(attack_send(&kept, Some(1000), 2201), AttackSend::Send);
+        // Held: waits for the gap too.
+        assert_eq!(attack_send(&Attack::new(5, false), Some(1000), 2000), AttackSend::Wait);
+        // A single swing let go of before reach, in reach too soon: dropped, not sent later.
+        let single = Attack { held: false, ..Attack::new(5, false) };
+        assert_eq!(attack_send(&single, Some(1000), 2200), AttackSend::Drop);
+        assert_eq!(attack_send(&single, Some(1000), 2201), AttackSend::Send);
+    }
+
+    #[test]
+    fn reaches_walls_and_traps_from_their_own_range() {
+        // A melee weapon: max(5, 1) cells, 30.5 units, flat, to the cell's centre.
+        let from = world::drawn_point([10.0, 10.0]);
+        let reach = |dx: f32, dy: f32| ground_unit_reach(from, world::drawn_point([10.0 + dx, 10.0 + dy]), 1, false);
+        assert_eq!(reach(6.0, 0.0), (true, 5));
+        assert!(reach(6.0, 1.0).0 && !reach(6.0, 2.0).0);
+        // A bow's 9 cells stay 9.
+        assert_eq!(ground_unit_reach(from, world::drawn_point([20.0, 10.0]), 9, false), (true, 9));
+        // Told it's too far: the melee's own 1 cell.
+        assert_eq!(ground_unit_reach(from, world::drawn_point([13.0, 10.0]), 1, true), (false, 1));
+        assert_eq!(ground_unit_reach(from, world::drawn_point([11.0, 10.0]), 1, true), (true, 1));
+        // Its walk: 25 units short of the centre, on the line from the player.
+        let gat = rustnarok_client::map::Gat { width: 40, height: 40, cells: vec![([0.0; 4], 0); 1600] };
+        assert_eq!(world::chase_cell(&gat, from, world::drawn_point([20.0, 10.0]), 5), [15, 10]);
+        // A 0x0139 for it brings it back, unsent and told, whether it was still going or had ended.
+        let wall = Attack { ground: true, sent: true, ..Attack::new(3354, true) };
+        for (attack, was) in [(Some(wall), None), (None, Some(wall))] {
+            let again = rearmed_ground(attack, was, 3354).unwrap();
+            assert!(again.ground && again.told && !again.sent && again.target == 3354 && again.continuous);
+        }
+        // Not for a monster, another unit, or nothing.
+        assert_eq!(rearmed_ground(Some(Attack::new(5, true)), None, 5), None);
+        assert_eq!(rearmed_ground(Some(wall), None, 99), None);
+        assert_eq!(rearmed_ground(None, None, 3354), None);
+    }
+
+    #[test]
+    fn attacks_as_the_player_asked() {
+        // Kept up: letting go changes nothing.
+        let mut kept = Attack::new(5, true);
+        assert_eq!((kept.release(), kept.action()), (Release::Keep, net::ACT_ATTACK_REPEAT));
+        // Held and sent: letting go cancels it.
+        let mut held = Attack { sent: true, ..Attack::new(5, false) };
+        assert_eq!(held.action(), net::ACT_ATTACK_REPEAT);
+        assert_eq!(held.release(), Release::Cancel);
+        // Let go before it reached: one swing when it comes.
+        let mut early = Attack::new(5, false);
+        assert_eq!(early.release(), Release::Keep);
+        assert_eq!(early.action(), net::ACT_ATTACK);
+        assert_eq!(
+            [attack_refused(900, 1000, false), attack_refused(899, 1000, false), attack_refused(0, 1000, true)],
+            [Some(OVERWEIGHT), None, Some(RIDING_NO_ATTACK)]
+        );
+    }
+
+    #[test]
+    fn walks_beside_an_item_to_pick_it_up() {
+        let open = |_: [i32; 2]| true;
+        // From the west, the south-west and on top of it.
+        assert_eq!(pickup_spot([10, 10], [14, 10], open), [13, 10]);
+        assert_eq!(pickup_spot([10, 6], [14, 10], open), [13, 9]);
+        assert_eq!(pickup_spot([14, 10], [14, 10], open), [14, 10]);
+        // That cell a wall: the first open neighbour in the fixed order (east is first).
+        assert_eq!(pickup_spot([10, 10], [14, 10], |cell| cell != [13, 10]), [15, 10]);
+        assert_eq!(pickup_spot([10, 10], [14, 10], |cell| ![[13, 10], [15, 10], [15, 11]].contains(&cell)), [15, 9]);
+    }
+
+    #[test]
+    fn picks_up_on_the_way() {
+        // Nothing while walking (the walk goes on), in a swing, the pickup motion, a flinch or a cast.
+        let step = |motion, player, asked, walk_cell| pickup_step(motion, player, [14, 10], asked, walk_cell, [13, 10], Some(0), 0);
+        for motion in [PlayerMotion::Walk, PlayerMotion::Other, PlayerMotion::Flinch, PlayerMotion::Cast] {
+            assert_eq!(step(motion, [13, 10], false, None), PickStep::Wait);
+        }
+        // Standing within a cell: turn and pick up, once per item.
+        assert_eq!(step(PlayerMotion::Stand, [13, 11], false, None), PickStep::PickUp);
+        assert_eq!(step(PlayerMotion::Stand, [14, 10], true, None), PickStep::Drop);
+        // Standing farther: a walk beside it; not again while the walk cell is there, so still pending after a stop short
+        // (standing clears the walk cell, and the next frame asks again).
+        assert_eq!(step(PlayerMotion::Stand, [10, 10], false, None), PickStep::Walk);
+        assert_eq!(step(PlayerMotion::Stand, [10, 10], false, Some([13, 10])), PickStep::Wait);
+        assert_eq!(step(PlayerMotion::Stand, [11, 10], false, None), PickStep::Walk);
+        // A walk that never happened (refused, or the player never left the cell): standing on the walk cell's pickup,
+        // asked again after PICKUP_RETRY_MS, PICKUP_RETRIES times, then dropped so nothing stays pending for good.
+        let stuck = |since_walk, retries| pickup_step(PlayerMotion::Stand, [12, 12], [14, 10], false, Some([13, 11]), [13, 11], since_walk, retries);
+        assert_eq!(stuck(Some(PICKUP_RETRY_MS), 0), PickStep::Wait);
+        assert_eq!(stuck(Some(PICKUP_RETRY_MS + 1), 0), PickStep::Retry);
+        assert_eq!(stuck(None, 0), PickStep::Retry);
+        assert_eq!(stuck(Some(PICKUP_RETRY_MS + 1), PICKUP_RETRIES - 1), PickStep::Retry);
+        assert_eq!(stuck(Some(PICKUP_RETRY_MS + 1), PICKUP_RETRIES), PickStep::Drop);
+        assert_eq!(stuck(Some(0), PICKUP_RETRIES), PickStep::Wait, "a walk just sent finishes first");
+        // The held button follows the pointer only once nothing is pending, more than MOVE_GAP_MS after its last try.
+        assert!(!follows_pointer(true, true, None, 0));
+        assert!(follows_pointer(true, false, None, 0));
+        assert!(!follows_pointer(true, false, Some(1000), 1300));
+        assert!(follows_pointer(true, false, Some(1000), 1301));
+        assert!(!follows_pointer(false, false, None, 0));
+    }
+
+    #[test]
+    fn keeps_a_goal_clicked_while_busy() {
+        let mut stored = StoredWalk::default();
+        let mut pending = Some("pickup");
+        // Not busy: the goal goes now, and the pickup is over.
+        assert_eq!(stored.click([5, 5], false, &mut pending), Some([5, 5]));
+        assert_eq!(pending, None);
+        // During the pickup motion: nothing goes, the goal is kept; a second click replaces it.
+        pending = Some("pickup");
+        assert_eq!(stored.frame(true, false), None);
+        assert_eq!(stored.click([7, 7], true, &mut pending), None);
+        assert_eq!(pending, None, "a goal ends the pending pickup even when it isn't sent");
+        assert_eq!(stored.click([8, 9], true, &mut pending), None);
+        assert_eq!(stored.frame(true, false), None);
+        // It goes out as it is when the motion ends (not worked out again), once.
+        assert_eq!(stored.frame(false, false), Some([8, 9]));
+        assert_eq!(stored.frame(false, false), None);
+        // Still through the 300 ms rule: a motion ending 200 ms after the last send drops it.
+        assert!(!may_move(Some(1000), 1200));
+        // Dying isn't the end of a motion that sends it.
+        stored.frame(true, false);
+        stored.click([3, 3], true, &mut pending);
+        assert_eq!(stored.frame(false, true), None);
+    }
+
+    #[test]
+    fn reads_the_button_once_a_frame() {
+        // Pressed and let go between two frames: nothing in the world.
+        let mut button = ButtonRead { due: true, ..ButtonRead::default() };
+        assert!(!button.read(false));
+        // Pressed before a frame: that frame's read takes it, once while held.
+        button.due = true;
+        assert!(button.read(true));
+        assert!(!button.read(true));
+        // A press a window took isn't the world's.
+        assert!(!button.read(false));
+        assert!(!button.read(true));
+    }
+
+    #[test]
+    fn walks_no_more_than_every_300_ms() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        // More than 300 whole milliseconds: after a send at 1000, 1300 is too soon and 1301 goes.
+        assert!(may_move(None, 0));
+        assert!(!may_move(Some(1000), 1300));
+        assert!(may_move(Some(1000), 1301));
+        // Held at 60 fps from a try at 0: the 18th frame (300.0 ms) makes no try, the 19th (316.7 ms) does.
+        let frame = |index: u32| (f64::from(index) * 1000.0 / 60.0) as u64;
+        assert!(!follows_pointer(true, false, Some(0), frame(18)));
+        assert!(follows_pointer(true, false, Some(0), frame(19)));
+        assert_eq!(whole_ms(at(5)) - whole_ms(at(3)), 2);
+        // A second press: double only when soon and the pointer stayed still.
+        assert!(double_press(Some((start, [0.0; 2], false)), at(400)));
+        assert!(!double_press(Some((start, [0.0; 2], true)), at(400)));
+        assert!(!double_press(Some((start, [0.0; 2], false)), at(500)));
+        // A tremor isn't a move; two pixels are.
+        assert!(!moved_off([100.0, 100.0], [101.4, 99.2]));
+        assert!(moved_off([100.0, 100.0], [100.0, 102.0]));
+        assert!(!double_press(None, start));
+        // Four presses in place 200 ms apart: fresh, double, fresh, double.
+        let mut mark = None;
+        let doubles: Vec<bool> = (0..4)
+            .map(|n| {
+                let (double, next) = press_pair(mark, at(200 * n), [5.0, 5.0]);
+                mark = next;
+                double
+            })
+            .collect();
+        assert_eq!(doubles, [false, true, false, true]);
+        // A move off the press between two presses makes both fresh.
+        let (_, first) = press_pair(None, start, [5.0, 5.0]);
+        assert!(!press_pair(first.map(|(at, from, _)| (at, from, true)), at(200), [9.0, 5.0]).0);
+        // No slack for the left button: a whole pixel off is a move, 0.4 inside the same pixel isn't.
+        assert!(left_pixel([5.2, 5.0], [6.2, 5.0]) && !left_pixel([5.2, 5.0], [5.6, 5.0]));
+    }
+
+    #[test]
+    fn coins_for_the_gunslinger_line() {
+        assert!([24, 4215, 4228, 4229, 4306].into_iter().all(coin_job));
+        assert!(![15, 4016, 0].into_iter().any(coin_job));
+    }
+
+    #[test]
+    fn breaks_message_lines_where_the_client_padded() {
+        let font = Font::load();
+        let question = "한 번 삭제된 캐릭터 및 관련 정보는      다시 복구되지 않습니다.                                 캐릭터를 삭제하시겠습니까?";
+        assert_eq!(
+            message_lines(&font, question, MESSAGE_WIDTH),
+            ["한 번 삭제된 캐릭터 및 관련 정보는", "다시 복구되지 않습니다.", "캐릭터를 삭제하시겠습니까?"]
+        );
+    }
+
+    #[test]
+    fn talking_holds_from_a_page_to_the_close() {
+        let npc = 110_000_005;
+        assert_eq!(npc_holds(&MapEvent::NpcSay { npc, text: "Hi".into() }), Some((npc, true)));
+        assert_eq!(npc_holds(&MapEvent::NpcNext { npc }), Some((npc, true)));
+        assert_eq!(npc_holds(&MapEvent::NpcMenu { npc, items: vec!["Yes".into()] }), Some((npc, true)));
+        assert_eq!(npc_holds(&MapEvent::NpcClose { npc }), Some((npc, false)));
+        assert_eq!(npc_holds(&MapEvent::NpcInput { npc, text: false }), None);
+        // The cast bar (a progress bar) lets map clicks through.
+        assert!(talk_holds(true, false) && !talk_holds(true, true) && !talk_holds(false, false));
+    }
+
+    #[test]
+    fn ends_a_progress_bar_once() {
+        let start = Instant::now();
+        let mut bar = ProgressBar::default();
+        assert!(!bar.ends(start, true), "no bar, nothing to end");
+        bar.start(start, Duration::from_secs(3));
+        assert!(!bar.ends(start + Duration::from_millis(2999), false));
+        assert!(bar.ends(start + Duration::from_secs(3), false));
+        assert!(!bar.ends(start + Duration::from_secs(4), false));
+        // Taken away by the server: once, too.
+        bar.start(start, Duration::from_secs(3));
+        assert!(bar.ends(start, true) && !bar.ends(start, true));
+    }
+
+    #[test]
+    fn attacks_walls_and_traps_on_their_cells() {
+        // Which ground units a click attacks.
+        assert!([0x8d, 0x8f, 0x98, 0xda, 0xde, 0xe6, 0x5174, 0x5177].into_iter().all(attackable_ground_unit));
+        assert!(![0x7e, 0x86, 0x8c, 0x90, 0x5173, 0x5178].into_iter().any(attackable_ground_unit));
+        // The attack goes for the wall's cell, and ends once the wall is gone.
+        let units = HashMap::new();
+        let mut walls = HashMap::from([(3354, (0x8d, [156, 190], 0))]);
+        assert_eq!(attack_goal(&units, &walls, 3354), Some([156, 190]));
+        walls.remove(&3354);
+        assert_eq!(attack_goal(&units, &walls, 3354), None);
+    }
+
+    #[test]
+    fn places_the_login_window_and_its_parts() {
+        let place = |screen: [f32; 2]| escape::menu_origin(screen);
+        assert_eq!(
+            [[640.0, 480.0], [800.0, 600.0], [1024.0, 768.0], [1920.0, 1080.0]].map(place),
+            [[185.0, 300.0], [265.0, 375.0], [377.0, 480.0], [825.0, 675.0]]
+        );
+        assert_eq!(login_part([20.0, 15.0], false), Some(LoginPart::Drop));
+        assert_eq!(login_part([16.0, 41.0], false), Some(LoginPart::Field(0)));
+        assert_eq!(login_part([167.0, 79.0], false), Some(LoginPart::Field(1)));
+        assert_eq!(login_part([168.0, 64.0], false), None);
+        assert_eq!(login_part([57.0, 86.0], false), Some(LoginPart::Save));
+        assert_eq!(login_part([14.0, 105.0], false), Some(LoginPart::Opening));
+        assert_eq!(login_part([170.0, 124.0], false), Some(LoginPart::SignUp));
+        assert_eq!(login_part([193.0, 33.0], false), Some(LoginPart::Start));
+        assert_eq!(login_part([274.0, 16.0], false), Some(LoginPart::Exit));
+        // The open drop-down's rows lie over the boxes under it.
+        assert_eq!(login_part([20.0, 40.0], true), Some(LoginPart::Account(0)));
+        assert_eq!(login_part([20.0, 60.0], true), Some(LoginPart::Account(1)));
+        assert_eq!(login_part([20.0, 66.0], true), Some(LoginPart::Account(1)));
+        assert_eq!(login_part([20.0, 66.0], false), Some(LoginPart::Field(1)));
+    }
+
+    #[test]
+    fn refuses_short_ids_and_passwords() {
+        assert_eq!(login_refusal("abc", "secret1"), Some((3029, 4)));
+        assert_eq!(login_refusal("abcd", "12345"), Some((3030, 6)));
+        assert_eq!(login_refusal("abcd", "123456"), None);
+        // Bytes, not characters: two Korean letters are 6 bytes.
+        assert_eq!(login_refusal("가나", "123456"), None);
+    }
+
+    #[test]
+    fn settings_buttons_open_then_shut_their_window() {
+        let mut window = toggled(None, || 7);
+        assert_eq!(window, Some(7));
+        window = toggled(window, || 8);
+        assert_eq!(window, None);
+    }
+
+    #[test]
+    fn gives_up_waiting_at_the_games_limits() {
+        let end = |wait: Wait, ms: u64| wait.end(Duration::from_millis(ms));
+        assert_eq!([end(Wait::Login, 14_999), end(Wait::Login, 15_000)], [WaitEnd::Keep, WaitEnd::GiveUp]);
+        assert_eq!([end(Wait::CharServer, 79_999), end(Wait::CharServer, 80_000)], [WaitEnd::Keep, WaitEnd::GiveUp]);
+        assert_eq!([end(Wait::Map, 14_999), end(Wait::Map, 15_000)], [WaitEnd::Keep, WaitEnd::GiveUp]);
+        assert_eq!([end(Wait::ServerList, 14_999), end(Wait::ServerList, 15_000)], [WaitEnd::Keep, WaitEnd::Quit]);
+        // Game Start before the map server, making and deleting, and the quiet requests wait as long as it takes.
+        assert!([Wait::Start, Wait::Making, Wait::Quiet].iter().all(|&wait| end(wait, 600_000) == WaitEnd::Keep));
+        // The box reads "Please wait..." but for making and deleting; the quiet ones show none.
+        assert_eq!([Wait::Login, Wait::Start, Wait::Making, Wait::Quiet].map(Wait::message), [Some(122), Some(122), Some(123), None]);
+    }
+
+    #[test]
+    fn places_message_boxes_as_the_game() {
+        assert_eq!(dialog_position_of([800.0, 600.0]), [265.0, 240.0]);
+        assert_eq!(dialog_position_of([1024.0, 768.0]), [377.0, 324.0]);
+    }
+
+    #[test]
+    fn words_login_refusals_bans_and_char_refusals() {
+        let mut messages: Vec<String> = (0..1400).map(|id| format!("m{id}")).collect();
+        messages[9] = "Rejected from Server.".into();
+        messages[449] = "You are prohibited to log in until %s.".into();
+        let text = |code: u32, date: &str| login_refusal_text(code, date, &messages);
+        assert_eq!(text(1, "").as_deref(), Some("m267"));
+        assert_eq!(text(3, "").as_deref(), Some("Rejected from Server.(3)"));
+        assert_eq!(text(31, "").as_deref(), Some("Rejected from Server.(31)"));
+        assert_eq!(text(6, "2026-10-19 12:00:00").as_deref(), Some("You are prohibited to log in until 2026-10-19 12:00:00."));
+        assert_eq!(text(16, ""), None);
+        assert!(login_refusal_quits(5) && login_refusal_quits(99) && !login_refusal_quits(1));
+        assert_eq!([0, 6, 7, 9, 12, 16, 104, 116, 15].map(ban_message), [3, 438, 439, 529, 576, 606, 1310, 3635, 3]);
+        assert_eq!([1, 111, 118, 119, 2].map(char_refusal), [(208, false), (1865, false), (3818, true), (2929, true), (9, false)]);
+    }
+
+    #[test]
+    fn asks_before_leaving_a_screen_before_the_map() {
+        assert!(matches!(pre_map_escape(&Scene::Login), Some((QUIT_MESSAGE, Then::Quit))));
+        assert!(matches!(pre_map_escape(&Scene::Connections { selected: 0 }), Some((QUIT_MESSAGE, Then::Quit))));
+        let waiting = Scene::Waiting(Wait::Quiet, Box::new(Scene::Login));
+        assert!(pre_map_escape(&waiting).is_none(), "a box over the screen takes Esc itself");
+        // Making a character, Esc asks to quit.
+        let making = Scene::CharMake(Box::new(char_make::Make::blank(2)), Box::new(char_select::Select::new(Vec::new(), Vec::new(), 9)));
+        assert!(matches!(pre_map_escape(&making), Some((QUIT_MESSAGE, Then::Quit))));
+        // A refused name's box closes onto character select.
+        assert!(matches!(after_make_refused(making), Scene::CharSelect(_)));
+    }
+
+    #[test]
+    fn breaks_npc_text_mid_word() {
+        let font = Font::load();
+        // Room for "Hello wor": the word breaks there, its colour carried onto the next line.
+        let width = font.width("Hello wor") + 0.5;
+        let lines = wrap_linked_by(&font, "^0000FFHello world^000000 again", width, true, links::Target::npc_color);
+        let text: Vec<Vec<([u8; 3], &str)>> = lines.iter().map(|pieces| pieces.iter().map(|(color, piece, _)| (*color, piece.as_str())).collect()).collect();
+        assert_eq!(text[0], [([0, 0, 0xFF], "Hello wor")]);
+        assert_eq!(text[1][0], ([0, 0, 0xFF], "ld"));
+        assert_eq!(text[1][1].0, [0, 0, 0]);
+        // Between words it would have moved "world" down whole.
+        assert_eq!(wrap_linked(&font, "Hello world", width)[0].iter().map(|(_, piece, _)| piece.as_str()).collect::<String>(), "Hello");
+    }
+
+    #[test]
+    fn an_item_picture_takes_its_width_on_the_line() {
+        let font = Font::load();
+        let text = npc_say::picture_runs("^i[501]ab^i[502]");
+        let shape = |width: f32| -> Vec<Vec<String>> {
+            let lines = wrap_linked_by(&font, &text, width, true, links::Target::npc_color);
+            let name = |(_, piece, item): &([u8; 3], String, Option<links::Target>)| match item {
+                Some(links::Target::Picture(id)) => id.to_string(),
+                _ => piece.clone(),
+            };
+            lines.iter().map(|pieces| pieces.iter().map(name).collect()).collect()
+        };
+        let letters = font.width("ab");
+        // Room for all of it: one line. A pixel short: the second picture goes down whole.
+        assert_eq!(shape(2.0 * npc_say::PICTURE + letters), [["501", "ab", "502"]]);
+        assert_eq!(shape(2.0 * npc_say::PICTURE + letters - 1.0), [vec!["501", "ab"], vec!["502"]]);
+        // The text after a picture starts where the picture ends.
+        assert_eq!(shape(npc_say::PICTURE + font.width("a") + 0.5), [vec!["501", "a"], vec!["b", "502"]]);
+    }
+
+    #[test]
+    fn keeps_wrapped_links_clickable() {
+        let font = Font::load();
+        let apple = links::Target::Item(links::ItemLink { id: 512, ..links::ItemLink::default() });
+        let text = format!("^0000FFTake {} home^000000", links::marked("Big Red Apple", &apple));
+        // Narrow enough that the link breaks: both of its lines are the link, in its colour; the colour before it
+        // comes back after it.
+        let width = font.width("^Take Big Red");
+        let lines = wrap_linked(&font, &text, width);
+        let linked: Vec<(usize, String)> = lines
+            .iter()
+            .enumerate()
+            .flat_map(|(row, pieces)| pieces.iter().filter(|(.., item)| item.as_ref() == Some(&apple)).map(move |(_, piece, _)| (row, piece.trim().to_owned())))
+            .filter(|(_, piece)| !piece.is_empty())
+            .collect();
+        assert!(linked.iter().any(|(row, _)| *row == 0) && linked.iter().any(|(row, _)| *row > 0), "{lines:?}");
+        assert!(lines.iter().flatten().all(|(color, _, item)| item.is_none() || *color == links::COLOR));
+        assert_eq!(lines.last().unwrap().last().map(|(color, piece, _)| (*color, piece.trim())), Some(([0, 0, 0xFF], "home")));
+        // The click test over a link wrapped onto two lines: either box finds the item, the gap beside them nothing.
+        let boxes = [([10.0, 20.0, 40.0, 14.0], apple.clone()), ([0.0, 34.0, 25.0, 14.0], apple.clone())];
+        let at = |cursor: [f32; 2]| links::at(&boxes, cursor).and_then(links::Target::item).map(|item| item.id);
+        assert_eq!([at([30.0, 25.0]), at([5.0, 40.0]), at([30.0, 40.0]), at([50.0, 25.0])], [Some(512), Some(512), None, None]);
+    }
+
+    #[test]
+    fn shows_npc_links_by_name() {
+        let navi = "Let me mark the ^B9062F<NAVI>[Tool Shop]<INFO>prontera,134,221,0,000,0</INFO></NAVI>^000000 for you.";
+        // The place is a link to navigate to; the colour codes around it stay for the wrapping to read.
+        let (shown, runs) = links::split(&links::mark(navi, &|_| String::new()));
+        assert_eq!(shown, "Let me mark the ^B9062F[Tool Shop]^000000 for you.");
+        assert_eq!(
+            runs.iter().map(|(_, target)| target.clone()).collect::<Vec<_>>(),
+            [links::Target::Navi { map: "prontera".into(), cell: [134, 221], rest: Some([0, 0, 0, 0]) }]
+        );
+        let marked = links::mark("a <ITEM>Apple<INFO>512</INFO></ITEM> < b", &|_| String::new());
+        assert_eq!(links::split(&marked).0, "a Apple < b");
+    }
+
+    #[test]
+    fn turns_the_camera_only_while_the_right_button_is_down() {
+        let mut goal = CameraGoal::new(false);
+        let none = ModifiersState::empty();
+        goal.drag([100.0, 100.0], none);
+        goal.drag([200.0, 100.0], none);
+        assert_eq!((goal.yaw, goal.dragging), (0.0, None));
+        goal.press([200.0, 100.0], Instant::now(), false, false);
+        goal.drag([300.0, 100.0], none);
+        assert!(goal.yaw > 0.0);
+    }
+
+    #[test]
+    fn camera_shakes_and_snaps_back_at_the_end() {
+        let mut goal = CameraGoal::new(false);
+        let feet = [100.0, -5.0, 200.0];
+        let mut camera = goal.camera(feet);
+        let before = (camera.target, camera.distance, camera.pitch);
+
+        let start = Instant::now();
+        let mut effects = effects::Effects::default();
+        effects.start_quake(start, effects::QUAKE_LONG);
+        for frame in 0..10 {
+            let now = start + Duration::from_millis(frame * 16);
+            goal.ease(&mut camera, Duration::from_millis(16), feet, false);
+            goal.shake(&mut camera, feet, effects.quake(now));
+            assert!(goal.shaking);
+            assert_ne!((camera.target, camera.distance, camera.pitch), before);
+        }
+        // When the shake ends, the look-at point, distance and pitch snap straight back.
+        goal.ease(&mut camera, Duration::from_millis(16), feet, false);
+        goal.shake(&mut camera, feet, effects.quake(start + effects::QUAKE_LONG));
+        assert!(!goal.shaking);
+        assert_eq!((camera.target, camera.distance, camera.pitch), before);
+    }
+
+    #[test]
+    fn the_pointer_names_ourselves_but_clicks_pass_through() {
+        let target = |owner, kind| picking::Target { owner, kind, sprite: [0.0; 4], area: [100.0, 100.0, 200.0, 200.0], depth: 1.0 };
+        let boxes = [target(Owner::Player, picking::Kind::Player)];
+        assert!(hovered_named(&boxes, [150.0, 150.0], false) == Some(Owner::Player));
+        assert!(hovered(&boxes, [150.0, 150.0], false).is_none());
+        // Anyone over us is what's named, as before.
+        let boxes = [target(Owner::Player, picking::Kind::Player), target(Owner::Unit(7), picking::Kind::Player)];
+        assert!(hovered_named(&boxes, [150.0, 150.0], false) == Some(Owner::Unit(7)));
+    }
+
+    #[test]
+    fn opens_the_menu_for_what_is_under_the_pointer() {
+        let players = [7u32, 8];
+        let is_player = |id: u32| players.contains(&id);
+        let menu = |picked| menu_for(picked, is_player, Some(20), Some(30), Some(40), false);
+        // A player alone: their menu. A monster or an item over them is what's picked: no menu.
+        assert_eq!(menu(Some(Owner::Unit(7))), Some(MenuFor::Player(7)));
+        assert_eq!((menu(Some(Owner::Unit(99))), menu(Some(Owner::Item(5))), menu(None)), (None, None, None));
+        // Our pet and our homunculus have their own; we have one only with our stall open.
+        assert_eq!((menu(Some(Owner::Unit(20))), menu(Some(Owner::Unit(30)))), (Some(MenuFor::Pet(20)), Some(MenuFor::Homunculus(30))));
+        assert_eq!(menu(Some(Owner::Unit(40))), Some(MenuFor::Mercenary(40)));
+        assert_eq!(MERCENARY_CHOICES.map(|(label, _)| label), [1112, 1114]);
+        assert_eq!(menu(Some(Owner::Player)), None);
+        assert_eq!(menu_for(Some(Owner::Player), is_player, None, None, None, true), Some(MenuFor::Stall));
+        // The pick itself goes by the usual ranks: a monster's area over a player's wins.
+        let target = |owner, kind| picking::Target { owner, kind, sprite: [0.0; 4], area: [100.0, 100.0, 200.0, 200.0], depth: 1.0 };
+        let boxes = [target(Owner::Unit(7), picking::Kind::Player), target(Owner::Unit(99), picking::Kind::Monster)];
+        assert!(picking::pick(boxes, [150.0, 150.0], false, [512.0, 384.0]) == Some(Owner::Unit(99)));
+    }
+
+    #[test]
+    fn lists_a_players_entries_in_the_games_order() {
+        let labels = |ties| player_choices(7, ties).into_iter().map(|(label, _)| label).collect::<Vec<_>>();
+        // A stranger: a deal, 1:1 chat, friends, mail, equipment, block.
+        assert_eq!(labels(PlayerTies::default()), [391, 360, 358, 2808, 1360, 3820]);
+        // Our party's leader, a guild master facing another guild's member, a friend, adoption, our chat room.
+        let all =
+            PlayerTies { trading: false, party_invite: true, guild_invite: true, guild_relation: true, friend: true, adoptable: true, in_our_room: Some(2) };
+        assert_eq!(labels(all), [391, 392, 382, 399, 403, 360, 2808, 1360, 887, 3820, 458]);
+        assert!(player_choices(7, all).contains(&(458, Choice::RoomKick(2))));
+        // While trading there's no deal to ask for.
+        assert_eq!(labels(PlayerTies { trading: true, friend: true, ..PlayerTies::default() }), [360, 2808, 1360, 3820]);
+        // The pet's status comes first, all five always; the homunculus has three entries.
+        assert_eq!(PET_CHOICES.map(|(label, _)| label), [596, 592, 593, 595, 594]);
+        assert_eq!(HOMUNCULUS_CHOICES.map(|(label, _)| label), [1112, 1113, 1114]);
+    }
+
+    #[test]
+    fn sparks_landed_attacks_and_heals_by_amount() {
+        // A hit sparks EF_HIT1, a critical EF_HIT2 too, the Taekwon line 434; a miss or a lucky dodge nothing.
+        assert_eq!((attack_sparks(12, 0, false), attack_sparks(40, 10, false)), (vec![EF_HIT1], vec![EF_HIT1, EF_HIT2]));
+        assert_eq!(attack_sparks(12, 8, true), [TAEKWON_HIT]);
+        assert!(attack_sparks(0, 0, false).is_empty() && attack_sparks(12, 11, false).is_empty());
+        assert_eq!([heal_effect(5000), heal_effect(2000), heal_effect(450), heal_effect(80)], [325, 313, 312, 7]);
+        assert!(HEAL_SKILLS.contains(&2051) && !HEAL_SKILLS.contains(&2044), "Highness Heal, not Epiclesis");
+    }
+
+    #[test]
+    fn refine_results_without_refine_window() {
+        // Window closed: result -> (effect on player, chat line) in #00FFFF
+        assert_eq!(non_window_refine_result(false, 0), (Some(154), Some(UPGRADE_SUCCESS)));
+        assert_eq!(non_window_refine_result(false, 1), (Some(155), Some(UPGRADE_FAILED)));
+        assert_eq!(non_window_refine_result(false, 2), (Some(155), Some(REFINE_LOWERED)));
+        assert_eq!(non_window_refine_result(false, 3), (None, None));
+        assert_eq!(non_window_refine_result(false, 99), (None, None));
+
+        // Window open: no line or effect
+        for result in 0..=4 {
+            assert_eq!(non_window_refine_result(true, result), (None, None));
+        }
+    }
+
+    #[test]
+    fn refine_announcement_color_and_bar() {
+        assert_eq!(CHAT_REFINE_ANNOUNCEMENT, [0xFF, 0xB0, 0x62]);
+        let mut bar = announce::Bar::default();
+        let now = Instant::now();
+        bar.push("announcement".to_owned(), CHAT_REFINE_ANNOUNCEMENT, announce::SIZE, now);
+        assert_eq!(bar.entries(), [("announcement", [0xFF, 0xB0, 0x62], announce::SIZE)]);
+    }
+
+    #[test]
+    fn empty_lists_give_424_box_and_no_packet() {
+        assert_eq!(NOTHING_TO_MAKE, 424);
+    }
+
+    #[test]
+    fn making_results_give_no_chat_lines() {
+        assert_eq!(forge::result_effect(0), Some(154));
+        assert_eq!(forge::result_effect(1), Some(155));
+        assert_eq!(forge::result_effect(2), Some(305));
+        assert_eq!(forge::result_effect(3), Some(306));
+        assert_eq!(forge::result_effect(4), Some(1015));
+        assert_eq!(forge::result_effect(5), Some(1016));
+        assert_eq!(forge::result_effect(6), Some(1017));
+        assert_eq!(forge::result_effect(7), Some(1018));
+    }
+}

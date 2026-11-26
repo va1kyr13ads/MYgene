@@ -1,0 +1,244 @@
+// MYGENE_EXCLUSIVE_REWARD_V1011
+
+function	script	F_MYgeneExclusiveClaim	{
+    .@id = getarg(0);
+    .@key$ = "MYGENE_PENDING_LOOT_"+.@id;
+
+    if (getd(.@key$) <= 0)
+        return 0;
+
+    if (!mygeneexclusivegive(.@id))
+        return 0;
+
+    setd .@key$,getd(.@key$)-1;
+
+    dispbottom "[Slayer] Obtained "+
+        getitemname(.@id)+".";
+
+    .@rate$ = "";
+
+    switch (.@id) {
+        case 31001:
+        case 31006:
+        case 60010:
+        case 60013:
+        case 60016:
+        case 60019:
+            .@rate$ = "0.05%";
+            break;
+
+        case 31002:
+        case 31007:
+        case 60011:
+        case 60014:
+        case 60017:
+        case 60020:
+            .@rate$ = "0.01%";
+            break;
+    }
+
+    if (.@rate$ != "") {
+        announce "[Slayer] "+strcharinfo(0)+
+            " obtained "+getitemname(.@id)+
+            "! (Base rate: "+.@rate$+")",
+            bc_all,0xFFD700;
+    }
+
+    return 1;
+}
+
+function	script	F_MYgeneExclusiveTimer	{
+    if (!@MYGENE_LOOT_TIMER) {
+        @MYGENE_LOOT_TIMER = 1;
+        addtimer 15000,
+            "MYgene_Exclusive_Loot::OnRetry";
+    }
+    return;
+}
+
+function	script	F_MYgeneExclusiveReward	{
+    .@id = getarg(0);
+    .@key$ = "MYGENE_PENDING_LOOT_"+.@id;
+
+    // Reserve first, then attempt delivery.
+    setd .@key$,getd(.@key$)+1;
+
+    if (!callfunc("F_MYgeneExclusiveClaim",.@id)) {
+        dispbottom "[Slayer] Reward reserved: "+
+            getitemname(.@id)+
+            ". Free inventory space.";
+
+        callfunc "F_MYgeneExclusiveTimer";
+    }
+
+    return;
+}
+
+function	script	F_MYgeneExclusiveRoll	{
+    .@weapon = getarg(0);
+    .@card = getarg(1);
+
+    .@guaranteed =
+        (MYGENE_LEGENDARY_GUM_UNTIL > gettimetick(2));
+
+    // Weapon: 0.05%.
+    if (.@guaranteed || rand(1000000) < 500)
+        callfunc "F_MYgeneExclusiveReward",.@weapon;
+
+    // One random gemstone: 70%.
+    if (.@guaranteed || rand(1000000) < 700000) {
+        .@gem = 715+rand(3);
+        callfunc "F_MYgeneExclusiveReward",.@gem;
+    }
+
+    // Card: 0.01%.
+    if (.@guaranteed || rand(1000000) < 100)
+        callfunc "F_MYgeneExclusiveReward",.@card;
+
+    // Gold item: 11%.
+    if (.@guaranteed || rand(1000000) < 110000)
+        callfunc "F_MYgeneExclusiveReward",969;
+
+    // Attraction Potion: 0.50%.
+    if (.@guaranteed || rand(1000000) < 5000)
+        callfunc "F_MYgeneExclusiveReward",31003;
+
+    return;
+}
+
+function	script	F_MYgeneExclusiveDrain	{
+    setarray .@ids[0],
+        31001,31002,31006,31007,
+        60010,60011,60013,60014,
+        60016,60017,60019,60020,
+        715,716,717,969,31003;
+
+    .@pending = 0;
+
+    for (.@i = 0; .@i < getarraysize(.@ids); .@i++) {
+
+        .@key$ =
+            "MYGENE_PENDING_LOOT_"+.@ids[.@i];
+
+        // Process no more than 20 per item per retry.
+        for (.@j = 0; .@j < 20; .@j++) {
+            if (!callfunc(
+                "F_MYgeneExclusiveClaim",
+                .@ids[.@i]
+            ))
+                break;
+        }
+
+        if (getd(.@key$) > 0)
+            .@pending = 1;
+    }
+
+    if (.@pending)
+        callfunc "F_MYgeneExclusiveTimer";
+
+    return;
+}
+
+-	script	MYgene_Exclusive_Loot	-1,{
+OnPCLoginEvent:
+    @MYGENE_LOOT_TIMER = 0;
+    callfunc "F_MYgeneExclusiveDrain";
+    end;
+
+OnRetry:
+    @MYGENE_LOOT_TIMER = 0;
+    callfunc "F_MYgeneExclusiveDrain";
+    end;
+}
+
+// MYgene Yellow Fabre — standalone server event.
+// Each map has its own 30-kill counter for Fabre-family monsters:
+// Fabre (1007), Pupa (1008), Creamy (1018). Players on the SAME map
+// contribute together. Yellow Fabre (31050) spawns on that map when
+// its counter reaches 30. Its defeat counts as 1 toward the next cycle.
+// Multiple maps can have their own Yellow Fabre alive simultaneously.
+// Yellow Fabre spawns where the 30th eligible monster dies (or by its killer).
+// Custom rewards: exact per-kill chances, independent of 4x global drop rate;
+// vanilla Fabre drops come from db/import/mob_db.yml and follow server rates.
+-	script	MYgene_Yellow_Fabre	-1,{
+OnInit:
+    // Map-specific counters are temporary NPC variables (reset on reload).
+    .MapCount = 0;
+    end;
+
+OnNPCKillEvent:
+    // Unlabeled special mobs (for example, @monster 31050) otherwise skip
+    // the encounter-specific death callback. OnNPCKillEvent only runs for
+    // monsters WITHOUT an attached death event, so no double reward roll.
+    if (killedrid == 31050) {
+        callsub S_YellowRewards;
+        end;
+    }
+    // Yellow Fabre (31050) gets its next-cycle credit in its death event.
+    if (killedrid != 1007 && killedrid != 1008 && killedrid != 1018)
+        end;
+    .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        end;
+
+    // Each distinct map gets its own counter/active flag. No cross-map sum.
+    .@slot = -1;
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .@slot = .@i;
+            break;
+        }
+    }
+    if (.@slot < 0) {
+        .@slot = .MapCount;
+        .MapCount++;
+        .MapName$[.@slot] = .@map$;
+        .KillCount[.@slot] = 0;
+        .YellowActive[.@slot] = 0;
+    }
+    // A map with an active Yellow Fabre waits for that one to be killed.
+    if (.YellowActive[.@slot])
+        end;
+    .KillCount[.@slot]++;
+    if (.KillCount[.@slot] < 30)
+        end;
+    // Place the encounter where the 30th family member fell, not randomly
+    // across the map. OnNPCKillEvent provides that slain mob's unique GID.
+    // Prefer its actual tile while rAthena still has the corpse unit.
+    // If the GID is already gone, use the killing player's current tile.
+    .@spawn_map$ = .@map$;
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@mob_data;
+        .@death_map$ = mapid2name(.@mob_data[UMOB_MAPID]);
+        if (.@death_map$ == .@map$ && .@mob_data[UMOB_X] > 0 && .@mob_data[UMOB_Y] > 0) {
+            .@x = .@mob_data[UMOB_X];
+            .@y = .@mob_data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@spawn_map$,.@x,.@y,BL_PC) != 0)
+        end;
+    .KillCount[.@slot] = 0;
+    .YellowActive[.@slot] = 1;
+    monster .@map$,.@x,.@y,"Yellow Fabre",31050,1,"MYgene_Yellow_Fabre::OnYellowFabreDead";
+    mapannounce .@map$,"A Yellow Fabre has appeared",bc_map,0xFFFF00;
+    end;
+
+OnYellowFabreDead:
+    // Mob-death callbacks attach the killer; credit the matching map only.
+    .@map$ = strcharinfo(3);
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .YellowActive[.@i] = 0;
+            .KillCount[.@i] = 1;
+            break;
+        }
+    }
+    callsub S_YellowRewards;
+    end;
+
+S_YellowRewards:
+    callfunc "F_MYgeneExclusiveRoll",31001,31002;
+    return;
+}

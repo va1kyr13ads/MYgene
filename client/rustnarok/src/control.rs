@@ -1,0 +1,3228 @@
+//! Dev-only remote control, for test automation: with `RUSTNAROK_CLIENT_CONTROL=<path>` the client listens on that Unix socket
+//! (owner only, no TCP port; on Windows, a localhost port that `path` names with a token, see `bind`) for
+//! newline-delimited JSON commands and answers each with one line of JSON
+//! (`{"ok": true, ...}` or `{"ok": false, "error": ...}`). Without the variable none of this runs. A driven client
+//! ignores the real mouse and keyboard and opens behind the window in use; it draws on screen whenever it's visible,
+//! focused or not, and screenshots don't need that.
+//!
+//! With `RUSTNAROK_CLIENT_CONTROL_SHARED` as well, the player plays the same client (see mcp.rs).
+//!
+//! The `rustnarok-client-mcp` binary (src/bin/rustnarok-client-mcp.rs) offers these commands to Claude Code as MCP tools. Build with
+//! `cargo build --release`, then register it once with
+//! `claude mcp add rustnarok-client-dev -- <repo>/target/release/rustnarok-client-mcp`.
+//!
+//! Commands by `cmd`, in the client's logical 1024x768 pixels:
+//! - `screenshot` `{crop?: [x, y, width, height], scale?}`: the next frame through the `RUSTNAROK_CLIENT_SCREENSHOT` capture,
+//!   as base64 PNG (`png`).
+//! - `move` `{x, y}`, `click` `{x, y, button?: "left"|"right", mods?: "Alt+Shift", count?}`, `drag` `{from: [x, y],
+//!   to: [x, y], button?, mods?, held?}` (`held`: the button stays down until `release` `{button?}`): the pointer and
+//!   buttons, through the same code as the mouse.
+//! - `click_unit` `{id, button?, mods?, count?}`: a `click` on unit `id` where it's drawn now, at a point inside its
+//!   area that picks it (the middle when nothing covers it), as `{"point": [x, y]}`. Refused for our own id, a unit
+//!   not known, hidden, off screen or covered (by a window or a unit that wins the click).
+//! - `click_item` `{id, button?, mods?, count?}`: the same for item `id` on the ground, so a monster standing on it
+//!   doesn't take the click.
+//! - `click_cell` `{x, y, button?, mods?, count?}`: a `click` on map cell `[x, y]` at a point of it where the click
+//!   reaches the ground (the middle when nothing covers it), as `{"point": [x, y]}`. Refused for a cell off screen
+//!   or covered (by a window, or a unit, an item or a skill unit the click would talk to, attack or pick up). A warp
+//!   portal doesn't cover: a click on one walks to the ground under it, as in the game.
+//! - `key` `{key, repeat?, hold?}`: "Enter", "Escape", "Tab", "Backspace", "Space", "Insert", "Delete", "Home", "End",
+//!   "PageUp", "PageDown", "Up"/"Down"/"Left"/"Right", "F1"–"F12", "PrintScreen", "ScrollLock" or one
+//!   character, after modifiers like "Alt+" or "Ctrl+". `repeat` is an auto-repeat; a shortcut fires again only
+//!   for the key pressed last. `hold` is milliseconds to keep the key down, auto-repeating after the first press.
+//! - `type` `{text}`: into the focused field; non-ASCII runs (Hangul) come in as the input method's commit.
+//! - `say` `{text}`: a chat line or a GM command.
+//! - `state`: the scene and the login server; at character select the characters, selected slot and `pin` ("ask",
+//!   "new", "change" or "none"); in the game the map, the player, open windows, `escape` (the Esc or death
+//!   menu's buttons while it is open, null otherwise; `windows` lists it as `GameMenu`, and it takes every click until closed, so a
+//!   click's `hit` then says `GameMenu`), the NPC dialog, the aimed
+//!   skill, units and ground items (with their sprites' screen boxes and the areas a click picks them in), counts and
+//!   status icons. Each unit's `tint` is `[r, g, b]` while a status colours it, or null. Everything comes from what
+//!   the client itself knows, whatever server it plays on.
+//!   `player` has `status_points` and `skill_points` left, `stats` (`str` to `luk`: `{value, bonus, cost}`, cost being
+//!   the points one more takes) and `skills` (`[{id, name, level, max_level, upgradable}]`, level 0: not learned yet).
+//!   While the status window (Alt+A) is open, the arrows that raise a stat are targets named `raise_str` to
+//!   `raise_luk` (only those the points pay for); while the skill window (Alt+S) is open, its job tabs are
+//!   `skill_tab:<job id>` and the open tab's level up buttons `raise:<skill id>` (only with points left). Both only
+//!   while a click reaches them: under another window they're left out. After `@reset`, a build is these clicks by
+//!   name.
+//!   `homunculus` is `{id, name, level, hunger, intimacy, hp, skill_points, vaporized, following}` or null; the skill
+//!   list's level up buttons are targets named `raise:<skill id>`. `player.look` is the real look (hair, hair color,
+//!   clothes color, head top, mid and bottom, and `body` for the 2nd outfit). The stylist's buttons are targets (`hair_style_prev`, `hair_style_next`,
+//!   `clothes_prev`, `clothes_next`, `hair_color_<row>`, `hair_color_none`, `head_top_<row>`, `tab_hair`, `tab_accessory`, `buy`, `refresh`,
+//!   `rotate_left`, `rotate_right`, `close`); `stylist` is `{buy, rows: [{part, payable}]}`: its list of what will be bought, or null.
+//!   An NPC dialog's buttons are targets while they show: `npc_next` or `npc_close`, `npc_menu:<index>` for each menu row
+//!   in view, `npc_menu_ok`, `npc_menu_cancel` and `npc_input_ok`. An item's picture in its text is a target of kind
+//!   `item_picture` with the item's `id`, and `dialog.pointed_item` is the name shown for the one under the pointer.
+//! - `wait` `{ms?, packet?, event?, fresh?, pause?, do?}`: sleeps `ms`; with a `packet` id ("0x08c8") or an `event`
+//!   (a `MapEvent`/`CharEvent` variant like "Act", "LoginAccepted"/"LoginRefused", or "Sound <file>" for an effect
+//!   sound played, e.g. "Sound _hit_sword.wav"), waits up to `ms` (10 s by
+//!   default) for one seen since the previous command, so a quick answer isn't missed between two calls. `fresh`
+//!   only counts new ones; `do` is a command to run first (and implies `fresh`); `pause` stops the clock on arrival, after the packet is applied.
+//! - `clock` `{action: "pause"|"resume"|"step", ms?}`: the animation clock; a step freezes it `ms` (16) further on.
+//! - `trace` `{last?, events?}`: the last packets received (20), as `RUSTNAROK_CLIENT_TRACE` prints them; with `events`, the
+//!   events they made in between (`==` lines, with what they say: a disconnection's reason, say).
+//! - `inbox` `{ms?}` and `reply` `{text}`: the chat's MCP tab, in a client shared with the player (see mcp.rs): what the player
+//!   typed there since the last `inbox` (waiting up to `ms` for some), and an answer shown there.
+//! - `hunt_state`, `hunt_gat` and `hunt_do` `{actions}`: for an auto hunt program of its own (see autohunt.rs): a compact
+//!   view of the player, units, items, skills and news; the map's walkable cells; actions done as the player would.
+//! - `quit`.
+
+use std::collections::{HashMap, VecDeque};
+use std::io::{BufRead, BufReader, Cursor, Write};
+#[cfg(windows)]
+use std::net::{TcpListener as Listener, TcpStream as Stream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener as Listener, UnixStream as Stream};
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Condvar, Mutex, mpsc};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use image::RgbaImage;
+use image::imageops::FilterType;
+use rustnarok_client::lua::SkillInfo;
+use rustnarok_client::net;
+use rustnarok_client::play::{self, Grade};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use winit::event::{ElementState, KeyEvent};
+use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
+use winit::keyboard::{Key, KeyCode, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey, SmolStr};
+
+use crate::actor::Look;
+use crate::render::{Gpu, Sprite, WorldPass};
+use crate::{App, DialogButton, Game, HOMUNCULUS, MERCENARY, MONSTER, NPC, NetEvent, Owner, PET, PLAYER, Panel, Scene, Top, inventory};
+use crate::{autohunt, mcp};
+
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Command {
+    Screenshot {
+        crop: Option<[u32; 4]>,
+        scale: Option<f32>,
+    },
+    Move {
+        x: f32,
+        y: f32,
+    },
+    Click {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Button,
+        #[serde(default)]
+        mods: String,
+        count: Option<u8>,
+    },
+    /// A click on a unit where it's drawn now: `{"point": [x, y]}`.
+    ClickUnit {
+        id: u32,
+        #[serde(default)]
+        button: Button,
+        #[serde(default)]
+        mods: String,
+        count: Option<u8>,
+    },
+    /// A click on an item on the ground where it's drawn now: `{"point": [x, y]}`.
+    ClickItem {
+        id: u32,
+        #[serde(default)]
+        button: Button,
+        #[serde(default)]
+        mods: String,
+        count: Option<u8>,
+    },
+    /// A click on the ground at a map cell, where nothing else takes it: `{"point": [x, y]}`.
+    ClickCell {
+        x: i32,
+        y: i32,
+        #[serde(default)]
+        button: Button,
+        #[serde(default)]
+        mods: String,
+        count: Option<u8>,
+    },
+    Drag {
+        from: [f32; 2],
+        to: [f32; 2],
+        #[serde(default)]
+        button: Button,
+        #[serde(default)]
+        mods: String,
+        /// Leave the button down at `to` (let go with `release`), to look at something mid-drag.
+        #[serde(default)]
+        held: bool,
+    },
+    /// Lets go of a button held by a `drag` with `held`.
+    Release {
+        #[serde(default)]
+        button: Button,
+    },
+    Key {
+        key: String,
+        /// An auto-repeat of a held key. The shortcut fires again only for the key pressed last.
+        #[serde(default)]
+        repeat: bool,
+        /// Hold the key this many milliseconds, sending auto-repeats. One command, so a following `wait` still sees what the first press caused.
+        #[serde(default)]
+        hold: Option<u64>,
+    },
+    /// The wheel at a point: `rows` notches, positive toward the player (scrolls down). Or `pixels`, a trackpad's
+    /// delta in canvas pixels (positive scrolls up; 0 is a gesture's start or end), adding up to notches as the
+    /// window's own do.
+    Wheel {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        rows: i32,
+        #[serde(default)]
+        pixels: Option<f64>,
+    },
+    Type {
+        text: String,
+    },
+    Say {
+        text: String,
+    },
+    /// What the player typed in the chat's MCP tab since the last call; waits up to `ms` for some (see mcp.rs).
+    Inbox {
+        ms: Option<u64>,
+    },
+    /// An answer in the chat's MCP tab.
+    Reply {
+        text: String,
+    },
+    /// A button goes down at a point and stays down until `mouse_up`.
+    MouseDown {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Button,
+    },
+    MouseUp {
+        x: f32,
+        y: f32,
+        #[serde(default)]
+        button: Button,
+    },
+    /// Where a map cell's middle is on screen: `{"point": [x, y]}`. With `cells` instead, `{"points": [...]}` in their
+    /// order, null for a cell the single form refuses.
+    CellPoint {
+        x: Option<i32>,
+        y: Option<i32>,
+        cells: Option<Vec<[i32; 2]>>,
+    },
+    /// The scene; `only` keeps just those fields of the game's state.
+    State {
+        only: Option<Vec<String>>,
+    },
+    /// The auto hunt program's view, its map's walkable cells, and what it does (autohunt.rs).
+    HuntState,
+    HuntGat,
+    HuntDo {
+        actions: Vec<autohunt::Action>,
+    },
+    Wait {
+        ms: Option<u64>,
+        #[serde(default, deserialize_with = "packet_id")]
+        packet: Option<u16>,
+        event: Option<String>,
+        /// A packet the client sends, by ID.
+        #[serde(default, deserialize_with = "packet_id")]
+        sent: Option<u16>,
+        #[serde(default)]
+        fresh: bool,
+        #[serde(default)]
+        pause: bool,
+        #[serde(rename = "do")]
+        first: Option<Box<Command>>,
+    },
+    Clock {
+        action: ClockAction,
+        ms: Option<u64>,
+    },
+    Trace {
+        last: Option<usize>,
+        #[serde(default)]
+        events: bool,
+    },
+    Quit,
+}
+
+#[derive(Debug, Default, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum Button {
+    #[default]
+    Left,
+    Right,
+}
+
+#[derive(Debug, Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockAction {
+    Pause,
+    Resume,
+    Step,
+}
+
+/// A packet ID as a number or in hex ("0x08c8").
+fn packet_id<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<u16>, D::Error> {
+    let id = match Value::deserialize(deserializer)? {
+        Value::Number(number) => number.as_u64().and_then(|id| u16::try_from(id).ok()),
+        Value::String(text) => u16::from_str_radix(text.trim_start_matches("0x"), 16).ok(),
+        _ => None,
+    };
+    id.map(Some).ok_or_else(|| serde::de::Error::custom("packet: a number or hex like \"0x08c8\""))
+}
+
+/// A command on its way to the event loop, and where its answer goes.
+pub struct Request {
+    command: Command,
+    reply: mpsc::Sender<Value>,
+}
+
+/// What `App::key` reads of a key press: winit's `KeyEvent` can't be made outside winit, so commands make these.
+#[derive(Clone)]
+pub struct KeyPress {
+    pub state: ElementState,
+    pub logical_key: Key,
+    pub physical_key: PhysicalKey,
+    pub text: Option<String>,
+    /// An auto-repeated key-down. A shortcut fires again only for the key pressed last; Esc still ignores it.
+    pub repeat: bool,
+}
+
+impl From<&KeyEvent> for KeyPress {
+    fn from(event: &KeyEvent) -> Self {
+        Self {
+            state: event.state,
+            logical_key: event.logical_key.clone(),
+            physical_key: event.physical_key,
+            text: event.text.as_deref().map(str::to_owned),
+            repeat: event.repeat,
+        }
+    }
+}
+
+/// Packets and events seen, newest last, for `wait` and `trace`.
+struct Log {
+    next: u64,
+    entries: VecDeque<Entry>,
+}
+
+struct Entry {
+    seq: u64,
+    at: Instant,
+    /// A packet's ID, or an event's variant name.
+    seen: Seen,
+    /// The packet's trace line, or the event's: as it debug-prints (shortened), after `==`.
+    text: String,
+}
+
+enum Seen {
+    Packet(u16),
+    /// A packet the client sent the map server.
+    Sent(u16),
+    Event(String),
+}
+
+const LOG_SIZE: usize = 2000;
+static LOG: Mutex<Log> = Mutex::new(Log { next: 0, entries: VecDeque::new() });
+static SEEN: Condvar = Condvar::new();
+/// Effect sounds played lately, with when (for `sounds_recent`).
+static RECENT_SOUNDS: Mutex<VecDeque<(Instant, String)>> = Mutex::new(VecDeque::new());
+/// How long a played sound stays in `sounds_recent`.
+const RECENT: Duration = Duration::from_secs(5);
+/// Where the log stood at the last command other than `wait`: what a `wait` looks at by default.
+// ponytail: one mark for every connection (one driver at a time); keep one per connection if drivers ever share a client.
+static MARK: AtomicU64 = AtomicU64::new(0);
+static ON: AtomicBool = AtomicBool::new(false);
+/// The animation clock while paused.
+static FROZEN: Mutex<Option<Instant>> = Mutex::new(None);
+/// A screenshot asked of the next frame drawn, and the frame.
+static WANT_SHOT: AtomicBool = AtomicBool::new(false);
+static SHOT: Mutex<Option<RgbaImage>> = Mutex::new(None);
+
+/// Opens the control socket when `RUSTNAROK_CLIENT_CONTROL` names one.
+pub fn listen(proxy: EventLoopProxy<NetEvent>) {
+    let Some(path) = std::env::var_os("RUSTNAROK_CLIENT_CONTROL") else { return };
+    let path = Path::new(&path);
+    let (listener, token) = bind(path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+    let _ = net::PACKET_HOOK.set(packet_seen);
+    let _ = net::SENT_HOOK.set(packet_sent);
+    ON.store(true, Ordering::Relaxed);
+    eprintln!("control socket at {}", path.display());
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let (proxy, token) = (proxy.clone(), token.clone());
+            std::thread::spawn(move || serve(stream, &proxy, token.as_deref()));
+        }
+    });
+}
+
+/// Whoever can connect plays the logged-in character, so only the owner may: through a Unix socket only they can
+/// open...
+#[cfg(unix)]
+fn bind(path: &Path) -> std::io::Result<(Listener, Option<String>)> {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::remove_file(path);
+    let listener = Listener::bind(path)?;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    Ok((listener, None))
+}
+
+/// ...or, on Windows (no Unix sockets in Python there), a localhost port written to `path` as "127.0.0.1:port token": a
+/// connection's first line must be the token, which only those who can read `path` know and a web page's request to
+/// localhost can't send.
+#[cfg(windows)]
+fn bind(path: &Path) -> std::io::Result<(Listener, Option<String>)> {
+    use std::hash::BuildHasher;
+    let listener = Listener::bind("127.0.0.1:0")?;
+    // SipHash under the keys std seeds from the OS's random source.
+    let random = std::collections::hash_map::RandomState::new();
+    let token = format!("{:016x}{:016x}", random.hash_one(1), random.hash_one(2));
+    std::fs::write(path, format!("{} {token}", listener.local_addr()?))?;
+    Ok((listener, Some(token)))
+}
+
+/// Answers one connection's commands in order. `wait` and `trace` are answered here, the rest on the event loop.
+fn serve(stream: Stream, proxy: &EventLoopProxy<NetEvent>, token: Option<&str>) {
+    let Ok(mut writer) = stream.try_clone() else { return };
+    let mut lines = BufReader::new(stream).lines();
+    if let Some(token) = token
+        && lines.next().and_then(Result::ok).as_deref() != Some(token)
+    {
+        return;
+    }
+    for line in lines {
+        let Ok(line) = line else { break };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let reply = match serde_json::from_str::<Command>(&line) {
+            Ok(command) if test_only(&command) && play::mode() < Grade::Test => {
+                json!({"ok": false, "error": format!("test only (play mode: {})", play::mode().mode())})
+            }
+            Ok(Command::Wait { ms, packet, event, sent, fresh, pause, first }) => wait(proxy, ms, (packet, event, sent), fresh, pause, first),
+            Ok(Command::Trace { last, events }) => trace(last.unwrap_or(20), events),
+            Ok(Command::Inbox { ms }) => mcp::inbox(Duration::from_millis(ms.unwrap_or(0))),
+            Ok(command) => {
+                MARK.store(LOG.lock().unwrap().next, Ordering::Relaxed);
+                forward(proxy, command)
+            }
+            Err(error) => json!({"ok": false, "error": error.to_string()}),
+        };
+        if writeln!(writer, "{reply}").is_err() {
+            break;
+        }
+    }
+}
+
+/// A command, or one of its arguments, beyond what a player has: raw packets, the paused clock, waiting on packets, GM
+/// commands (#1095).
+fn test_only(command: &Command) -> bool {
+    match command {
+        // The hunt's view has hidden units and the whole map's cells: beyond a player.
+        Command::Trace { .. } | Command::Clock { .. } | Command::HuntState | Command::HuntGat | Command::HuntDo { .. } => true,
+        Command::Wait { packet, sent, pause, first, .. } => packet.is_some() || sent.is_some() || *pause || first.as_deref().is_some_and(test_only),
+        Command::Say { text } => text.starts_with('@'),
+        _ => false,
+    }
+}
+
+fn forward(proxy: &EventLoopProxy<NetEvent>, command: Command) -> Value {
+    let (reply, answer) = mpsc::channel();
+    if proxy.send_event(NetEvent::Control(Request { command, reply })).is_err() {
+        return json!({"ok": false, "error": "the client is closing"});
+    }
+    answer.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| json!({"ok": false, "error": "no answer from the client"}))
+}
+
+fn wait(
+    proxy: &EventLoopProxy<NetEvent>,
+    ms: Option<u64>,
+    (packet, event, sent): (Option<u16>, Option<String>, Option<u16>),
+    fresh: bool,
+    pause: bool,
+    first: Option<Box<Command>>,
+) -> Value {
+    if fresh || first.is_some() {
+        MARK.store(LOG.lock().unwrap().next, Ordering::Relaxed);
+    }
+    if let Some(command) = first {
+        let done = forward(proxy, *command);
+        if done["ok"] != true {
+            return done;
+        }
+    }
+    if packet.is_none() && event.is_none() && sent.is_none() {
+        std::thread::sleep(Duration::from_millis(ms.unwrap_or(0)));
+        return json!({"ok": true});
+    }
+    let limit = ms.unwrap_or(10_000);
+    let deadline = Instant::now() + Duration::from_millis(limit);
+    let mut log = LOG.lock().unwrap();
+    loop {
+        let mark = MARK.load(Ordering::Relaxed);
+        let wanted = |entry: &&Entry| match &entry.seen {
+            Seen::Packet(id) => packet == Some(*id),
+            Seen::Sent(id) => sent == Some(*id),
+            Seen::Event(name) => event.as_deref() == Some(name.as_str()),
+        };
+        if let Some(entry) = log.entries.iter().filter(|entry| entry.seq >= mark).find(wanted) {
+            let (seen, ago) = (entry.text.clone(), entry.at.elapsed().as_millis() as u64);
+            // The next wait looks past this one.
+            MARK.store(entry.seq + 1, Ordering::Relaxed);
+            drop(log);
+            let paused = pause && forward(proxy, Command::Clock { action: ClockAction::Pause, ms: None })["ok"] == true;
+            return json!({"ok": true, "seen": seen, "ago_ms": ago, "paused": paused});
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return json!({"ok": false, "error": format!("nothing came in {limit} ms")});
+        }
+        log = SEEN.wait_timeout(log, left).unwrap().0;
+    }
+}
+
+fn trace(last: usize, events: bool) -> Value {
+    let log = LOG.lock().unwrap();
+    let lines: Vec<&str> =
+        log.entries.iter().filter(|entry| events || matches!(entry.seen, Seen::Packet(_) | Seen::Sent(_))).map(|entry| entry.text.as_str()).collect();
+    json!({"ok": true, "trace": lines[lines.len().saturating_sub(last)..].join("\n")})
+}
+
+fn record(seen: Seen, text: String) {
+    let mut log = LOG.lock().unwrap();
+    let seq = log.next;
+    log.next += 1;
+    log.entries.push_back(Entry { seq, at: Instant::now(), seen, text });
+    if log.entries.len() > LOG_SIZE {
+        log.entries.pop_front();
+    }
+    SEEN.notify_all();
+}
+
+/// Every packet from the char and map servers (on their reader threads), in the `RUSTNAROK_CLIENT_TRACE` format.
+fn packet_seen(packet: &[u8]) {
+    let id = u16::from_le_bytes([packet[0], packet[1]]);
+    record(Seen::Packet(id), net::trace_line(trace_ms(), "<-", packet, false));
+}
+
+/// Every packet the client writes to the map server, as `->` lines.
+fn packet_sent(packet: &[u8]) {
+    let id = u16::from_le_bytes([packet[0], packet[1]]);
+    record(Seen::Sent(id), net::trace_line(trace_ms(), "->", packet, false));
+}
+
+/// The `RUSTNAROK_CLIENT_TRACE` timestamp: wall-clock milliseconds, the last five digits.
+fn trace_ms() -> u64 {
+    (SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() % 100_000) as u64
+}
+
+/// Whether the client takes commands from the socket and is the driver's alone. Then the real mouse and keyboard are
+/// ignored: between commands they'd move the pointer, type into the chat line or hold modifiers down.
+pub fn driven() -> bool {
+    ON.load(Ordering::Relaxed) && !mcp::shared()
+}
+
+/// Whether the control socket is open, shared with the player or not.
+fn socket_on() -> bool {
+    ON.load(Ordering::Relaxed)
+}
+
+/// Notes an effect sound played (`wait` event `Sound <file>`, the file under data\wav\ as asked for).
+pub fn sound_played(name: &str) {
+    if socket_on() {
+        record(Seen::Event(format!("Sound {name}")), format!("{:05} == Sound {name}", trace_ms()));
+        RECENT_SOUNDS.lock().unwrap().push_back((now(), name.to_owned()));
+    }
+}
+
+/// The effect sounds played in the last five seconds, oldest first.
+fn recent_sounds() -> Vec<String> {
+    let mut recent = RECENT_SOUNDS.lock().unwrap();
+    let now = now();
+    while recent.front().is_some_and(|(at, _)| now.saturating_duration_since(*at) > RECENT) {
+        recent.pop_front();
+    }
+    recent.iter().map(|(_, name)| name.clone()).collect()
+}
+
+/// Notes an event from the servers for `wait`: its variant's name, and what it says (a disconnection's reason, say).
+pub fn observe(event: &NetEvent) {
+    if !socket_on() {
+        return;
+    }
+    let (name, debug) = match event {
+        // Not its session keys.
+        NetEvent::Login(Ok(_)) => ("LoginAccepted".to_owned(), "LoginAccepted".to_owned()),
+        NetEvent::Login(Err(error)) => ("LoginRefused".to_owned(), format!("LoginRefused({error:?})")),
+        NetEvent::Char(event) => (String::new(), format!("{event:?}")),
+        NetEvent::Map(event) => (String::new(), format!("{event:?}")),
+        NetEvent::Control(_) | NetEvent::Addon(_) => return,
+    };
+    let name = if name.is_empty() { debug.split(|character: char| !character.is_alphanumeric()).next().unwrap_or_default().to_owned() } else { name };
+    let end = debug.char_indices().nth(300).map_or(debug.len(), |(at, _)| at);
+    record(Seen::Event(name), format!("{:05} == {}", trace_ms(), &debug[..end]));
+}
+
+/// The animation clock: real time unless the `clock` command froze it.
+// ponytail: only the frame clock freezes; what arrives while paused keeps its real time, so it shows once steps reach
+// it, or at once on resume.
+pub fn now() -> Instant {
+    FROZEN.lock().unwrap().unwrap_or_else(Instant::now)
+}
+
+/// Every drawn frame passes here: a screenshot asked for is taken of it, the way `RUSTNAROK_CLIENT_SCREENSHOT` captures.
+pub fn on_draw(gpu: &Gpu, world: Option<&dyn WorldPass>, sprites: &[Sprite], alphas: &[crate::render::Shade]) {
+    if WANT_SHOT.swap(false, Ordering::Relaxed) {
+        *SHOT.lock().unwrap() = Some(gpu.snapshot(world, sprites, alphas));
+    }
+}
+
+/// Runs a command on the event loop, where the client's state lives, and answers it.
+pub fn run(app: &mut App, event_loop: &ActiveEventLoop, Request { command, reply }: Request) {
+    let reads = matches!(command, Command::State { .. } | Command::Screenshot { .. });
+    let answer = match execute(app, event_loop, command) {
+        Ok(Value::Null) => json!({"ok": true}),
+        Ok(value) => value,
+        Err(error) => json!({"ok": false, "error": error}),
+    };
+    if !reads {
+        app.frame_current = false;
+    }
+    let _ = reply.send(answer);
+}
+
+fn execute(app: &mut App, event_loop: &ActiveEventLoop, command: Command) -> Result<Value, String> {
+    mcp::note(&mut app.scene, &command);
+    match command {
+        Command::Screenshot { crop, scale } => screenshot(app, event_loop, crop, scale),
+        Command::MouseDown { x, y, button } | Command::MouseUp { x, y, button } => {
+            let state = if matches!(command, Command::MouseDown { .. }) { ElementState::Pressed } else { ElementState::Released };
+            point(app, [x, y]);
+            press(app, event_loop, button, state);
+            app.read_button();
+            Ok(Value::Null)
+        }
+        Command::CellPoint { x, y, cells } => {
+            let Scene::Game(game) = &app.scene else { return Err("not in the game".into()) };
+            let view = game.camera.view(crate::screen()[0] / crate::screen()[1]);
+            let point = |[x, y]: [i32; 2]| cell_point(view.project(game.world.cell_position([x as f32, y as f32])), crate::screen(), play::mode());
+            match (x, y, cells) {
+                (Some(x), Some(y), None) => Ok(json!({"ok": true, "point": point([x, y])?})),
+                (None, None, Some(cells)) => Ok(json!({"ok": true, "points": cells.into_iter().map(|cell| point(cell).ok()).collect::<Vec<_>>()})),
+                _ => Err("cell_point takes x and y, or cells".into()),
+            }
+        }
+        Command::Move { x, y } => {
+            point(app, [x, y]);
+            Ok(Value::Null)
+        }
+        Command::Click { x, y, button, mods, count } => {
+            let held = modifiers(&mods)?;
+            point(app, [x, y]);
+            let hit = clicked_on(app, [x, y], held.shift_key());
+            click(app, event_loop, [x, y], button, held, count);
+            Ok(json!({"ok": true, "hit": hit}))
+        }
+        Command::ClickUnit { id, button, mods, count } => {
+            let held = modifiers(&mods)?;
+            let (Scene::Game(game), Some(assets)) = (&app.scene, &app.assets) else { return Err("not in the game".into()) };
+            let clairvoyance = game.status_icons.iter().any(|(id, ..)| *id == crate::actor::CLAIRVOYANCE);
+            let unit = game.units.get(&id).map(|actor| crate::actor::seen(actor.hide_option, false, clairvoyance) != crate::actor::Seen::Nothing);
+            let at = unit_point(&game.hit_boxes, id, game.account_id, unit, held.shift_key(), crate::screen(), |at| game.on_ui(at, assets.message.size))?;
+            click(app, event_loop, at, button, held, count);
+            Ok(json!({"ok": true, "point": at}))
+        }
+        Command::ClickItem { id, button, mods, count } => {
+            let held = modifiers(&mods)?;
+            let (Scene::Game(game), Some(assets)) = (&app.scene, &app.assets) else { return Err("not in the game".into()) };
+            if !game.ground.contains_key(&id) {
+                return Err(format!("no item {id}"));
+            }
+            let at = owner_point(&game.hit_boxes, Owner::Item(id), &format!("item {id}"), held.shift_key(), crate::screen(), |at| {
+                game.on_ui(at, assets.message.size)
+            })?;
+            click(app, event_loop, at, button, held, count);
+            Ok(json!({"ok": true, "point": at}))
+        }
+        Command::ClickCell { x, y, button, mods, count } => {
+            let held = modifiers(&mods)?;
+            let (Scene::Game(game), Some(assets)) = (&app.scene, &app.assets) else { return Err("not in the game".into()) };
+            let screen = crate::screen();
+            let view = game.camera.view(screen[0] / screen[1]);
+            let project =
+                |[dx, dy]: [f32; 2]| view.project(game.world.cell_position([x as f32 + dx, y as f32 + dy])).map(|[px, py]| [px * screen[0], py * screen[1]]);
+            let at = cell_click_point([x, y], project, screen, |at| ground_click(game, at, assets.message.size, held.shift_key()))?;
+            click(app, event_loop, at, button, held, count);
+            Ok(json!({"ok": true, "point": at}))
+        }
+        Command::Drag { from, to, button, mods, held: keep_down } => {
+            let held = modifiers(&mods)?;
+            hold(app, held, |app| {
+                point(app, from);
+                press(app, event_loop, button, ElementState::Pressed);
+                app.read_button();
+                point(app, to);
+                if !keep_down {
+                    press(app, event_loop, button, ElementState::Released);
+                }
+            });
+            Ok(Value::Null)
+        }
+        Command::Release { button } => {
+            press(app, event_loop, button, ElementState::Released);
+            Ok(Value::Null)
+        }
+        Command::Wheel { x, y, rows, pixels } => {
+            point(app, [x, y]);
+            let rows = pixels.map_or(rows, |pixels| crate::pixel_rows(&mut app.wheel_carry, pixels));
+            app.wheel(rows);
+            Ok(Value::Null)
+        }
+        Command::Key { key, repeat, hold: held_ms } => {
+            let (mods, mut key) = parse_key(&key)?;
+            key.repeat = repeat;
+            hold(app, mods, |app| {
+                app.key(&key);
+                // Let go as a keyboard does, before the modifiers (Print Screen acts on its release).
+                let release = KeyPress { state: ElementState::Released, repeat: false, ..key.clone() };
+                let Some(ms) = held_ms.filter(|ms| *ms > 0) else {
+                    app.key(&release);
+                    return;
+                };
+                // Auto-repeats while the key stays down. The key pressed last fires its shortcut on each one.
+                key.repeat = true;
+                let end = Instant::now() + Duration::from_millis(ms);
+                while Instant::now() < end {
+                    std::thread::sleep(Duration::from_millis(50));
+                    app.key(&key);
+                }
+                app.key(&release);
+            });
+            Ok(Value::Null)
+        }
+        Command::Type { text } => {
+            let mut rest = text.as_str();
+            while let Some(first) = rest.chars().next() {
+                if first.is_ascii() {
+                    app.key(&typed(first, true));
+                    rest = &rest[1..];
+                } else {
+                    let end = rest.find(|character: char| character.is_ascii()).unwrap_or(rest.len());
+                    app.compose(String::new());
+                    app.commit(&rest[..end]);
+                    rest = &rest[end..];
+                }
+            }
+            Ok(Value::Null)
+        }
+        Command::Say { text } => {
+            let Scene::Game(game) = &mut app.scene else { return Err("not in the game".into()) };
+            // As if typed and sent with Enter, so / commands, emotions and % lines work; an @ line reaches the server as
+            // chat. The MCP tab's lines are for the agent, so the line goes out from the first tab; what the player was
+            // typing stays.
+            let (typing, tab) = (std::mem::replace(&mut game.chat.input, text), game.chat.tab);
+            if game.chat.on_mcp_tab() {
+                game.chat.tab = 0;
+            }
+            app.send_chat_input(false, false);
+            if let Scene::Game(game) = &mut app.scene {
+                game.chat.input = typing;
+                game.chat.tab = tab;
+            }
+            Ok(Value::Null)
+        }
+        Command::Reply { text } => mcp::reply(&mut app.scene, text),
+        Command::HuntState => {
+            let Scene::Game(game) = &app.scene else { return Err("not in the game".into()) };
+            Ok(autohunt::state(game, &app.items))
+        }
+        Command::HuntGat => {
+            let Scene::Game(game) = &app.scene else { return Err("not in the game".into()) };
+            Ok(autohunt::gat(game))
+        }
+        Command::HuntDo { actions } => {
+            let Scene::Game(game) = &mut app.scene else { return Err("not in the game".into()) };
+            Ok(autohunt::perform(game, actions))
+        }
+        Command::State { only } => {
+            // In the game, a frame first, so the held map packets are applied and what drawing places (units' and items'
+            // boxes, signs, links) matches the screen after the last command. Not while the clock is paused, so frame
+            // stepping stays the visual tests', nor when the last frame is already current.
+            if fresh_frame_due(matches!(app.scene, Scene::Game(_)) && app.loading.is_none(), FROZEN.lock().unwrap().is_some(), app.frame_current) {
+                app.redraw(event_loop);
+            }
+            let mut state = state(app);
+            if let Some(only) = only {
+                keep_only(&mut state["game"], &only)?;
+            }
+            Ok(state)
+        }
+        Command::Clock { action, ms } => {
+            // A pause lands after the packets that came in before it, as a pause at a packet shows its effect.
+            // ponytail: the log sees a packet before its event is queued; a pause racing that gap misses it, a wait for the event would close it.
+            if matches!(action, ClockAction::Pause) {
+                app.apply_frame_events();
+            }
+            let mut frozen = FROZEN.lock().unwrap();
+            *frozen = match action {
+                ClockAction::Pause => Some(frozen.unwrap_or_else(Instant::now)),
+                ClockAction::Resume => None,
+                ClockAction::Step => Some(frozen.unwrap_or_else(Instant::now) + Duration::from_millis(ms.unwrap_or(16))),
+            };
+            Ok(json!({"ok": true, "paused": frozen.is_some()}))
+        }
+        Command::Quit => {
+            event_loop.exit();
+            Ok(Value::Null)
+        }
+        Command::Wait { .. } | Command::Trace { .. } | Command::Inbox { .. } => Err("wait, trace and inbox can't be run by wait".into()),
+    }
+}
+
+/// `count` presses and releases at a point with modifiers held, as the mouse does.
+fn click(app: &mut App, event_loop: &ActiveEventLoop, at: [f32; 2], button: Button, held: ModifiersState, count: Option<u8>) {
+    point(app, at);
+    hold(app, held, |app| {
+        for _ in 0..count.unwrap_or(1) {
+            press(app, event_loop, button, ElementState::Pressed);
+            // Held over a frame, so the world reads the press (`ButtonRead`).
+            app.read_button();
+            press(app, event_loop, button, ElementState::Released);
+        }
+    });
+}
+
+/// A cell's middle on a `screen` of that size, from where the view projects it (`0..1`, None behind the camera). Off
+/// the screen, under a play mode, it's a cell a player can't point at.
+fn cell_point(projected: Option<[f32; 2]>, screen: [f32; 2], mode: Grade) -> Result<[f32; 2], String> {
+    let point = projected.ok_or("the cell is behind the camera")?;
+    let point = [point[0] * screen[0], point[1] * screen[1]];
+    if mode < Grade::Test && !((0.0..screen[0]).contains(&point[0]) && (0.0..screen[1]).contains(&point[1])) {
+        return Err("the cell is off screen".into());
+    }
+    Ok(point)
+}
+
+/// Where a click picks unit `id` (`owner_point`). `unit` is whether the unit is seen, or None for one not known; `me` is
+/// our own id.
+fn unit_point(
+    hit_boxes: &[crate::picking::Target<Owner>],
+    id: u32,
+    me: u32,
+    unit: Option<bool>,
+    shift: bool,
+    screen: [f32; 2],
+    on_ui: impl Fn([f32; 2]) -> bool,
+) -> Result<[f32; 2], String> {
+    if id == me {
+        return Err("that's the player's own id".into());
+    }
+    match unit {
+        None => return Err(format!("no unit {id}")),
+        Some(false) => return Err(format!("unit {id} is hidden")),
+        Some(true) => {}
+    }
+    owner_point(hit_boxes, Owner::Unit(id), &format!("unit {id}"), shift, screen, on_ui)
+}
+
+/// Where a click picks `owner` (named `what` in errors) among the last drawn frame's `hit_boxes`: the middle of its
+/// area, else the point of a 5 x 5 grid in it nearest the middle, on the screen, not on a window (`on_ui`) and picked as
+/// `hovered` picks with `shift`.
+fn owner_point(
+    hit_boxes: &[crate::picking::Target<Owner>],
+    owner: Owner,
+    what: &str,
+    shift: bool,
+    screen: [f32; 2],
+    on_ui: impl Fn([f32; 2]) -> bool,
+) -> Result<[f32; 2], String> {
+    let target = hit_boxes.iter().find(|target| target.owner == owner).ok_or_else(|| format!("{what} isn't drawn on the screen"))?;
+    let [left, top, right, bottom] = target.area;
+    let middle = [(left + right) / 2.0, (top + bottom) / 2.0];
+    let mut points: Vec<[f32; 2]> = (0..25)
+        .map(|n| [left + (right - left) * (n % 5) as f32 / 5.0 + (right - left) / 10.0, top + (bottom - top) * (n / 5) as f32 / 5.0 + (bottom - top) / 10.0])
+        .collect();
+    points.sort_by(|a, b| (a[0] - middle[0]).hypot(a[1] - middle[1]).total_cmp(&(b[0] - middle[0]).hypot(b[1] - middle[1])));
+    let on_screen: Vec<_> = std::iter::once(middle).chain(points).filter(|at| at[0] >= 0.0 && at[1] >= 0.0 && at[0] < screen[0] && at[1] < screen[1]).collect();
+    if on_screen.is_empty() {
+        return Err(format!("{what} is off the screen"));
+    }
+    let picks = |at: [f32; 2]| {
+        let others = hit_boxes.iter().copied().filter(|target| target.owner != Owner::Player);
+        !on_ui(at) && crate::picking::pick(others, at, shift, [screen[0] / 2.0, screen[1] / 2.0]) == Some(owner)
+    };
+    on_screen.into_iter().find(|&at| picks(at)).ok_or_else(|| format!("{what} is covered"))
+}
+
+/// Where a click walks to `cell`: of a 5 x 5 grid of points in it, the one nearest its middle that's on the screen and
+/// where the click reaches the ground at that cell. `project` puts a point of the cell (an offset from its middle, in
+/// cells) on the screen, None behind the camera; `ground` is the cell a click at a point walks to, None when something
+/// else takes the click.
+fn cell_click_point(
+    cell: [i32; 2],
+    project: impl Fn([f32; 2]) -> Option<[f32; 2]>,
+    screen: [f32; 2],
+    ground: impl Fn([f32; 2]) -> Option<[i32; 2]>,
+) -> Result<[f32; 2], String> {
+    let mut offsets: Vec<[f32; 2]> = (0..25).map(|n| [(n % 5) as f32 * 0.2 - 0.4, (n / 5) as f32 * 0.2 - 0.4]).collect();
+    offsets.sort_by(|a, b| a[0].hypot(a[1]).total_cmp(&b[0].hypot(b[1])));
+    let on_screen: Vec<_> =
+        offsets.into_iter().filter_map(project).filter(|at| at[0] >= 0.0 && at[1] >= 0.0 && at[0] < screen[0] && at[1] < screen[1]).collect();
+    if on_screen.is_empty() {
+        return Err(format!("cell {cell:?} is off the screen"));
+    }
+    on_screen.into_iter().find(|&at| ground(at) == Some(cell)).ok_or_else(|| format!("cell {cell:?} is covered"))
+}
+
+/// The cell a click at `at` walks to, as a real click (`Game::world_click`) walks: the ground under it, through a warp
+/// portal too (#1252) and through anyone a click walks past. None when a window takes the click, when the click would
+/// talk, attack, swing or pick up instead, or past the map's edge.
+fn ground_click(game: &Game, at: [f32; 2], message: [f32; 2], shift: bool) -> Option<[i32; 2]> {
+    if game.on_ui(at, message) || !matches!(game.world_click(at, shift), crate::WorldClick::Warp | crate::WorldClick::Ground) {
+        return None;
+    }
+    game.ground_cell(at)
+}
+
+/// What a click at `at` lands on, as the cursor shows it (#1093): a window, a unit, item or skill unit the click picks
+/// (only drawn ones are in `hit_boxes`), the ground cell under it (assist: fair leaves the cell out), or null.
+fn clicked_on(app: &App, at: [f32; 2], shift: bool) -> Value {
+    let (Scene::Game(game), Some(assets)) = (&app.scene, &app.assets) else { return Value::Null };
+    if game.on_ui(at, assets.message.size) {
+        return json!({"kind": "ui", "window": window_named(game, at, assets.message.size)});
+    }
+    let screen = crate::screen();
+    let others = game.hit_boxes.iter().copied().filter(|target| target.owner != Owner::Player);
+    match crate::picking::pick(others, at, shift, [screen[0] / 2.0, screen[1] / 2.0]) {
+        Some(Owner::Unit(id)) => return json!({"kind": "unit", "id": id}),
+        Some(Owner::Item(id)) => return json!({"kind": "item", "id": id}),
+        Some(Owner::SkillUnit(id)) => return json!({"kind": "skill_unit", "id": id}),
+        Some(Owner::Player) | None => {}
+    }
+    let view = game.camera.view(screen[0] / screen[1]);
+    let Some(cell) = view.pick_ground([at[0].floor() / screen[0], at[1].floor() / screen[1]], &game.world.gat) else { return Value::Null };
+    if play::mode() == Grade::Fair { json!({"kind": "ground"}) } else { json!({"kind": "ground", "cell": cell}) }
+}
+
+/// The window a click at `at` reaches, by name: the game menu while it keeps the pointer (`menu_takes`), else the one
+/// drawn on top there (`Game::top_at`); a member's small window by their name, as `windows` has it.
+fn window_named(game: &Game, at: [f32; 2], message: [f32; 2]) -> Option<String> {
+    let member = |account: u32| game.party.as_ref()?.members.iter().find(|member| member.info.account == account).map(|member| member.info.name.clone());
+    match top_named(game.menu_takes(at), game.top_at(at, message)) {
+        Some(Top::PartyHp(account)) => Some(format!("PartyHp:{}", member(account).unwrap_or_default())),
+        top => top.map(Top::name),
+    }
+}
+
+/// The game menu takes every click while it keeps the pointer, over whatever is drawn there.
+fn top_named(menu: bool, top: Option<Top>) -> Option<Top> {
+    if menu { Some(Top::GameMenu) } else { top }
+}
+
+fn point(app: &mut App, at: [f32; 2]) {
+    app.cursor = at;
+    app.pointer_moved();
+}
+
+fn press(app: &mut App, event_loop: &ActiveEventLoop, button: Button, state: ElementState) {
+    match button {
+        Button::Left => app.left_button(event_loop, state),
+        Button::Right => app.right_button(state),
+    }
+}
+
+/// Holds modifier keys down while `act` runs.
+fn hold(app: &mut App, held: ModifiersState, act: impl FnOnce(&mut App)) {
+    let before = std::mem::replace(&mut app.modifiers, held);
+    act(app);
+    app.modifiers = before;
+}
+
+fn modifiers(names: &str) -> Result<ModifiersState, String> {
+    names.split('+').map(str::trim).filter(|name| !name.is_empty()).try_fold(ModifiersState::empty(), |held, name| {
+        Ok(held
+            | match name.to_ascii_lowercase().as_str() {
+                "alt" | "option" => ModifiersState::ALT,
+                "ctrl" | "control" => ModifiersState::CONTROL,
+                "shift" => ModifiersState::SHIFT,
+                "cmd" | "super" | "meta" => ModifiersState::SUPER,
+                _ => return Err(format!("unknown modifier {name:?}")),
+            })
+    })
+}
+
+/// A key by name ("Enter", "F5", one character), after modifiers ("Alt+E").
+fn parse_key(name: &str) -> Result<(ModifiersState, KeyPress), String> {
+    let (held, key) = match name.rsplit_once('+') {
+        Some((held, key)) if !key.is_empty() => (modifiers(held)?, key),
+        _ => (ModifiersState::empty(), name),
+    };
+    let mut characters = key.chars();
+    if let (Some(character), None) = (characters.next(), characters.next()) {
+        // Alt and Ctrl make shortcuts, not text.
+        return Ok((held, typed(character, !held.alt_key() && !held.control_key() && !held.super_key())));
+    }
+    const FUNCTION: [(NamedKey, KeyCode); 12] = [
+        (NamedKey::F1, KeyCode::F1),
+        (NamedKey::F2, KeyCode::F2),
+        (NamedKey::F3, KeyCode::F3),
+        (NamedKey::F4, KeyCode::F4),
+        (NamedKey::F5, KeyCode::F5),
+        (NamedKey::F6, KeyCode::F6),
+        (NamedKey::F7, KeyCode::F7),
+        (NamedKey::F8, KeyCode::F8),
+        (NamedKey::F9, KeyCode::F9),
+        (NamedKey::F10, KeyCode::F10),
+        (NamedKey::F11, KeyCode::F11),
+        (NamedKey::F12, KeyCode::F12),
+    ];
+    let lower = key.to_ascii_lowercase();
+    let (named, code) = match lower.as_str() {
+        "enter" | "return" => (NamedKey::Enter, KeyCode::Enter),
+        "escape" | "esc" => (NamedKey::Escape, KeyCode::Escape),
+        "tab" => (NamedKey::Tab, KeyCode::Tab),
+        "insert" => (NamedKey::Insert, KeyCode::Insert),
+        "delete" => (NamedKey::Delete, KeyCode::Delete),
+        "home" => (NamedKey::Home, KeyCode::Home),
+        "end" => (NamedKey::End, KeyCode::End),
+        "pageup" => (NamedKey::PageUp, KeyCode::PageUp),
+        "pagedown" => (NamedKey::PageDown, KeyCode::PageDown),
+        "printscreen" | "print" | "snapshot" => (NamedKey::PrintScreen, KeyCode::PrintScreen),
+        "scrolllock" => (NamedKey::ScrollLock, KeyCode::ScrollLock),
+        "backspace" => (NamedKey::Backspace, KeyCode::Backspace),
+        "space" => (NamedKey::Space, KeyCode::Space),
+        "up" | "arrowup" => (NamedKey::ArrowUp, KeyCode::ArrowUp),
+        "down" | "arrowdown" => (NamedKey::ArrowDown, KeyCode::ArrowDown),
+        "left" | "arrowleft" => (NamedKey::ArrowLeft, KeyCode::ArrowLeft),
+        "right" | "arrowright" => (NamedKey::ArrowRight, KeyCode::ArrowRight),
+        function => match function.strip_prefix('f').and_then(|number| number.parse::<usize>().ok()) {
+            Some(number @ 1..=12) => FUNCTION[number - 1],
+            _ => return Err(format!("unknown key {key:?}")),
+        },
+    };
+    let text = (named == NamedKey::Space && !held.alt_key() && !held.control_key()).then(|| " ".to_owned());
+    Ok((held, KeyPress { state: ElementState::Pressed, logical_key: Key::Named(named), physical_key: PhysicalKey::Code(code), text, repeat: false }))
+}
+
+/// A character key's press; letters and digits carry their physical key, for shortcuts like Alt+E.
+fn typed(character: char, text: bool) -> KeyPress {
+    const LETTERS: [KeyCode; 26] = [
+        KeyCode::KeyA,
+        KeyCode::KeyB,
+        KeyCode::KeyC,
+        KeyCode::KeyD,
+        KeyCode::KeyE,
+        KeyCode::KeyF,
+        KeyCode::KeyG,
+        KeyCode::KeyH,
+        KeyCode::KeyI,
+        KeyCode::KeyJ,
+        KeyCode::KeyK,
+        KeyCode::KeyL,
+        KeyCode::KeyM,
+        KeyCode::KeyN,
+        KeyCode::KeyO,
+        KeyCode::KeyP,
+        KeyCode::KeyQ,
+        KeyCode::KeyR,
+        KeyCode::KeyS,
+        KeyCode::KeyT,
+        KeyCode::KeyU,
+        KeyCode::KeyV,
+        KeyCode::KeyW,
+        KeyCode::KeyX,
+        KeyCode::KeyY,
+        KeyCode::KeyZ,
+    ];
+    const DIGITS: [KeyCode; 10] = [
+        KeyCode::Digit0,
+        KeyCode::Digit1,
+        KeyCode::Digit2,
+        KeyCode::Digit3,
+        KeyCode::Digit4,
+        KeyCode::Digit5,
+        KeyCode::Digit6,
+        KeyCode::Digit7,
+        KeyCode::Digit8,
+        KeyCode::Digit9,
+    ];
+    let physical_key = match character.to_ascii_lowercase() {
+        letter @ 'a'..='z' => PhysicalKey::Code(LETTERS[usize::from(letter as u8 - b'a')]),
+        digit @ '0'..='9' => PhysicalKey::Code(DIGITS[usize::from(digit as u8 - b'0')]),
+        _ => PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
+    };
+    KeyPress {
+        state: ElementState::Pressed,
+        logical_key: Key::Character(SmolStr::new(character.to_string())),
+        physical_key,
+        text: text.then(|| character.to_string()),
+        repeat: false,
+    }
+}
+
+/// Whether `state` draws a frame first: in the game, with the clock running, when something came since the last frame.
+fn fresh_frame_due(in_game: bool, paused: bool, current: bool) -> bool {
+    in_game && !paused && !current
+}
+
+fn screenshot(app: &mut App, event_loop: &ActiveEventLoop, crop: Option<[u32; 4]>, scale: Option<f32>) -> Result<Value, String> {
+    WANT_SHOT.store(true, Ordering::Relaxed);
+    app.redraw(event_loop);
+    WANT_SHOT.store(false, Ordering::Relaxed);
+    let mut image = SHOT.lock().unwrap().take().ok_or("no frame was drawn")?;
+    if let Some([x, y, width, height]) = crop {
+        image = image::imageops::crop_imm(&image, x, y, width, height).to_image();
+    }
+    if let Some(scale) = scale.filter(|&scale| scale > 0.0 && scale != 1.0) {
+        let [width, height] = [image.width(), image.height()].map(|side| ((side as f32 * scale).round() as u32).max(1));
+        // Enlarged pixels stay sharp.
+        image = image::imageops::resize(&image, width, height, if scale < 1.0 { FilterType::Triangle } else { FilterType::Nearest });
+    }
+    let (width, height) = image.dimensions();
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(image).into_rgb8().write_to(&mut Cursor::new(&mut png), image::ImageFormat::Png).map_err(|error| error.to_string())?;
+    Ok(json!({"ok": true, "width": width, "height": height, "png": base64(&png)}))
+}
+
+fn base64(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let bits = chunk.iter().enumerate().fold(0u32, |bits, (index, &byte)| bits | u32::from(byte) << (16 - 8 * index));
+        for index in 0..4 {
+            text.push(if index <= chunk.len() { char::from(DIGITS[(bits >> (18 - 6 * index) & 63) as usize]) } else { '=' });
+        }
+    }
+    text
+}
+
+fn scene_name(scene: &Scene) -> &'static str {
+    match scene {
+        Scene::Connections { .. } => "connections",
+        Scene::Login => "login",
+        Scene::Waiting(..) => "waiting",
+        Scene::Quit => "quit",
+        Scene::ServerSelect { .. } => "server_select",
+        Scene::CharSelect(_) => "char_select",
+        Scene::CharMake(..) => "char_make",
+        Scene::Game(_) => "game",
+        Scene::Message(..) => "message",
+        Scene::Confirm(..) => "confirm",
+        Scene::Prompt { .. } => "prompt",
+    }
+}
+
+fn state(app: &mut App) -> Value {
+    if let Scene::Game(game) = &mut app.scene {
+        game.sync_esc();
+    }
+    let mut state = json!({
+        "ok": true,
+        "scene": scene_name(&app.scene),
+        // The music file playing, with RUSTNAROK_CLIENT_SOUND=1 (a driven client is silent otherwise).
+        "music": app.audio.as_ref().and_then(|audio| audio.music()),
+        "server": app.login_server().0,
+        "loading": app.loading.is_some(),
+        "cursor": app.cursor,
+        "paused": FROZEN.lock().unwrap().is_some(),
+    });
+    if play::mode() < Grade::Test {
+        state["play"] = play::mode().mode().into();
+    }
+    if let Scene::Message(text, _) | Scene::Confirm(text, ..) | Scene::Prompt { text, .. } = &app.scene {
+        state["text"] = text.as_str().into();
+    }
+    let base = app.scene.base();
+    if !std::ptr::eq(base, &app.scene) {
+        state["under"] = scene_name(base).into();
+    }
+    match base {
+        Scene::Login => state["login_id"] = app.fields[0].as_str().into(),
+        Scene::ServerSelect { accepted, selected, scroll } => {
+            state["servers"] = accepted.char_servers.iter().map(|server| server.name.as_str()).collect();
+            state["selected"] = (*selected).into();
+            state["scroll"] = (*scroll).into();
+            let origin = crate::servers::place(crate::screen());
+            state["server_window"] = json!([origin[0], origin[1], crate::servers::WIDTH, crate::servers::HEIGHT]);
+            let list = crate::offset(origin, crate::servers::LIST);
+            let mut targets = Vec::new();
+            for row in crate::servers::shown(*scroll, accepted.char_servers.len()) {
+                let y = list[1] + (row - *scroll) as f32 * crate::servers::ROW;
+                let box_ = [list[0], y, crate::servers::LIST_SIZE[0], crate::servers::ROW];
+                targets.push(json!({"kind": "button", "name": row.to_string(), "box": box_}));
+                if row == *selected {
+                    targets.push(json!({"kind": "button", "name": "selected", "box": box_}));
+                }
+            }
+            if let Some(assets) = app.assets.as_ref() {
+                for (name, at, images) in [("ok", crate::servers::OK, &assets.ok), ("cancel", crate::servers::CANCEL, &assets.cancel)] {
+                    let [x, y] = crate::offset(origin, at);
+                    targets.push(json!({"kind": "button", "name": name, "box": [x, y, images[0].size[0], images[0].size[1]]}));
+                }
+            }
+            state["targets"] = json!(targets);
+        }
+        Scene::CharSelect(select) => {
+            state["characters"] = select
+                .characters
+                .iter()
+                .map(|character| json!({"slot": character.slot, "name": character.name, "job": character.job, "level": character.base_level, "map": character.map}))
+                .collect();
+            state["selected"] = select.selected.into();
+            state["pin"] = select.pin_pad.as_ref().map_or("none", |pad| pad.kind()).into();
+            state["moving"] = select.moving.into();
+            state["targets"] = select
+                .card_boxes()
+                .into_iter()
+                .map(|(slot, area)| json!({"kind": "char_slot", "slot": slot, "box": area}))
+                .chain(select.menu.iter().flat_map(|menu| menu.entry_boxes()).map(|(label, area)| json!({"kind": "menu_item", "label": label, "box": area})))
+                .chain(select.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+                .collect();
+        }
+        Scene::CharMake(..) => {
+            state["targets"] = crate::char_make::Make::button_boxes().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})).into();
+        }
+        Scene::Game(game) => state["game"] = game_state(app, game),
+        _ => {}
+    }
+    state
+}
+
+fn game_state(app: &App, game: &Game) -> Value {
+    let target = |owner: Owner| game.hit_boxes.iter().find(|target| target.owner == owner);
+    // A unit dying or fading out has no click box, but its sprite's box while it's drawn on screen.
+    let fading = |owner: Owner| if let Owner::Unit(id) = owner { game.fading_boxes.get(&id).copied() } else { None };
+    let screen = |owner: Owner| target(owner).map(|target| target.sprite).or_else(|| fading(owner)).map(|rect| rect.map(|side| side.round() as i32));
+    let area = |owner: Owner| target(owner).map(|target| target.area.map(|side| side.round() as i32));
+    let me = game.player.cell;
+    let distance = |cell: [i32; 2]| (cell[0] - me[0]).abs().max((cell[1] - me[1]).abs());
+    // Where a cell's middle is on the screen, null off it.
+    let view = game.camera.view(crate::screen()[0] / crate::screen()[1]);
+    let cell_on_screen = |cell: [u16; 2]| cell_point(view.project(game.world.cell_position(cell.map(f32::from))), crate::screen(), Grade::Fair).ok();
+    let status = |id: u16| game.status.get(&id).copied();
+    // What circles a unit: spheres (or coins), shields, charms and their element ("water", "earth", "fire", "wind"
+    // or null), souls.
+    let orbs = |value: &mut Value, unit: Option<u32>| {
+        let orbs = game.spirits.get(&unit).copied().unwrap_or_default();
+        let (element, charms) = orbs.charms;
+        value["spirits"] = orbs.spheres.into();
+        value["shields"] = orbs.shields.into();
+        value["charms"] = charms.into();
+        value["charm"] = element.checked_sub(1).and_then(|element| crate::CHARM_NAMES.get(usize::from(element))).copied().into();
+        value["souls"] = orbs.souls.into();
+    };
+    // The action a unit plays now, and its body's frame (null without a sprite), on the drawing's clock.
+    let animation = |actor: &crate::actor::Actor| {
+        let (action, timing) = actor.animation(crate::control::now());
+        let frame =
+            actor.sprites.as_ref().and_then(|sprites| sprites.body_frame(action * 8 + usize::from(actor.direction % 8), timing)).map(|(frame, _)| frame);
+        (action, frame)
+    };
+    // A combo window's milliseconds left, on the drawing's clock (0: none).
+    let combo_ms = |unit: Option<u32>| {
+        game.combos.get(&unit).map_or(0, |(start, length)| length.saturating_sub(crate::control::now().saturating_duration_since(*start)).as_millis() as u64)
+    };
+    // The message box's OK and Cancel while a question is up.
+    let question = game.guild_asked.is_some()
+        || game.cashshop_buy_asked
+        || game.save_asked
+        || game.trade_asked.is_some()
+        || game.booking_asked.is_some()
+        || game.adopt_asked.is_some()
+        || game.queue_asked.is_some()
+        || game.memorial_asked
+        || game.package_pick.as_ref().is_some_and(|pick| pick.asked);
+    let question_buttons = app.assets.as_ref().filter(|_| question).into_iter().flat_map(|assets| {
+        let dialog = crate::dialog_position(&assets.message);
+        [("ok", crate::LEFT_BUTTON, &assets.ok), ("cancel", crate::RIGHT_BUTTON, &assets.cancel)].map(|(name, place, button)| {
+            let [x, y] = crate::offset(dialog, place);
+            json!({"kind": "button", "name": name, "box": [x, y, button[0].size[0], button[0].size[1]]})
+        })
+    });
+    // The deal-type box's Buy, Sell and Cancel.
+    let deal_buttons = app.assets.as_ref().filter(|_| game.deal_choice.is_some()).into_iter().flat_map(|assets| {
+        let dialog = game.deal_frame.position;
+        ["deal_buy", "deal_sell", "deal_cancel"].into_iter().zip(crate::DEAL_BUTTONS).zip(assets.shop_buttons()).map(move |((name, place), images)| {
+            let [x, y] = crate::offset(dialog, place);
+            json!({"kind": "button", "name": name, "box": [x, y, images[0].size[0], images[0].size[1]]})
+        })
+    });
+    // The amount box's buttons (OK and Cancel, or OK alone).
+    let amount_buttons = app.assets.as_ref().and_then(|assets| game.amount.as_ref().map(|amount| (assets, amount))).into_iter().flat_map(|(assets, amount)| {
+        let dialog = crate::dialog_position(&assets.message);
+        amount.buttons().into_iter().map(move |(place, ok)| {
+            let (name, button) = if ok { ("ok", &assets.ok) } else { ("cancel", &assets.cancel) };
+            let [x, y] = crate::offset(dialog, place);
+            json!({"kind": "button", "name": name, "box": [x, y, button[0].size[0], button[0].size[1]]})
+        })
+    });
+    // The party invitation's, at its own place.
+    let invitation_buttons = app.assets.as_ref().filter(|_| game.party_invite.is_some() || game.guild_invite.is_some()).into_iter().flat_map(|assets| {
+        let dialog = crate::party::invitation_at(crate::screen());
+        [("ok", crate::LEFT_BUTTON, &assets.ok), ("cancel", crate::RIGHT_BUTTON, &assets.cancel)].map(|(name, place, button)| {
+            let [x, y] = crate::offset(dialog, place);
+            json!({"kind": "button", "name": name, "box": [x, y, button[0].size[0], button[0].size[1]]})
+        })
+    });
+    // Hidden players are left out, unless Clairvoyance draws them as silhouettes.
+    let clairvoyance = game.status_icons.iter().any(|(id, ..)| *id == crate::actor::CLAIRVOYANCE);
+    let mut units: Vec<_> =
+        game.units.iter().filter(|(_, actor)| crate::actor::seen(actor.hide_option, false, clairvoyance) != crate::actor::Seen::Nothing).collect();
+    units.sort_by_key(|(_, actor)| distance(actor.cell));
+    let units: Vec<Value> = units
+        .into_iter()
+        .map(|(&id, actor)| {
+            let kind = match actor.kind {
+                PLAYER => json!("player"),
+                MONSTER => json!("monster"),
+                NPC => json!("npc"),
+                PET => json!("pet"),
+                HOMUNCULUS => json!("homunculus"),
+                MERCENARY => json!("mercenary"),
+                other => json!(other),
+            };
+            let mut unit = json!({"id": id, "kind": kind, "name": actor.name, "job": actor.job, "cell": actor.cell, "position": actor.position(now()), "combo_ms": combo_ms(Some(id)), "held": crate::locked_with(&game.locks, id), "cart": cart_state(actor.cart.as_ref())});
+            let (action, frame) = animation(actor);
+            unit["action"] = action.into();
+            unit["frame"] = frame.into();
+            // Its exact facing in degrees (0 south, 90 east).
+            unit["rot"] = actor.rot.round().into();
+            // Copies left behind it while a status blurs it (the quickens).
+            unit["ghosts"] = actor.ghosts.len().into();
+            // A warp's portal rings: 8 for one portal.
+            if actor.job == crate::WARP_JOB {
+                unit["portal_rings"] = game.effects.rings_on(id, crate::EF_WARPZONE2).into();
+            }
+            orbs(&mut unit, Some(id));
+            if let Some(rect) = screen(Owner::Unit(id)) {
+                unit["screen"] = json!(rect);
+                unit["area"] = json!(area(Owner::Unit(id)));
+            }
+            if let Some(hp) = game.unit_hp.get(&id) {
+                unit["hp"] = json!(hp);
+            }
+            if actor.hidden {
+                unit["hidden"] = true.into();
+            }
+            if actor.remove_at.is_some() {
+                unit["dying"] = dying(actor.vanish).into();
+            }
+            if actor.dead {
+                unit["dead"] = true.into();
+            }
+            if actor.sitting {
+                unit["sitting"] = true.into();
+            }
+            // A cast bar fills over its head.
+            if game.casts.contains_key(&Some(id)) {
+                unit["casting"] = true.into();
+            }
+            // What a player sees of it coming for them: turned their way, walking to a cell, hitting them lately.
+            if crate::actor::faces(actor.rot, actor.cell, game.player.cell) {
+                unit["facing_me"] = true.into();
+            }
+            if actor.moving() {
+                unit["moving_to"] = json!(actor.destination());
+            }
+            if let Some(ms) = actor.hit_ms_ago(game.account_id, now()) {
+                unit["attacking_me_ms"] = ms.into();
+            }
+            // How opaque it's drawn, 0 to 255 (fading in after a spawn, out when leaving).
+            unit["alpha"] = (actor.alpha(now()) * 255.0).round().into();
+            unit["tint"] = json!(crate::actor::status_tint(actor.body_state, actor.health_state));
+            unit["marks"] = json!(crate::head_marks::marks(actor.body_state, actor.health_state).iter().map(|mark| format!("{mark:?}")).collect::<Vec<_>>());
+            unit
+        })
+        .collect();
+    let ground: Vec<Value> = game
+        .ground
+        .iter()
+        .map(|(&id, item)| {
+            let name = inventory::item_name(&app.items, item.item, item.identified, 0);
+            json!({"id": id, "item": item.item, "name": name, "amount": item.amount, "cell": item.at, "screen": screen(Owner::Item(id)), "area": area(Owner::Item(id))})
+        })
+        .collect();
+    let jobs = crate::skills::tabs(&app.skill_trees, game.me.job, &game.skills);
+    let sheet = crate::skills::Sheet { trees: &app.skill_trees, jobs: &jobs, skills: &game.skills, info: &game.skill_info, points: game.skill_points() };
+    let item_of = |index: u16| game.inventory.get(index).map_or(0, |item| item.id);
+    // A party question's OK (and Cancel when it asks).
+    let party_question: Vec<(&str, [f32; 4])> = match (&app.assets, &game.question_box) {
+        (Some(assets), Some(asked)) => {
+            let dialog = crate::dialog_position(&assets.message);
+            crate::box_buttons(asked.asks())
+                .into_iter()
+                .map(|(place, yes)| {
+                    let images = if yes { &assets.ok } else { &assets.cancel };
+                    (if yes { "ok" } else { "cancel" }, [dialog[0] + place[0], dialog[1] + place[1], images[0].size[0], images[0].size[1]])
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    };
+    // The leader question's OK and Cancel, in the message box.
+    let leader_question: Vec<(&str, [f32; 4])> = match (&app.assets, game.leader_asked.is_some() || game.apply_asked) {
+        (Some(assets), true) => {
+            let dialog = crate::dialog_position(&assets.message);
+            [("ok", crate::LEFT_BUTTON, &assets.ok), ("cancel", crate::RIGHT_BUTTON, &assets.cancel)]
+                .map(|(name, place, images)| (name, [dialog[0] + place[0], dialog[1] + place[1], images[0].size[0], images[0].size[1]]))
+                .to_vec()
+        }
+        _ => Vec::new(),
+    };
+    // Whether a click in the middle of a box reaches that window, not another one over it.
+    let message = app.assets.as_ref().map_or([0.0; 2], |assets| assets.message.size);
+    let on_top = |panel: Panel, area: &[f32; 4]| {
+        let middle = [area[0] + area[2] / 2.0, area[1] + area[3] / 2.0];
+        top_named(game.menu_takes(middle), game.top_at(middle, message)) == Some(Top::Panel(panel))
+    };
+    let targets: Vec<Value> = game
+        .inventory
+        .item_boxes()
+        .into_iter()
+        .map(|(index, area)| json!({"kind": "inventory_item", "index": index, "id": item_of(index), "box": area}))
+        .chain(game.inventory.check_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.cart
+                .item_boxes()
+                .into_iter()
+                .filter_map(|(index, area)| game.cart.get(index).map(|item| json!({"kind": "button", "name": format!("cart_item:{}", item.id), "box": area}))),
+        )
+        .chain(
+            game.card_window
+                .iter()
+                .chain(&game.item_window)
+                .flat_map(|window| window.button_boxes(&app.items))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.hotkeys.slot_boxes().into_iter().map(|(slot, area)| json!({"kind": "hotkey", "slot": slot, "box": area})))
+        .chain(
+            game.skill_window
+                .skill_boxes(&sheet)
+                .into_iter()
+                .filter(|(_, area)| on_top(Panel::Skills, area))
+                .map(|(id, area)| json!({"kind": "skill", "id": id, "box": area})),
+        )
+        .chain(
+            game.skill_window
+                .tab_boxes(&sheet)
+                .into_iter()
+                .map(|(job, area)| (format!("skill_tab:{job}"), area))
+                .chain(game.skill_window.arrow_boxes(&sheet))
+                .chain(game.skill_window.up_boxes(&sheet))
+                .chain(game.skill_window.view_box().map(|area| ("skill_view".to_owned(), area)))
+                .chain(game.skill_window.button_boxes().into_iter().map(|(name, area)| (name.to_owned(), area)))
+                .filter(|(_, area)| on_top(Panel::Skills, area))
+                .chain(game.status_window.raise_boxes(&game.status).into_iter().filter(|(_, area)| on_top(Panel::Status, area)))
+                .chain(game.status_window.trait_boxes(&game.status).into_iter().filter(|(_, area)| on_top(Panel::Status, area)))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.basic_info.menu_boxes().into_iter().map(|(label, area)| json!({"kind": "menu_item", "label": label, "box": area})))
+        .chain(game.basic_info.toggle_box().map(|area| json!({"kind": "button", "name": "menu", "box": area})))
+        .chain(
+            app.assets
+                .as_ref()
+                .and_then(|assets| game.cutin.as_ref()?.close_box(&assets.cutin))
+                .map(|area| json!({"kind": "button", "name": "cutin_close", "box": area})),
+        )
+        .chain(
+            game.queue_window
+                .frame
+                .open
+                .then(|| game.queue_window.button_boxes(&app.battlegrounds, game.queued.is_some()))
+                .into_iter()
+                .flatten()
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.memorial.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.package_pick
+                .iter()
+                .flat_map(crate::package::PackagePick::button_boxes)
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.storage_log.iter().flat_map(crate::storage_log::Log::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.cart_choice
+                .iter()
+                .flat_map(crate::cart_choice::CartChoice::button_boxes)
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.cashshop.iter().flat_map(crate::cashshop::CashShop::item_boxes).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.cashshop.iter().flat_map(crate::cashshop::CashShop::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.enchant
+                .iter()
+                .flat_map(|window| window.row_boxes(&game.inventory.items))
+                .map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})),
+        )
+        .chain(
+            game.enchant
+                .iter()
+                .flat_map(|window| window.button_boxes(&game.inventory.items))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.pick.iter().flat_map(|(list, _)| list.row_boxes()).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.pick.iter().flat_map(|(list, _)| list.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.bank.iter().flat_map(crate::bank::Bank::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.bank
+                .iter()
+                .filter_map(|bank| Some(json!({"kind": "button", "name": "bank_status", "box": bank.status_box()?, "text": app.messages.get(bank.status?)}))),
+        )
+        .chain(game.refine.iter().flat_map(crate::refine::Refine::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.forge.iter().flat_map(|forge| forge.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.merge.iter().flat_map(crate::merge::Merge::cell_boxes).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.merge.iter().flat_map(crate::merge::Merge::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.menu.iter().flat_map(|menu| menu.entry_boxes()).map(|(label, area)| json!({"kind": "menu_item", "label": label, "box": area})))
+        .chain(game.pet.iter().flat_map(|_| game.pet_window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.buying_setup
+                .iter()
+                .flat_map(|setup| setup.row_boxes(&game.inventory.items))
+                .map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})),
+        )
+        .chain(game.shop.iter().flat_map(crate::shop::Shop::row_boxes).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.vend_setup.iter().flat_map(|setup| setup.row_boxes(&game.cart.items)).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(
+            game.vend_setup
+                .iter()
+                .flat_map(|setup| setup.mirror_boxes(&game.cart.items))
+                .map(|(id, area)| json!({"kind": "inventory_item", "id": id, "box": area})),
+        )
+        .chain(game.my_shop.iter().flat_map(crate::vend::MyShop::cell_boxes).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.storage.grip_box().map(|area| json!({"kind": "button", "name": "storage_resize", "box": area})))
+        .chain(app.assets.as_ref().filter(|_| game.captcha.as_ref().is_some_and(|check| check.asked.is_some())).map(|assets| {
+            let [x, y] = crate::captcha::ok_on(crate::screen());
+            json!({"kind": "button", "name": "captcha_ok", "box": [x, y, assets.ok[0].size[0], assets.ok[0].size[1]]})
+        }))
+        .chain(game.party_window.grip_box().map(|area| json!({"kind": "button", "name": "party_resize", "box": area})))
+        .chain(
+            app.assets
+                .as_ref()
+                .map(|assets| game.storage.button_boxes(&assets.storage, &app.items, (&app.messages[..], &app.card_names, &game.char_names)))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.booking
+                .iter()
+                .flat_map(crate::booking_window::BookingWindow::button_boxes)
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.skill_window.grip_box().map(|area| json!({"kind": "button", "name": "skills_resize", "box": area})))
+        .chain(
+            game.vend_setup
+                .iter()
+                .map(|setup| setup.grip_box())
+                .chain(game.my_shop.iter().map(|shop| shop.grip_box()))
+                .map(|area| json!({"kind": "button", "name": "vend_resize", "box": area})),
+        )
+        .chain(
+            game.buying_setup
+                .iter()
+                .flat_map(crate::buying::Setup::button_boxes)
+                .chain(game.my_buying_store.iter().flat_map(crate::buying::MyStore::button_boxes))
+                .chain(game.shop.iter().flat_map(crate::shop::Shop::button_boxes))
+                .chain(game.deal_confirm.iter().flat_map(crate::shop::Confirm::button_boxes))
+                .chain(game.vend_setup.iter().flat_map(crate::vend::Setup::button_boxes))
+                .chain(game.my_shop.iter().flat_map(crate::vend::MyShop::button_boxes))
+                .chain(game.sell_history.iter().flat_map(crate::vend::SellHistory::button_boxes))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.sign_rects.iter().map(|&(rect, _, kind)| {
+            let name = match kind {
+                crate::chatroom::BUYING_STORE => "buying_sign",
+                crate::chatroom::SHOP => "shop_sign",
+                _ => "room_sign",
+            };
+            json!({"kind": "button", "name": name, "box": [rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]})
+        }))
+        .chain(game.dialog_links.iter().chain(&game.chat_links).map(|(area, target)| match target {
+            crate::links::Target::Item(item) => json!({"kind": "item_link", "id": item.id, "box": area}),
+            crate::links::Target::Navi { map, .. } => json!({"kind": "navi_link", "map": map, "box": area}),
+            crate::links::Target::Place { map, cell } => json!({"kind": "place_link", "map": map, "cell": cell, "box": area}),
+            crate::links::Target::Url(address) => json!({"kind": "url_link", "address": address, "box": area}),
+            crate::links::Target::Quest(id) => json!({"kind": "quest_link", "id": id, "box": area}),
+            crate::links::Target::Tip => json!({"kind": "tip_link", "box": area}),
+            crate::links::Target::Picture(id) => json!({"kind": "item_picture", "id": id, "box": area}),
+            crate::links::Target::Emotion(id) => json!({"kind": "emotion_picture", "id": id, "box": area}),
+        }))
+        .chain(
+            // The navigation window's controls; a row comes with its words and the place it stands for.
+            game.navi_window.iter().flat_map(|window| window.button_boxes(&app.navi_tables, &app.messages)).map(|(name, area, words, place)| match place {
+                Some(place) => json!({
+                    "kind": "button", "name": name, "box": area, "text": words,
+                    "map": place.map, "cell": place.cell, "monster": place.monster, "place_kind": place.kind,
+                }),
+                None => json!({"kind": "button", "name": name, "box": area}),
+            }),
+        )
+        .chain(game.chat.settings.iter().flat_map(crate::chat::Settings::button_boxes).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.chat.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.chat.torn_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.room.iter().flat_map(|room| room.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.quest_window.button_boxes(&game.quests, &app.quest_texts).into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(std::iter::once(json!({"kind": "button", "name": "roulette", "box": crate::roulette::icon_box()})))
+        .chain(game.gold_pc.as_ref().and_then(crate::goldpc::GoldPc::area).map(|area| json!({"kind": "button", "name": "gold_pc", "box": area})))
+        .chain(game.roulette.iter().flat_map(|window| window.button_boxes(now())).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.grade
+                .iter()
+                .flat_map(|window| window.button_boxes(&game.inventory.items, game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.synthesis.iter().flat_map(|window| window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.upgrade.iter().flat_map(|window| window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            [&game.synthesis, &game.upgrade]
+                .into_iter()
+                .flatten()
+                .flat_map(|window| window.row_boxes(&game.inventory.items))
+                .map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})),
+        )
+        .chain(
+            game.reform.iter().flat_map(|window| window.row_boxes(&game.inventory.items)).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})),
+        )
+        .chain(game.reform.iter().flat_map(|window| window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.achievement_window
+                .button_boxes(&app.achievement_info, &game.achievements)
+                .into_iter()
+                .chain(game.equipment.button_boxes())
+                .chain(game.settings_window.iter().flat_map(crate::game_settings::GameSettings::button_boxes))
+                .chain(game.shortcuts_window.iter().flat_map(crate::shortcut_window::ShortcutWindow::button_boxes))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.party_window
+                .button_boxes(game.party.as_ref())
+                .into_iter()
+                .chain(game.member_windows.button_boxes(game.party.as_ref(), &crate::party::Grid::new(crate::screen())))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.inventory.tab_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.cart.tab_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": format!("cart_{name}"), "box": area})))
+        .chain(game.catalog.iter().flat_map(|catalog| catalog.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.catalog.iter().flat_map(|catalog| catalog.row_boxes()).map(|(id, area)| json!({"kind": "pick_item", "id": id, "box": area})))
+        .chain(game.ranking.iter().flat_map(|board| board.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.dressroom
+                .iter()
+                .flat_map(|room| room.button_boxes(&game.dress_lists))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.party_dialog.iter().flat_map(|dialog| dialog.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            app.assets
+                .iter()
+                .flat_map(|assets| game.dialog_button_boxes(assets.ok[0].size, assets.cancel[0].size))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.talks.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.friend_setup.iter().flat_map(|setup| setup.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.block_list.iter().flat_map(|list| list.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.away_prompt.iter().flat_map(|prompt| prompt.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.chat.list_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(leader_question.into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(party_question.into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.reason_box
+                .iter()
+                .flat_map(|reason| reason.button_boxes(crate::screen()))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.mercenary.iter().flat_map(|_| game.mercenary_window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.guild
+                .iter()
+                .flat_map(|guild| game.guild_window.relation_boxes(guild))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.guild.iter().flat_map(|guild| game.guild_window.button_boxes(guild)).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.guild_companion.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.mail.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.trade.iter().flat_map(|trade| trade.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.card_view.iter().map(|view| json!({"kind": "button", "name": "card_picture_close", "box": view.close_box()})))
+        .chain(question_buttons)
+        .chain(amount_buttons)
+        .chain(game.slot.iter().map(|_| {
+            let [x, y] = crate::taming::place(crate::screen());
+            json!({"kind": "button", "name": "slot_machine", "box": [x, y, crate::taming::SIZE[0], crate::taming::SIZE[1]]})
+        }))
+        .chain(deal_buttons)
+        .chain(invitation_buttons)
+        .chain(
+            ["plus", "minus", "mini", "viewon"]
+                .into_iter()
+                .filter(|_| game.minimap_shown())
+                .map(|name| json!({"kind": "button", "name": format!("minimap_{name}"), "box": crate::minimap::button_box(name)})),
+        )
+        .chain({
+            let quests = game.big_minimap_quests();
+            let pins = crate::minimap_window::Pins { player: game.player.cell, party: &[], guild: &[], boss: None, quests: &quests };
+            let size = [game.world.gat.width as u32, game.world.gat.height as u32];
+            game.minimap_window.button_boxes(size, &pins).into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area}))
+        })
+        .chain(game.hotkeys.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(game.level_ups.button_boxes().into_iter().map(|(name, area)| json!({"kind": "button", "name": name, "box": area})))
+        .chain(
+            game.skill_description
+                .iter()
+                .filter_map(|window| window.close_box())
+                .map(|area| json!({"kind": "button", "name": "skill_description_close", "box": area})),
+        )
+        .chain(game.skill_description.iter().filter_map(|window| window.delay_box()).map(|area| json!({"kind": "button", "name": "skill_delay", "box": area})))
+        .chain(
+            game.mercenary
+                .iter()
+                .flat_map(|_| game.mercenary_skill_list.skill_boxes(&game.mercenary_skills))
+                .map(|(id, area)| json!({"kind": "skill", "id": id, "box": area})),
+        )
+        .chain(
+            game.homunculus.iter().flat_map(|_| game.homunculus_window.button_boxes()).map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.homunculus
+                .iter()
+                .flat_map(|_| game.homunculus_skill_list.skill_boxes(&game.homunculus_skills))
+                .map(|(id, area)| json!({"kind": "skill", "id": id, "box": area})),
+        )
+        .chain(
+            game.homunculus
+                .iter()
+                .flat_map(|homunculus| game.homunculus_skill_list.raise_boxes(&game.homunculus_skills, homunculus.skill_points))
+                .map(|(id, area)| json!({"kind": "button", "name": format!("raise:{id}"), "box": area})),
+        )
+        .chain(
+            game.homunculus
+                .iter()
+                .flat_map(|_| game.homunculus_skill_list.button_boxes("homunculus_skills"))
+                .chain(game.mercenary.iter().flat_map(|_| game.mercenary_skill_list.button_boxes("mercenary_skills")))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.attendance
+                .iter()
+                .flat_map(|window| window.button_boxes(&app.attendance))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.stylist
+                .iter()
+                .flat_map(|window| window.button_boxes(&app.styling_shop))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(
+            game.escape
+                .iter()
+                .flat_map(|menu| menu.button_boxes(game.can_resurrect()))
+                .map(|(name, area)| json!({"kind": "button", "name": name, "box": area})),
+        )
+        .chain(game.special_popup.iter().map(|_| {
+            let at = crate::special_popup::place();
+            json!({"kind": "button", "name": "special_popup", "box": [at[0], at[1], crate::special_popup::SIZE[0], crate::special_popup::SIZE[1]]})
+        }))
+        .collect();
+    // Newest first: the order Esc closes them in.
+    // The windows open: those Esc closes, in its order, then the ones it leaves up.
+    let mut windows = game.esc_names();
+    windows.extend(
+        [
+            ("Hotkeys", game.hotkeys.frame.open),
+            ("QuickSlot", game.hotkeys.quick_window.open),
+            ("BasicInfo", game.basic_info.frame.open),
+            ("Shop", game.shop.as_ref().is_some_and(crate::shop::Shop::plain)),
+        ]
+        .into_iter()
+        .filter(|(_, open)| *open)
+        .map(|(name, _)| name.to_owned()),
+    );
+    windows.extend(game.member_windows.names(game.party.as_ref()));
+    let dialog = game.dialog.as_ref().map(|dialog| {
+        json!({
+            "npc": dialog.npc,
+            "talking": dialog.talking,
+            "said": dialog.said,
+            "lines": dialog.lines,
+            "pointed_item": match crate::links::at(&game.dialog_links, app.cursor) {
+                Some(crate::links::Target::Picture(id)) if app.items.contains_key(id) => Some(crate::inventory::item_name(&app.items, *id, true, 0)),
+                _ => None,
+            },
+            "button": match dialog.button {
+                DialogButton::Next => "next",
+                DialogButton::Close => "close",
+                DialogButton::None => "none",
+            },
+            "menu": dialog.menu.as_ref().map(|menu| json!({"items": menu.items, "selected": menu.selected, "first": menu.first, "position": menu.frame(&game.npc_menu).position})),
+            "input": dialog.input.as_ref().map(|input| json!({"text": input.text, "typed": input.typed, "position": input.frame.position})),
+            "position": game.say.frame.position,
+            "size": game.say.size(),
+            "scroll": game.say.scroll,
+            // Each line drawn: its text and its box on screen, cut to the panel.
+            "drawn": game.say.drawn.iter().map(|(text, area)| json!({"text": text, "box": area})).collect::<Vec<_>>(),
+        })
+    });
+    // The NPC's picture: its window's corner and height, its type and file.
+    let cutin_window = game.cutin.as_ref().map(|cutin| json!({"at": cutin.frame.position, "height": cutin.height(), "kind": cutin.kind, "name": cutin.name}));
+    let now = Instant::now();
+    let mut state = json!({
+        "map": game.map,
+        // The weather effect IDs showing.
+        "weather": game.weather.ids(),
+        // An NPC's picture is up.
+        "cutin": game.cutin.is_some(),
+        "player": {
+            "name": game.me.name,
+            "account_id": game.account_id,
+            "char_id": game.me.id,
+            "job": game.me.job,
+            "cell": game.player.cell,
+            // Where it's drawn, in cells: between two while walking.
+            "position": game.player.position(self::now()),
+            // When that position was drawn: the last frame, in whole ms.
+            "drawn_ms": crate::whole_ms(game.last_frame),
+            "direction": game.player.direction,
+            // The head against the body: 0 straight, 1 and 2 turned to either side.
+            "head_direction": game.player.head_direction,
+            "moving": game.player.moving(),
+            // On a mount: the mounted body (Peco Peco, dragon, warg, Madogear) or the all-jobs mount.
+            "riding": crate::actor::rides(game.player.option) || game.riding,
+            // The falcon (25 above the ground) and the warg (on the ground), or null. Riding leaves the warg null.
+            "falcon": companion_state(game.player.falcon.as_ref(), game.player.falcon.as_ref().map_or(0.0, |falcon| falcon.lift)),
+            // Copies left behind while a status blurs the player (the quickens).
+            "ghosts": game.player.ghosts.len(),
+            "warg": companion_state(game.player.warg.as_ref(), 0.0),
+            "cart": cart_state(game.player.cart.as_ref()),
+            "casting": game.casts.contains_key(&None),
+            // The attack asked for with the mouse (null: none), kept up or only while held.
+            "attack": game.attack.map(|attack| json!({"target": attack.target, "continuous": attack.continuous})),
+            "no_ctrl": game.no_ctrl,
+            "skill_fail": game.skill_fail,
+            // The skill being aimed (null: none), and the last one sent by aiming, at a cell or a unit.
+            "aiming": game.targeting.map(|(skill, level)| json!({"skill": skill, "level": level})),
+            "skill_sent": game.skill_sent.map(|(skill, level, target)| match target {
+                crate::SkillTarget::Cell(cell) => json!({"skill": skill, "level": level, "cell": cell}),
+                crate::SkillTarget::Unit(unit) => json!({"skill": skill, "level": level, "unit": unit}),
+            }),
+            // The last cell a mouse walk went to, and how many have gone out.
+            "walk_goal": game.walk_goal,
+            // Skill levels put in the skill window but not sent, in the order they'd go.
+            "skill_pending": game.skill_window.pending(),
+            "skill_list": game.skill_window.simple(),
+            // Where the cursor is drawn (the middle of what it snapped to, else the pointer).
+            "cursor_at": game.cursor_at,
+            "cursor_snapped": game.cursor_at != app.cursor,
+            // The cell drawn under the pointer (null past the map's edge).
+            "ground_cell": game.ground_cell(app.cursor),
+            "walks": game.walks,
+            "combo_ms": combo_ms(None),
+            // How many units Blade Stop or Cursed Circle locks the player with.
+            "held": crate::locked_with(&game.locks, game.account_id),
+            "action": animation(&game.player).0,
+            "frame": animation(&game.player).1,
+            "hp": status(net::STATUS_HP),
+            "max_hp": status(net::STATUS_MAX_HP),
+            "sp": status(net::STATUS_SP),
+            "max_sp": status(net::STATUS_MAX_SP),
+            "exp": status(net::STATUS_BASE_EXP),
+            "next_exp": status(net::STATUS_NEXT_BASE_EXP),
+            "base_level": status(net::STATUS_BASE_LEVEL),
+            "job_level": status(net::STATUS_JOB_LEVEL),
+            "zeny": status(net::STATUS_ZENY),
+            // Weight and its limit as the Basic Information window shows them (the server's are in tenths), and
+            // whether that line is red.
+            "weight": status(net::STATUS_WEIGHT).map(|weight| weight / 10),
+            "max_weight": status(net::STATUS_MAX_WEIGHT).map(|limit| limit / 10),
+            "overweight": overweight(&game.status, game.overweight),
+            "base_exp": status(net::STATUS_BASE_EXP),
+            "base_exp_next": status(net::STATUS_NEXT_BASE_EXP),
+            "job_exp": status(net::STATUS_JOB_EXP),
+            "job_exp_next": status(net::STATUS_NEXT_JOB_EXP),
+            "status_points": status(net::STATUS_POINTS),
+            "skill_points": game.skill_points(),
+            "stats": stats_state(&game.status),
+            // Atk to ASPD as the status window shows them.
+            "substats": substats_state(&game.status),
+            // A 4th job's traits, trait points and AP.
+            "traits": json!({
+                "pow": status(219), "sta": status(220), "wis": status(221), "spl": status(222), "con": status(223), "crt": status(224),
+                "points": status(231), "ap": status(232), "max_ap": status(233),
+            }),
+            "skills": skills_state(&game.skills, &app.skill_info),
+            "screen": screen(Owner::Player),
+            "look": player_look(game.player.look.as_ref().unwrap_or(&Look::default())),
+        },
+        "windows": windows,
+        // Every window from the bottom up, as drawn: the last opened or pressed on top.
+        "front": game.front.windows().iter().map(|&top| top.name()).collect::<Vec<_>>(),
+        // F11's stage, and the windows it hid (not drawn, not pressed), by name.
+        "close_tabs": json!({"stage": game.close_tabs.stage, "hidden": game.close_tabs.hidden.iter().map(|&top| top.name()).collect::<std::collections::BTreeSet<_>>()}),
+        // An open shop's deal: what's in it and how many.
+        "shop_deal": game.shop.as_ref().map(|shop| shop.deal.iter().map(|&(offer, amount)| json!({"item": shop.offers[offer].item, "amount": amount})).collect::<Vec<_>>()),
+        // Its goods by item ID with the number on their icons (selling to an NPC: what's left to sell), and the
+        // "Toggle Item Amount." box.
+        "shop_goods": game.shop.as_ref().map(|shop| shop.goods().into_iter().map(|(item, count)| (item.to_string(), json!(count))).collect::<serde_json::Map<_, _>>()),
+        // The price of one, by item ID, as the rows show it: what the shop charges, or pays (with a discount or
+        // Overcharge), for every offer, those all in the deal too.
+        "shop_prices": game.shop.as_ref().map(|shop| shop.prices().into_iter().map(|(item, price)| (item.to_string(), json!(price))).collect::<serde_json::Map<_, _>>()),
+        "shop_whole": game.shop.as_ref().map(|shop| shop.whole),
+        // An NPC point shop: the points and free points held (null for any other shop).
+        "shop_points": game.shop.as_ref().and_then(|shop| shop.points.as_ref()).map(|held| json!({"points": held.points, "free": held.free})),
+        // The windows Esc closes, in the order it closes them (newest first).
+        "esc_order": game.esc_order.iter().map(|id| id.name()).collect::<Vec<_>>(),
+        // The game menu's buttons, when it is open (null when it isn't). `windows` names it GameMenu.
+        "escape": game.escape.as_ref().map(|menu| menu.choices(game.can_resurrect()).into_iter().map(|choice| choice.button()).collect::<Vec<_>>()),
+        "save_asked": game.save_asked,
+        // What a test can click by name instead of by pixels: inventory items (index and item), hotkey slots, skill
+        // boxes, pick list rows, menu choices and window buttons (by name), each with its box on screen.
+        "targets": targets,
+        // What's carried: index, item, its whole name as the inventory's name box shows it, how many, identified, worn
+        // where (0: not worn).
+        "inventory": game.inventory.items.iter().map(|item| json!({"index": item.index, "id": item.id, "name": inventory::full_name(&app.items, &app.card_names, &app.messages, &game.char_names, item, true), "amount": item.amount, "identified": item.identified, "worn": item.worn, "refine": item.refine, "grade": item.grade, "cards": item.cards, "broken": item.broken, "bind": item.bind, "expires": item.expires, "switch": item.switch, "favorite": item.favorite, "options": item.options.iter().map(|option| [i32::from(option.id), i32::from(option.value), i32::from(option.param)]).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        // The hotkey bar, slot by slot: null, or what it holds (a skill's count is its level; an item's is 0).
+        "hotkeys": game.hotkeys.keys.iter().map(|key| key.map(|key| json!({"skill": key.skill, "id": key.id, "count": key.count}))).collect::<Vec<_>>(),
+        // The hotbar showing: 0 (hotbar 1) or 1.
+        "hotkey_tab": game.hotkeys.tab(),
+        // Each bar's row rotation (hotbar 1, hotbar 2).
+        "hotkey_rotations": game.hotkeys.rotations(),
+        // The quick slot window's place, null while the Quick Slots switch is off.
+        "quick_slot": game.hotkeys.quick_window.open.then_some(game.hotkeys.quick_window.position),
+        "hotkey_position": game.hotkeys.frame.position,
+        // Bound shortcuts: action name to the chord ("Alt+V", "F1"). Unbound rows are left out.
+        "shortcuts": app.keybinds.labels(),
+        "dialog": dialog,
+        // Achievements: whether each is done and its reward taken; the title worn (0: none).
+        "achievements": game.achievements.iter().map(|(id, achievement)| (id.to_string(), json!({"completed": achievement.completed, "rewarded": achievement.rewarded}))).collect::<serde_json::Map<_, _>>(),
+        "title": game.equipment.title,
+        // Skills blocked after use: milliseconds left by skill ID, on the drawing's clock (still while a shot pauses it).
+        "cooldowns": game.cooldowns.blocked(crate::control::now()).map(|(skill, left)| (skill.to_string(), json!(left.as_millis() as u64))).collect::<serde_json::Map<_, _>>(),
+        // Kills' [base, job] exp floating over where they died, oldest first (Extras > Kill exp draws them);
+        // finished ones stay until the next death.
+        "exp_shown": game.exp_shown.shown.iter().map(|&(_, _, base, job)| [base, job]).collect::<Vec<_>>(),
+        // The Gold PC Cafe box (null until the server's first count): shown, mode, points and the time it reads.
+        "gold_pc": game.gold_pc.as_ref().map(|window| json!({"shown": window.shown, "mode": window.mode, "points": window.points, "time": window.time_text(crate::control::now())})),
+        // The Lucky Roulette: points, bonus, prizes known, the wheel spinning, the prize waiting (or null).
+        "roulette": game.roulette.as_ref().map(|window| {
+            let now = crate::control::now();
+            let [gold, silver, bronze] = window.points;
+            let prize = window.shown_prize(now).map(|(row, column)| json!({"row": row, "column": column, "item": window.item_at((row, column))}));
+            json!({"gold": gold, "silver": silver, "bronze": bronze, "bonus": window.bonus, "prizes": window.prizes.len(), "spinning": window.spinning(now), "prize": prize})
+        }),
+        // Sense's window (null when closed), and the boss the Convex Mirror shows (null when none).
+        // The player's guild (null without one): its allies' and antagonists' names.
+        "guild": game.guild.as_ref().map(|guild| {
+            let names = |antagonist: bool| guild.relations.iter().filter(|relation| relation.antagonist == antagonist).map(|relation| relation.name.as_str()).collect::<Vec<_>>();
+            // Positions by ID and members by name, so a scenario can name one in a path.
+            let positions: serde_json::Map<String, Value> = guild
+                .position_info
+                .iter()
+                .map(|position| (position.id.to_string(), json!({"title": guild.title(position.id), "mode": position.mode, "tax": position.tax})))
+                .collect();
+            let members: serde_json::Map<String, Value> = guild.members.iter().map(|member| (member.name.clone(), json!(member.position))).collect();
+            json!({
+                "id": guild.id,
+                "name": guild.name,
+                "master": guild.master,
+                "allies": names(false),
+                "antagonists": names(true),
+                "positions": positions,
+                "members": members,
+                "skill_points": guild.skill_points,
+                "castles": crate::guild::castle_names(&guild.castles, &app.agit_names),
+                "skills": guild.skills.iter().map(|skill| (skill.id.to_string(), json!(skill.level))).collect::<serde_json::Map<String, Value>>(),
+            })
+        }),
+        // The tags under the names of players in view (and the player's own), where known.
+        "name_tags": game
+            .name_tags
+            .iter()
+            .filter_map(|(id, tag)| {
+                let name = if *id == game.account_id { Some(&game.me.name) } else { game.units.get(id).map(|actor| &actor.name) };
+                name.map(|name| (name.clone(), json!({"party": tag.party, "guild": tag.guild, "position": tag.position})))
+            })
+            .collect::<serde_json::Map<String, Value>>(),
+        // A pick list (identify, card, making, spells, eggs): where it is and how many rows it has.
+        "pick_list": game.pick.as_ref().map(|(list, _)| json!({"position": list.frame.position, "rows": list.items.len()})),
+        // The item merge window: how many stacks (`rows`) and their indexes in its order, the checked ones' indexes,
+        // its columns, rows and first row shown, and where it is.
+        "merge": game.merge.as_ref().map(|merge| {
+            let [columns, rows, first] = merge.grid();
+            json!({"rows": merge.stacks.len(), "listed": merge.stacks.iter().map(|item| item.index).collect::<Vec<_>>(), "picked": merge.picked(),
+                "grid": [columns, rows], "first": first, "position": merge.frame.position})
+        }),
+        "monster_info": game.monster_window.as_ref().map(|window| {
+            let info = &window.info;
+            json!({"class": info.class, "level": info.level, "hp": info.hp, "size": info.size, "race": info.race, "element": info.element})
+        }),
+        "boss": game.boss.as_ref().map(|(name, cell)| json!({"name": name, "cell": cell})),
+        // What Talkie Boxes are saying now.
+        "talkie": game.talkie_spots.keys().filter_map(|id| game.speech.get(&Some(*id)).map(|(text, ..)| text.clone())).collect::<Vec<_>>(),
+        // A taming item waiting for its monster.
+        "capturing": game.capturing,
+        "aimed_skill": game.targeting.map(|(id, level)| json!({"id": id, "level": level, "name": app.skill_info.get(&id).map(|info| info.name.as_str())})),
+        "units": units,
+        // The player's pet as the server last told it, or null.
+        "party": game.party.as_ref().map(|party| {
+            let leader = party.members.iter().find(|member| member.info.leader).map(|member| member.info.name.clone());
+            json!({
+                "name": party.name,
+                "leader": leader,
+                "members": party.members.iter().map(|member| member.info.name.clone()).collect::<Vec<_>>(),
+                // Members whose last party HP (0x080E) is under their max, so a scenario can see a hit land.
+                "wounded": party
+                    .members
+                    .iter()
+                    .filter(|member| member.hp.is_some_and(|[hp, max]| hp < max))
+                    .map(|member| member.info.name.clone())
+                    .collect::<Vec<_>>(),
+                "exp_shared": party.exp_shared,
+                "pickup_shared": party.pickup_shared,
+                "item_shared": party.item_shared,
+            })
+        }),
+        "refusing_party": game.refusing_party,
+        // The players in sight a plain click's cursor marks as enemies.
+        "enemies": game
+            .units
+            .iter()
+            .filter(|&(&id, actor)| actor.kind == PLAYER && game.opponent(id).is_some_and(|other| game.side().attack_cursor(&other, false, false)))
+            .map(|(_, actor)| actor.name.clone())
+            .collect::<Vec<_>>(),
+        // Seconds held at first place while the clock shows, else null.
+        "first_place_seconds": game.first_since.filter(|_| game.pvp_rank.is_some_and(|(_, players)| players > 1)).map(|since| crate::control::now().saturating_duration_since(since).as_secs()),
+        "top_rank_auras": game.units.iter().filter(|(id, _)| game.top_ten.contains(id)).map(|(_, actor)| actor.name.clone())
+            .chain(game.top_ten.contains(&game.account_id).then(|| game.me.name.clone())).collect::<Vec<_>>(),
+        "dressroom": game.dressroom.as_ref().map(|room| {
+            let look = room.look(&crate::character_look(&game.me), &game.dress_lists);
+            json!({"hair": look.hair, "hair_color": look.hair_color, "clothes_color": look.clothes_color, "tab": room.tab, "direction": room.direction})
+        }),
+        "head_emblems": game.head_emblems.iter().map(|(name, guild, area)| json!({"name": name, "guild": guild, "box": area})).collect::<Vec<_>>(),
+        // The bars under units: by whose ("player", "homunculus", "mercenary", "elemental", "pet", else the unit ID), the
+        // box and each row's fill (null when its maximum isn't known).
+        "bars": game.bars_drawn.iter().map(|(whose, area, fills)| (whose.clone(), json!({"box": area, "fills": fills}))).collect::<serde_json::Map<_, _>>(),
+        // Whose bars, in the order they're drawn: a later one covers an earlier one.
+        "bar_order": game.bars_drawn.iter().map(|(whose, ..)| whose.clone()).collect::<Vec<_>>(),
+        // Who has the MVP sprite over their head now.
+        "mvp_sprites": game.mvps.keys().map(|unit| unit.map_or(game.me.name.clone(), |id| game.units.get(&id).map(|actor| actor.name.clone()).unwrap_or_default())).collect::<Vec<_>>(),
+        "map_property": game.map_property.map(|(property, flags)| json!({"type": property, "flags": flags})),
+        "map_type": game.map_type,
+        // The PvP counter as it shows (rank, players), or null.
+        "pvp_rank": game.pvp_rank.filter(|_| game.map_property.is_some_and(|(_, flags)| flags & net::MAP_COUNT_PK != 0)).map(|(rank, players)| [rank, players]),
+        // The texts in the announcement bar, oldest first.
+        "announcements": game.announcements.texts(),
+        "mercenary": game.mercenary.as_ref().map(|hired| json!({"id": hired.id, "job": game.units.get(&hired.id).map(|actor| actor.job), "name": hired.name, "level": hired.level, "hp": hired.hp, "loyalty": hired.loyalty, "summons": hired.summons, "kills": hired.kills, "following": game.steering.following, "order": game.steering.order.map(|order| format!("{order:?}"))})),
+        "homunculus": game.homunculus.as_ref().map(|homunculus| homunculus_state(homunculus, game.homunculus_id, game.homunculus_steering.following)),
+        "pet": game.pet.as_ref().map(|pet| json!({"id": game.pet_id, "name": pet.name, "level": pet.level, "hunger": pet.hunger, "intimacy": pet.intimacy, "accessory": pet.accessory, "renamed": pet.renamed})),
+        "ground_items": ground,
+        // The world objects running (`world_fx`): how many copies of each id.
+        "world_objects": game.effects.world_object_counts(),
+        // The STR world effects running: how many copies of each id.
+        "world_strs": game.effects.world_str_counts(),
+        "inventory_items": game.inventory.items.len(),
+        "skills": game.skills.len(),
+        "status_icons": game.status_icons.iter().map(|(id, _, ends)| json!({"id": id, "left_ms": ends.map(|end| end.saturating_duration_since(now).as_millis() as u64)})).collect::<Vec<_>>(),
+        // The icons as drawn down the right: the priority passes' order.
+        "status_icons_drawn": crate::status_tip::placed(&game.status_icons.iter().map(|&(id, ..)| (id, ())).collect::<Vec<_>>(), |id| app.status_icon_files.get(&id).map(|(priority, _)| *priority))
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect::<Vec<_>>(),
+        // Where the camera is steered to: the turn (within a circle) and tilt in degrees, the distance in world units.
+        "camera": json!({
+            "yaw": game.camera_goal.yaw.rem_euclid(360.0).round(),
+            "pitch": game.camera_goal.pitch.round(),
+            "distance": (f64::from(game.camera_goal.distance()) * 10.0).round() / 10.0,
+            "indoor": game.camera_goal.indoor,
+            "shaking": game.camera_goal.shaking,
+        }),
+        // What the mouse cursor shows.
+        "cursor": format!("{:?}", app.cursor_look.kind()),
+        "chat": game.chat.lines.iter().rev().take(5).rev().map(|(text, ..)| text.as_str()).collect::<Vec<_>>(),
+        // The chat window: the tab shown, each tab's last lines, where typed lines go, the lock.
+        "chat_tab": game.chat.tab,
+        // The hovered player's name block: its lines and its emblem's box, or null.
+        "hover_name": game.hover_block.as_ref().map(|(lines, emblem)| json!({"lines": lines, "emblem": emblem})),
+        "show_emblems": game.show_emblems,
+        // The name in the chat's whisper box.
+        "whisper_name": game.chat.whisper,
+        "chat_tabs": (0..game.chat.tabs.len()).map(|tab| game.chat.tab_lines(tab).iter().rev().take(5).rev().map(|(text, ..)| text.clone()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "chat_tab_names": game.chat.tabs.iter().map(|tab| tab.label.text(&app.messages)).collect::<Vec<_>>(),
+        // The tabs torn off into windows: each one's name, place and last lines; the name being typed for a tab.
+        "chat_torn": game.chat.torn.iter().map(|window| json!({
+            "name": window.tab.label.text(&app.messages),
+            "box": window.rect(),
+            "lines": window.tab_lines().iter().rev().take(5).rev().map(|(text, ..)| text.clone()).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+        "chat_send_to": format!("{:?}", game.chat.send_to),
+        // The last chat line's kind (its colour says so on screen): "party", "public", "guild"...
+        "chat_last_kind": game.chat.lines.last().map(|(_, _, kind)| kind.name()),
+        "chat_locked": game.chat.locked,
+        "chat_corner": game.chat.corner_moved(),
+        "cashshop_at": game.cashshop.as_ref().map(|shop| shop.frame.position),
+        "chat_input": game.chat.input,
+        // The shown tab's log: how many rows it keeps, its first and last, how far it is scrolled back; the whisper
+        // name box and its list.
+        "chat_log_rows": game.chat.tab_lines(game.chat.tab).len(),
+        "chat_log_first": game.chat.tab_lines(game.chat.tab).first().map(|(text, ..)| text.clone()),
+        "chat_log_last": game.chat.tab_lines(game.chat.tab).iter().rev().take(2).rev().map(|(text, ..)| text.clone()).collect::<Vec<_>>(),
+        "chat_scroll": game.chat.scroll(),
+        "chat_whisper": game.chat.whisper,
+        "chat_names": game.chat.recent,
+        "block_names": game.block_list.as_ref().map(|list| list.names().to_vec()).unwrap_or_default(),
+        "whisper_open": json!({"friends": game.whisper_open.friends, "strangers": game.whisper_open.strangers}),
+        "chat_line_open": game.chat_mode.chat_line_open(),
+        // Which chat box has the caret, "name" (whisper) or "message"; null while the line is closed in battle mode.
+        "chat_focus": game.chat_mode.chat_line_open().then(|| game.chat.focus()),
+        // Battle mode's icon: null out of battle mode, else whether the line is open.
+        "chat_mode_icon": game.chat_mode.icon(),
+        // The basic info window: where it is, whether it's minimised, and the job name it shows.
+        "basic_info": json!({"position": game.basic_info.frame.position, "width": game.basic_info.width, "minimized": game.basic_info.frame.minimized, "job_name": app.pc_job_names.get(&game.me.job)}),
+        // The attendance check, when open: the days attended, whether today's reward waits, and the days left.
+        "attendance": game.attendance.as_ref().map(|window| json!({"claimed": window.claimed, "claimable": window.claimable, "days_left": window.days_left()})),
+        // The chat room the player is in: its title and who owns it.
+        "room": game.room.as_ref().map(|room| json!({
+            "title": room.sign.title,
+            "owner": room.members.iter().find(|(_, owner)| *owner).map(|(name, _)| name.clone()),
+            "members": room.members.len(),
+            "size": room.size,
+        })),
+        // The navigation under way: where to, how long the trail on this map is and its cells from where it was made,
+        // how many arrows are on the ground in sight, and the marker's cell when that is.
+        "navigation": game.navigation.as_ref().map(|active| json!({
+            "map": active.target.map,
+            "cell": active.target.cell,
+            "monster": active.target.monster,
+            "trail": active.trail.len(),
+            "trail_cells": active.trail,
+            "arrows": crate::navigation::arrows(&active.trail, game.player.cell, 0).len(),
+            "marker": crate::navigation::marker(&active.trail, game.player.cell),
+        })),
+        // The navigation window (null: it's closed): what's typed, the type box, how many rows it found, the row and the
+        // place picked, the service box, the lists' first rows, where it stands.
+        "navi_window": game.navi_window.as_ref().map(|window| json!({
+            "text": window.text, "typing": window.typing, "filter": window.filter, "rows": window.rows.len(), "row": window.row,
+            "member": window.member, "service": window.service, "first": window.first, "position": window.frame.position,
+            "route": window.routing(), "mini": window.mini, "auto_mini": window.auto_mini, "size": window.size(),
+            "sharing": window.sharing.is_some(),
+            "lines": window.lines.iter().map(|(line, ..)| line).collect::<Vec<_>>(), "figure": window.has_figure(),
+            "sides": window.sides.iter().map(|side| side.as_ref().map(|frame| frame.position)).collect::<Vec<_>>(),
+        })),
+        // Reputation points by reputation type.
+        "reputation": game.reputation.iter().map(|(kind, points)| (kind.to_string(), json!(points))).collect::<serde_json::Map<_, _>>(),
+        // The item information window's item, if it's open.
+        "item_window": game.item_window.as_ref().map(|window| window.shown.item),
+        // The magic squares under ground casts: the target cell, the width in cells and where the cell is on the screen.
+        "cast_squares": game.cast_squares.values().map(|square| json!({"cell": square.cell, "width": square.width, "point": cell_on_screen(square.cell)})).collect::<Vec<_>>(),
+        // The red cells casts will hit: the caster's cell in the middle, the cells across and down, and that cell on the screen.
+        "skill_areas": game.skill_areas.iter().map(|area| json!({"cell": area.cell, "size": area.size, "point": cell_on_screen(area.cell)})).collect::<Vec<_>>(),
+        // How many units show each status mark (the player too).
+        "marks": std::iter::once(&game.player).chain(game.units.values()).flat_map(|actor| crate::head_marks::marks(actor.body_state, actor.health_state)).fold(
+            serde_json::Map::new(),
+            |mut counts, mark| {
+                let count = counts.get(&format!("{mark:?}")).and_then(serde_json::Value::as_u64).unwrap_or(0);
+                counts.insert(format!("{mark:?}"), json!(count + 1));
+                counts
+            }
+        ),
+        // The boards over heads by kind (room, shop, buying): [x, y, width, height].
+        "signs": game.sign_rects.iter().map(|&(rect, _, kind)| {
+            let name = match kind {
+                crate::chatroom::SHOP => "shop",
+                crate::chatroom::BUYING_STORE => "buying",
+                _ => "room",
+            };
+            (name.to_owned(), json!([rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]]))
+        }).collect::<serde_json::Map<_, _>>(),
+        "chat_height": game.chat.height(),
+    });
+    // The special popup's id, or null.
+    state["special_popup"] = json!(game.special_popup);
+    // The effects' live lists by size: one that only grows is a leak.
+    state["effects_alive"] = game.effects.counts();
+    // The blind overlay's age in 16 ms ticks (0 while off). The fade holds at 255.
+    state["blind"] = json!(game.blind.ticks(crate::control::now()));
+    // The scene tint in thousandths, and whether dusk is on.
+    state["tint"] = json!(crate::world::tint_milli(game.scene.tint()));
+    state["dusk"] = json!(u8::from(game.scene.dusk()));
+    // The ground cursor (Alt+Home): on or off, and the cell its square is on.
+    state["ground_cursor"] = json!({"on": game.ground_cursor, "cell": game.ground_mark});
+    // The party window's size mode and size.
+    // The guild window's members page: the names in the order shown, the column sorted by, online first.
+    state["guild_window"] = json!({
+        "order": game.guild.as_ref().map(|guild| {
+            crate::guild::member_order(&guild.members, game.guild_window.sort, game.guild_window.online_first)
+                .into_iter()
+                .map(|index| guild.members[index].name.clone())
+                .collect::<Vec<_>>()
+        }),
+        "sort": game.guild_window.sort,
+        "online_first": game.guild_window.online_first,
+    });
+    state["party_window"] = json!({"mode": game.party_window.mode, "size": game.party_window.size(), "locked": game.party_window.locked});
+    // The small party windows: each member's window's top left.
+    state["small_windows"] = game
+        .member_windows
+        .button_boxes(game.party.as_ref(), &crate::party::Grid::new(crate::screen()))
+        .into_iter()
+        .filter_map(|(name, [x, y, ..])| Some((name.strip_prefix("party_hp:")?.to_owned(), json!([x, y]))))
+        .collect::<serde_json::Map<String, Value>>()
+        .into();
+    // The party booking board: the posts found (their leaders' names), its last line, and who asks to join us.
+    state["booking"] = game
+        .booking
+        .as_ref()
+        .map(|window| json!({"posts": window.posts.iter().map(|post| post.name.clone()).collect::<Vec<_>>(), "status": window.status}))
+        .into();
+    state["booking_asked"] = game.booking_asked.as_ref().map(|(_, _, name, ..)| name.clone()).into();
+    // The memorial dungeon, or null when there isn't one. Seconds left are until each Unix deadline.
+    let unix = crate::memorial::unix_now();
+    state["instance"] = game
+        .memorial
+        .instance
+        .as_ref()
+        .map(|instance| {
+            json!({
+                "name": instance.name,
+                "place": instance.place,
+                "time_left": instance.time_limit.map(|deadline| crate::memorial::seconds_left(deadline, unix)),
+                "idle_left": instance.idle_limit.map(|deadline| crate::memorial::seconds_left(deadline, unix)),
+            })
+        })
+        .into();
+    // The RSM 2 model instances standing on the map.
+    state["rsm2_models"] = game.world.rsm_2_models.into();
+    state["rsm2_moving"] = game.world.rsm_2_moving().into();
+    state["rsm1_moving"] = game.world.rsm_1_moving().into();
+    // The map's effect objects on timers, and how many times they've fired.
+    state["map_effect_timers"] = game.world.map_effects.timers.len().into();
+    state["map_effects_fired"] = game.world.map_effects.fired.into();
+    state["map_effect_fired_ms_ago"] = game.world.map_effects.last_fired.map(|at| crate::whole_ms(self::now()).saturating_sub(at)).into();
+    // The sky's puffs and clouds, and how many show now.
+    state["sky_puffs"] = game.sky.puffs.len().into();
+    state["sky_shown"] = game.sky.puffs.iter().filter(|puff| puff.alpha > 0.0).count().into();
+    // The way the character faced on entering the map server (it faces so again after a warp).
+    state["entered_facing"] = game.entered_facing.into();
+    // The skill units on the ground standing as models (their UNT_ numbers).
+    state["standing_models"] = game.effects.standing_kinds().into();
+    // The kinds of skills' units on the ground in sight.
+    let mut kinds: Vec<u32> = game.skill_units.values().map(|&(kind, ..)| kind).collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    state["ground_unit_kinds"] = kinds.into();
+    // Skills' units on the ground, nearest first (a Fire Wall's cells, a trap): rathena's UNT_ kind, the cell, the unit's
+    // own range (cells around it that it covers) and where the cell is on the screen.
+    let mut ground_skills: Vec<_> = game.skill_units.iter().collect();
+    ground_skills.sort_by_key(|&(&id, &(_, cell, _))| (distance(cell.map(i32::from)), id));
+    state["ground_skills"] = ground_skills
+        .into_iter()
+        .map(|(id, &(kind, cell, range))| json!({"id": id, "kind": kind, "cell": cell, "range": range, "point": cell_on_screen(cell)}))
+        .collect::<Vec<_>>()
+        .into();
+    // What skills' ground units play: [kind, effect, starts again] once each, and by kind the milliseconds since the
+    // youngest of its STRs started (small while it starts again, growing when it plays once).
+    let unit_strs = game.effects.unit_strs(self::now());
+    let mut shown: Vec<_> = unit_strs.iter().map(|&(kind, effect, again, _)| (kind, effect, again)).collect();
+    shown.dedup();
+    state["unit_strs"] = json!(shown);
+    let mut youngest = serde_json::Map::new();
+    for &(kind, _, _, ms) in &unit_strs {
+        let entry = youngest.entry(kind.to_string()).or_insert(ms.into());
+        *entry = entry.as_u64().map_or(ms, |have| have.min(ms)).into();
+    }
+    state["unit_str_ms"] = Value::Object(youngest);
+    // The hit sparks: the way each ring flies (x east, z north, to 0.01), ms until it lands, its drawn tick, and its cell
+    // once landed.
+    state["hit_sparks"] = game
+        .effects
+        .hit_sparks(self::now())
+        .into_iter()
+        .map(|(way, landing, tick, at)| {
+            let cell = at.map(|at| [(at[0] / crate::world::CELL).floor(), (at[2] / crate::world::CELL).floor()]);
+            json!({"way": way.map(|value| (value * 100.0).round() / 100.0), "landing_ms": landing, "tick": tick, "cell": cell})
+        })
+        .collect::<Vec<_>>()
+        .into();
+    state["cutin_window"] = cutin_window.into();
+    // The inventory window's size and its columns and rows of cells.
+    state["inventory_window"] = json!({"size": game.inventory.window_size(), "cells": game.inventory.size()});
+    // The inventory items with the new mark, by index.
+    state["inventory_new"] = game.inventory.new_marked().into();
+    state["item_window_box"] = json!(game.item_window.as_ref().map(|window| window.area()));
+    // The equipment window's View Costume box.
+    state["costumes_shown"] = game.equipment.costumes_shown.into();
+    // A card's own window and its picture: where they are and how big, and which card.
+    state["card_window_box"] = json!(game.card_window.as_ref().map(|window| window.area()));
+    state["card_view"] = json!(game.card_view.as_ref().map(|view| json!({"card": view.card, "box": view.area()})));
+    // The taming slot machine: the unit it's open for.
+    state["slot_machine"] = json!(game.slot.as_ref().map(|machine| machine.monster));
+    // The quest whose details show.
+    state["quest_picked"] = json!(game.quest_window.picked);
+    state["quest_list"] = json!({"tab": game.quest_window.tab, "ids": game.quest_window.listed(&game.quests, &app.quest_texts)});
+    state["opened_page"] = game.opened_page.clone().into();
+    // Our milliseconds a cell.
+    state["player"]["step_ms"] = game.player.step_ms.into();
+    // The numbers shown on us in the last 3 s.
+    state["player"]["hits_taken"] = json!(
+        game.hits_taken(crate::control::now()).iter().map(|(amount, kind, ms)| json!({"amount": amount, "kind": kind, "ms_ago": ms})).collect::<Vec<_>>()
+    );
+    // The effect sounds played in the last five seconds (`no_sound` in a scenario checks these).
+    state["sounds_recent"] = recent_sounds().into();
+    state["battle_mode"] = game.chat_mode.enabled().into();
+    // The settings Game Settings changes, its open tab, and the canvas the Extras' UI scale sizes.
+    let skins = crate::game_settings::skins();
+    state["settings"] = json!({
+        "canvas": crate::screen(),
+        "music": app.sound.on[0], "music_volume": app.sound.volume[0], "effects_sound": app.sound.on[1], "effects": app.graphics.effects_on,
+        "aura_off": app.graphics.aura_off, "tab": game.settings_window.as_ref().map(|window| window.tab),
+        "monster_hp": app.graphics.monster_hp, "monster_level": app.graphics.monster_level, "far_zoom": app.graphics.far_zoom,
+        "item_options": app.graphics.item_options, "cooldown_numbers": app.graphics.cooldown_numbers, "exp_hundredths": app.graphics.exp_hundredths,
+        "kill_exp": app.graphics.kill_exp, "ui_scale": app.graphics.ui_scale, "ui_size": app.graphics.ui_size,
+        "fps_ping": app.graphics.fps_ping, "meter": {"fps": app.meter.fps, "ping_ms": app.meter.ping.map(|ping| ping.as_millis() as u64)},
+        "navi_icons": app.graphics.navi_icons,
+        "extended_damage": app.graphics.extended_damage, "font": app.graphics.font,
+        "font_index": rustnarok_client::text::index_of(rustnarok_client::text::choices(), &app.graphics.font),
+        // The skin picked ("" for the basic look) and its row in Basic's list (0 for the basic look), the ones the list
+        // offers after it, the one the interface is drawn in and how many images that one has.
+        "skin": app.graphics.skin, "skin_index": skins.iter().position(|name| *name == app.graphics.skin).map_or(0, |row| row + 1), "skins": skins,
+        "skin_drawn": app.grf.skin(), "skin_images": app.grf.skin_images(),
+    });
+    // The storage's rows and an NPC shop's sizes (goods width, goods and deal rows), as the corner grips leave them.
+    state["storage_rows"] = game.storage.rows().into();
+    state["storage_scroll"] = game.storage.scroll().into();
+    // The party window's size, and the rows it shows.
+    state["party_window_size"] = json!({"size": game.party_window.size(), "rows": game.party_window.shown_rows()});
+    // The guild storage log: null when shut, else its place, tab, page and how many it lists.
+    state["storage_log"] = game
+        .storage_log
+        .as_ref()
+        .map_or(Value::Null, |log| json!({"position": log.position, "tab": format!("{:?}", log.tab), "page": log.page_text(), "listed": log.listed().len()}));
+    // The cart choice: null when shut, else the carts it offers, in order, and where a pick goes.
+    state["cart_choice"] = game.cart_choice.as_ref().map_or(Value::Null, |choice| {
+        let answer = match choice.answer {
+            crate::cart_choice::Answer::ChangeCart => "change_cart",
+            crate::cart_choice::Answer::SelectCart(_) => "select_cart",
+        };
+        json!({"kinds": choice.kinds, "answer": answer, "position": choice.frame.position})
+    });
+    // The package pick: null when shut, else the box, its sets' names, the picked one and its items, and the question.
+    state["package_pick"] = game.package_pick.as_ref().map_or(Value::Null, |pick| {
+        let sets: Vec<&str> = pick.sets.iter().map(|set| set.name.as_str()).collect();
+        let items: Vec<Value> =
+            pick.items().iter().map(|item| json!({"item": item.item, "count": item.count, "hours": item.hours, "refine": item.refine})).collect();
+        json!({"item": pick.item, "sets": sets, "picked": pick.picked, "items": items, "asked": pick.asked, "position": pick.frame.position})
+    });
+    // The category windows that are on (a bit each, Use first) and those open now.
+    state["storage_mask"] = game.storage.mask.into();
+    // The main window's list in its order, and the Search window's, by item id; what's typed in the box.
+    let names = (&app.messages[..], &app.card_names, &game.char_names);
+    state["storage_list"] = game.storage.shown(&app.items, names).into();
+    let found = game.storage.search_window.frame.open.then(|| game.storage.list(crate::storage::List::Search, &app.items, names));
+    state["storage_found"] = found.unwrap_or_default().iter().map(|item| item.id).collect::<Vec<_>>().into();
+    state["storage_box_text"] = game.storage.search.clone().into();
+    state["storage_categories_open"] =
+        game.storage.categories.iter().enumerate().filter(|(_, category)| category.frame.open).map(|(tab, _)| tab).collect::<Vec<_>>().into();
+    state["storage_title"] = game.storage.name.clone().into();
+    state["storage_loading"] = game.storage.loading.into();
+    // A captcha check: null when none; whether its picture came in, the tries and seconds left once asked, the field.
+    state["captcha"] = game.captcha.as_ref().map_or(Value::Null, |check| {
+        json!({
+            "picture": check.picture.is_some(),
+            "tries": check.asked.map(|(tries, _)| tries),
+            "seconds_left": check.asked.map(|_| check.seconds_left(now)),
+            "typed": check.typed,
+        })
+    });
+    state["skill_list_rows"] = game.skill_window.list_rows().into();
+    state["vend_size"] = json!({"width": game.vend_size.width, "rows": game.vend_size.rows});
+    state["shop_size"] = game.shop.as_ref().and_then(crate::shop::Shop::sizes).map(|(width, rows)| json!({"width": width, "rows": rows})).into();
+    state["shop_scroll"] = game.shop.as_ref().map(crate::shop::Shop::scrolls).into();
+    // Where the shop's two windows are: the goods, then the deal.
+    state["shop_at"] = game.shop.as_ref().map(|shop| shop.frames.each_ref().map(|frame| frame.position)).into();
+    // The style shop: each row of its list of what will be bought, and whether Buy is live.
+    state["stylist"] = json!(game.stylist.as_ref().map(|window| {
+        let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0);
+        let has = |id: u32| game.inventory.items.iter().filter(|item| item.id == id).map(|item| u32::from(item.amount)).sum::<u32>();
+        let job = game.player.look.as_ref().map_or(game.me.job, |look| look.job);
+        let rows = crate::stylist::list(&app.styling_shop, job, window.picks, zeny, has);
+        json!({"buy": crate::stylist::can_buy(&rows), "rows": rows.iter().map(|row| json!({"part": format!("{:?}", row.part), "payable": row.payable})).collect::<Vec<_>>()})
+    }));
+    // The ranking board.
+    state["ranking"] = json!(game.ranking.as_ref().map(|board| {
+        let rows = board.rows(&game.char_names);
+        json!({
+            "type": board.kind,
+            "mine": board.mine,
+            "listed": board.ids.contains(&game.me.id),
+            "unnamed": rows.iter().filter(|row| !game.char_names.contains_key(&row.id)).count(),
+            "rows": rows.iter().map(|row| json!({"char_id": row.id, "name": row.name, "points": row.points})).collect::<Vec<_>>(),
+        })
+    }));
+    // The Universal Catalog's store search.
+    state["catalog"] = json!(game.catalog.as_ref().map(|catalog| json!({
+        "remote": catalog.remote,
+        "uses": catalog.uses,
+        "buying": catalog.buying,
+        "more": catalog.more,
+        "page": catalog.page,
+        "similar": catalog.similar,
+        "status": catalog.status_line(),
+        "mark": catalog.mark,
+        "results": catalog.rows.len(),
+        "rows": catalog.rows.iter().map(|row| json!({"item": row.item, "shop": row.shop, "account": row.account, "price": row.price, "amount": row.amount})).collect::<Vec<_>>(),
+    })));
+    // The battleground queued for, how many wait, and whether entering is being asked.
+    state["battle_queue"] = json!(
+        game.queued
+            .as_ref()
+            .map(|(name, number)| { json!({"name": name, "number": number, "asked": matches!(game.queue_asked, Some(crate::QueueAsked::Lobby(..)))}) })
+    );
+    // On a battleground (its map type, or our camp known): the camp, the score, teammates with a dot and an HP bar.
+    let battle = &game.battle;
+    let on_battleground = game.map_type == Some(crate::battleground::MAP_TYPE) || battle.camp(game.account_id).is_some();
+    state["battleground"] = json!(on_battleground.then(|| {
+        let team = battle.teammates(game.account_id);
+        json!({
+            "joined": battle.camp(game.account_id).is_some(),
+            "camp": battle.camp(game.account_id),
+            "score": battle.score,
+            "dots": battle.dots.len(),
+            "hp": team.iter().filter(|account| game.unit_hp.contains_key(account)).count(),
+            "battle_chat": battle.chat,
+        })
+    }));
+    // The partner's name, as the last I Miss You told it.
+    state["partner"] = json!(game.partner);
+    // The pickup popup's line while it shows.
+    state["pickup_popup"] = json!(game.pickup_popup.as_ref().map(|popup| popup.text.clone()));
+    // A skill's description while it shows: which skill, and its lines.
+    state["skill_description"] = json!(
+        game.skill_description
+            .as_ref()
+            .map(|window| json!({"skill": window.skill, "lines": window.text(), "closable": window.close_box().is_some(), "delays": window.delays}))
+    );
+    // The quest tracker as drawn: each quest's title, summary and hunt lines (none while it's off).
+    let blocks = if game.quest_window.tracker {
+        crate::quest_tracker::blocks(&game.quests, &app.quest_texts, &game.quest_window.hidden, &app.messages)
+    } else {
+        Vec::new()
+    };
+    state["quest_tracker"] =
+        json!(blocks.iter().map(|block| json!({"id": block.id, "title": block.title, "summary": block.summary, "hunts": block.hunts})).collect::<Vec<_>>());
+    // Every quest the quest window lists, as it shows them: title, summary, hunt lines and time left.
+    state["quests"] = quests_state(&game.quests, &app.quest_texts, &app.messages, crate::memorial::unix_now());
+    // The new-quest icon up, and the progress banners showing.
+    state["quest_icon"] = json!(game.quest_icon);
+    state["quest_banners"] = json!(game.banners.texts());
+    // The minimap: opaque, see-through or hidden, its zoom, whether the navigation route is on, and the player arrow's clockwise angle.
+    state["minimap"] = json!({
+        "mode": game.minimap_view.name(),
+        "zoom": game.minimap_zoom,
+        "route": game.navigation_route,
+        "shown": game.minimap_shown(),
+        "arrow": crate::minimap::arrow_angle(game.player.rot),
+        // The NPCs in view with a quest mark over their heads.
+        "quest_heads": game
+            .quest_marks
+            .iter()
+            .filter(|(_, _, effect, _)| crate::head_marks::quest_action(*effect).is_some())
+            .filter_map(|(npc, ..)| game.units.get(npc).map(|actor| actor.name.clone()))
+            .collect::<Vec<_>>(),
+        // NPCs' quest marks ([x, y, colour]) and the store search mark.
+        "quests": game.quest_marks.iter().map(|(_, cell, _, color)| json!([cell[0], cell[1], color])).collect::<Vec<_>>(),
+        "store": game.store_mark,
+    });
+    // The big minimap and the memos recorded on this map.
+    state["world_map"] = json!(game.world_map.as_ref().map(|world_map| json!({"route": world_map.route_shown()})));
+    state["minimap_window"] = json!({
+        "open": game.minimap_window.frame.open,
+        "x": game.minimap_window.frame.position[0],
+        "y": game.minimap_window.frame.position[1],
+        "memos": game.minimap_window.memos.iter().map(|memo| json!({"x": memo.cell[0], "y": memo.cell[1], "name": memo.name})).collect::<Vec<_>>(),
+        "checks": game.minimap_window.checks,
+        "title": crate::minimap_window::title(
+            app.map_names.get(&crate::map_key(&game.map)).map_or("", String::as_str),
+            &crate::map_key(&game.map),
+            game.player.cell
+        ),
+        "recording": game.minimap_window.recording,
+    });
+    // The level up buttons up in the bottom corners.
+    state["level_ups"] = json!({"base": game.level_ups.base, "job": game.level_ups.job});
+    // The status icon tooltip's lines while one shows.
+    state["status_tip"] = json!(game.status_tip);
+    // The item whose name the enchant window's tooltip shows.
+    state["enchant_hover"] = json!(game.enchant.as_ref().and_then(|window| window.hovered(app.cursor, &game.inventory.items)).map(|item| item.id));
+    orbs(&mut state["player"], None);
+    grade(&mut state, play::mode(), game.quest_window.frame.open, crate::screen());
+    state
+}
+
+/// The animation internals of a unit in `state`, for tests (#1018).
+const INTERNALS: [&str; 9] = ["action", "frame", "rot", "alpha", "tint", "combo_ms", "held", "ghosts", "portal_rings"];
+
+/// The grade of each field of the game's `state`, by key (#1095). A play mode leaves out a field above it, and a field
+/// that isn't here. Fair: what the screen shows, the player's own windows and settings. Assist: boxes, cells and
+/// timers of what shows. Test: what lists units or effects off screen too, and the drawing's internals.
+const FIELD_GRADES: &[(&str, Grade)] = {
+    use Grade::{Assist, Fair, Test};
+    &[
+        ("achievements", Fair),
+        ("aimed_skill", Fair),
+        ("announcements", Fair),
+        ("bar_order", Assist),
+        ("bars", Assist),
+        ("basic_info", Fair),
+        ("battle_mode", Fair),
+        ("battle_queue", Fair),
+        ("battleground", Fair),
+        ("blind", Fair),
+        ("block_names", Fair),
+        ("booking", Fair),
+        ("booking_asked", Fair),
+        ("boss", Test),
+        ("camera", Assist),
+        ("capturing", Fair),
+        ("card_view", Fair),
+        ("card_window_box", Fair),
+        ("cast_squares", Assist),
+        ("catalog", Fair),
+        ("chat", Fair),
+        ("chat_corner", Fair),
+        ("cashshop_at", Fair),
+        ("chat_focus", Fair),
+        ("chat_height", Fair),
+        ("chat_input", Fair),
+        ("chat_line_open", Fair),
+        ("chat_locked", Fair),
+        ("chat_log_first", Fair),
+        ("chat_log_last", Fair),
+        ("chat_log_rows", Fair),
+        ("chat_mode_icon", Fair),
+        ("chat_names", Fair),
+        ("chat_scroll", Fair),
+        ("chat_send_to", Fair),
+        ("chat_last_kind", Fair),
+        ("chat_tab", Fair),
+        ("chat_tabs", Fair),
+        ("chat_tab_names", Fair),
+        ("chat_torn", Fair),
+        ("chat_whisper", Fair),
+        ("cooldowns", Assist),
+        ("costumes_shown", Fair),
+        ("cursor", Fair),
+        ("cutin", Fair),
+        ("cutin_window", Fair),
+        ("dialog", Fair),
+        ("dressroom", Fair),
+        ("dusk", Fair),
+        ("enemies", Test),
+        ("entered_facing", Test),
+        ("esc_order", Assist),
+        ("escape", Fair),
+        ("exp_shown", Fair),
+        ("first_place_seconds", Fair),
+        ("front", Fair),
+        ("close_tabs", Fair),
+        ("ground_cursor", Assist),
+        ("gold_pc", Fair),
+        ("ground_items", Fair),
+        ("ground_skills", Assist),
+        ("ground_unit_kinds", Test),
+        ("guild", Fair),
+        ("guild_window", Fair),
+        ("head_emblems", Assist),
+        ("hit_sparks", Test),
+        ("homunculus", Fair),
+        ("hotkey_position", Fair),
+        ("hotkey_rotations", Fair),
+        ("hotkey_tab", Fair),
+        ("hotkeys", Fair),
+        ("hover_name", Fair),
+        ("instance", Fair),
+        ("inventory", Fair),
+        ("inventory_items", Fair),
+        ("inventory_new", Fair),
+        ("inventory_window", Fair),
+        ("item_window", Fair),
+        ("item_window_box", Fair),
+        ("level_ups", Fair),
+        ("map", Fair),
+        ("map_effect_fired_ms_ago", Test),
+        ("map_effect_timers", Test),
+        ("map_effects_fired", Test),
+        ("effects_alive", Test),
+        ("map_property", Test),
+        ("map_type", Test),
+        ("marks", Test),
+        ("mercenary", Fair),
+        ("merge", Fair),
+        ("pick_list", Fair),
+        ("minimap", Fair),
+        ("minimap_window", Fair),
+        ("world_map", Fair),
+        ("monster_info", Fair),
+        ("mvp_sprites", Test),
+        ("name_tags", Test),
+        ("navi_window", Assist),
+        ("navigation", Assist),
+        ("opened_page", Fair),
+        ("partner", Fair),
+        ("party", Fair),
+        ("party_window", Fair),
+        ("party_window_size", Fair),
+        ("pet", Fair),
+        ("pickup_popup", Fair),
+        ("player", Fair),
+        ("pvp_rank", Fair),
+        ("quest_banners", Fair),
+        ("quest_icon", Fair),
+        ("quest_list", Fair),
+        ("quest_picked", Fair),
+        ("quest_tracker", Fair),
+        ("quests", Fair),
+        ("quick_slot", Fair),
+        ("ranking", Fair),
+        ("refusing_party", Fair),
+        ("reputation", Fair),
+        ("room", Fair),
+        ("attendance", Fair),
+        ("roulette", Fair),
+        ("rsm1_moving", Test),
+        ("rsm2_models", Test),
+        ("rsm2_moving", Test),
+        ("save_asked", Fair),
+        ("settings", Fair),
+        ("shop_deal", Fair),
+        ("shop_goods", Fair),
+        ("shop_prices", Fair),
+        ("shop_size", Fair),
+        ("shop_scroll", Fair),
+        ("shop_at", Fair),
+        ("stylist", Fair),
+        ("shop_whole", Fair),
+        ("shop_points", Fair),
+        ("shortcuts", Fair),
+        ("show_emblems", Fair),
+        ("signs", Assist),
+        ("skill_areas", Assist),
+        ("skill_description", Fair),
+        ("skill_list_rows", Fair),
+        ("skills", Fair),
+        ("sky_puffs", Test),
+        ("sky_shown", Test),
+        ("slot_machine", Fair),
+        ("small_windows", Fair),
+        ("sounds_recent", Test),
+        ("special_popup", Fair),
+        ("standing_models", Test),
+        ("status_icons", Assist),
+        ("status_icons_drawn", Fair),
+        ("status_tip", Fair),
+        ("enchant_hover", Fair),
+        ("storage_box_text", Fair),
+        ("storage_categories_open", Fair),
+        ("storage_found", Fair),
+        ("storage_list", Fair),
+        ("storage_loading", Fair),
+        ("captcha", Fair),
+        ("cart_choice", Fair),
+        ("package_pick", Fair),
+        ("storage_log", Fair),
+        ("storage_mask", Fair),
+        ("storage_rows", Fair),
+        ("storage_scroll", Fair),
+        ("storage_title", Fair),
+        ("talkie", Test),
+        ("targets", Assist),
+        ("tint", Fair),
+        ("title", Fair),
+        ("top_rank_auras", Test),
+        ("unit_str_ms", Test),
+        ("unit_strs", Test),
+        ("units", Fair),
+        ("vend_size", Fair),
+        ("weather", Fair),
+        ("whisper_name", Fair),
+        ("whisper_open", Fair),
+        ("windows", Fair),
+        ("world_objects", Test),
+        ("world_strs", Test),
+    ]
+};
+
+/// Why a unit is going, by its vanish packet's type: a corpse (rathena's CLR_DEAD) or out of sight (CLR_OUTSIGHT).
+fn dying(vanish: Option<u8>) -> &'static str {
+    if vanish == Some(1) { "died" } else { "left_sight" }
+}
+
+/// rathena's UNT_DUMMYSKILL, a skill unit the client draws nothing for: it stands for a hidden trap, and for the cells of a
+/// skill that draws its own effect over them (Storm Gust).
+const INVISIBLE_UNIT: u32 = 0x86;
+
+/// Leaves out of the game's `state` what the play mode doesn't allow (#1095). Test: units and ground items off the
+/// `window` (the canvas's size), ground skills and magic squares off screen, the invisible script NPCs and skill units,
+/// where a walk ends, the animation internals, a monster's HP as numbers (it shows as a bar). Assist, under fair: cells,
+/// a monster's HP bar, the aggro cues, and the quests while the quest window is closed.
+fn grade(state: &mut Value, mode: Grade, quests_open: bool, window: [f32; 2]) {
+    if mode == Grade::Test {
+        return;
+    }
+    // A sprite's box reaches into the window. Anything in front of the camera has a box, even far past the window's
+    // edges, so a box alone isn't being on the screen (#1228).
+    let drawn = |thing: &Value| {
+        serde_json::from_value::<[f32; 4]>(thing["screen"].clone())
+            .is_ok_and(|[left, top, right, bottom]| right > 0.0 && bottom > 0.0 && left < window[0] && top < window[1])
+    };
+    if let Some(units) = state["units"].as_array_mut() {
+        units.retain(|unit| drawn(unit) && !unit["job"].as_u64().is_some_and(|job| crate::HIDDEN_JOBS.iter().any(|&hidden| u64::from(hidden) == job)));
+        for unit in units {
+            let Some(fields) = unit.as_object_mut() else { continue };
+            fields.remove("moving_to");
+            // The name as drawn, without the script's "#part" (#1125).
+            if let Some(name) = fields.get("name").and_then(Value::as_str).map(|name| crate::actor::shown_name(name).to_owned()) {
+                fields.insert("name".into(), name.into());
+            }
+            for key in INTERNALS {
+                fields.remove(key);
+            }
+            if fields["kind"] == "monster"
+                && let Some([hp, max]) = fields.get("hp").and_then(|hp| serde_json::from_value::<[f64; 2]>(hp.clone()).ok())
+            {
+                fields.insert("hp".into(), ((hp / max.max(1.0) * 100.0).round() / 100.0).into());
+            }
+            if mode == Grade::Fair {
+                for key in ["cell", "position", "facing_me", "attacking_me_ms"] {
+                    fields.remove(key);
+                }
+                if fields["kind"] == "monster" {
+                    fields.remove("hp");
+                }
+            }
+        }
+    }
+    if let Some(heads) = state["minimap"]["quest_heads"].as_array_mut() {
+        heads.iter_mut().for_each(|name| *name = name.as_str().map_or(Value::Null, |name| crate::actor::shown_name(name).into()));
+    }
+    if let Some(items) = state["ground_items"].as_array_mut() {
+        items.retain(drawn);
+        if mode == Grade::Fair {
+            items.iter_mut().filter_map(Value::as_object_mut).for_each(|item| _ = item.remove("cell"));
+        }
+    }
+    for key in ["cast_squares", "ground_skills", "skill_areas"] {
+        if let Some(list) = state[key].as_array_mut() {
+            list.retain(|thing| !thing["point"].is_null() && thing["kind"] != INVISIBLE_UNIT);
+        }
+    }
+    if mode == Grade::Fair {
+        if let Some(player) = state["player"].as_object_mut() {
+            player.remove("hits_taken");
+        }
+        if !quests_open {
+            state["quests"] = json!([]);
+        }
+    }
+    if let Some(fields) = state.as_object_mut() {
+        fields.retain(|key, _| FIELD_GRADES.iter().any(|&(graded, grade)| graded == key && grade <= mode));
+    }
+}
+
+/// Keeps just the named fields of the game's state (`state`'s `only`), after `grade`, so it never shows more. A name
+/// that isn't a field is an error, so a misspelt one doesn't read as an empty field.
+fn keep_only(game: &mut Value, only: &[String]) -> Result<(), String> {
+    if let Some(name) = only.iter().find(|name| !FIELD_GRADES.iter().any(|(field, _)| field == name)) {
+        return Err(format!("state has no field {name}"));
+    }
+    if let Some(fields) = game.as_object_mut() {
+        fields.retain(|key, _| only.contains(key));
+    }
+    Ok(())
+}
+
+/// The player's look as the game state reports it. Zeros until the server has sent one.
+/// A pushcart's spot (world X and Z), facing (degrees) and wheel frame, or null.
+/// Whether the Basic Information window's weight line is red: `basic_info::heavy` on the server's weight and limit.
+fn overweight(status: &HashMap<u16, i64>, percent: u32) -> bool {
+    let value = |id: u16| status.get(&id).copied().unwrap_or(0);
+    crate::basic_info::heavy(value(net::STATUS_WEIGHT), value(net::STATUS_MAX_WEIGHT), percent)
+}
+
+fn cart_state(cart: Option<&crate::actor::Cart>) -> Value {
+    let Some(cart) = cart else { return Value::Null };
+    let tenth = |value: f32| (f64::from(value) * 10.0).round() / 10.0;
+    json!({"x": tenth(cart.at[0]), "z": tenth(cart.at[1]), "rot": tenth(cart.rot), "frame": cart.frame(cart.sprites.frames(0))})
+}
+
+fn companion_state(companion: Option<&crate::actor::Companion>, height: f32) -> Value {
+    let Some(companion) = companion else { return Value::Null };
+    let tenth = |value: f32| (f64::from(value) * 10.0).round() / 10.0;
+    json!({"x": tenth(companion.at[0]), "z": tenth(companion.at[1]), "height": height, "moving": companion.moving})
+}
+
+fn player_look(look: &Look) -> Value {
+    json!({
+        "hair": look.hair,
+        "hair_color": look.hair_color,
+        "clothes_color": look.clothes_color,
+        "head_top": look.head_top,
+        "head_mid": look.head_mid,
+        "head_bottom": look.head_bottom,
+        "body": look.body,
+    })
+}
+
+/// The six stats as the status window shows them: by short name ("str" to "luk"), the value, the bonus from gear and
+/// what one point more costs.
+fn stats_state(status: &HashMap<u16, i64>) -> Value {
+    let value = |id: u16| status.get(&id).copied().unwrap_or(0);
+    let stats = crate::status::STATS.iter().zip(net::STATUS_STR..).map(|(name, stat)| {
+        let cost = value(net::STATUS_STR_COST + stat - net::STATUS_STR);
+        ((*name).to_owned(), json!({"value": value(stat), "bonus": value(stat + net::STATUS_BONUS), "cost": cost}))
+    });
+    Value::Object(stats.collect())
+}
+
+/// Atk to ASPD as the status window shows them: a pair is its two numbers in the window's order ("atk + atk2"), and ASPD
+/// is the window's number.
+fn substats_state(status: &HashMap<u16, i64>) -> Value {
+    let value = |place: u16| status.get(&(net::STATUS_ATK + place)).copied().unwrap_or(0);
+    json!({
+        "atk": [value(0), value(1)],
+        "matk": [value(3), value(2)],
+        "hit": value(8),
+        "critical": value(11),
+        "def": [value(4), value(5)],
+        "mdef": [value(6), value(7)],
+        "flee": [value(9), value(10)],
+        "aspd": crate::status::shown_aspd(value(12)),
+    })
+}
+
+/// The player's skills as the server lists them (level 0: not learned yet), with their names and top levels.
+fn skills_state(skills: &[net::Skill], info: &HashMap<u16, SkillInfo>) -> Value {
+    skills
+        .iter()
+        .map(|skill| {
+            let info = info.get(&skill.id);
+            json!({"id": skill.id, "name": info.map(|info| info.name.as_str()), "level": skill.level, "max_level": info.map(|info| info.max_level), "upgradable": skill.upgradable})
+        })
+        .collect()
+}
+
+/// The player's homunculus as the game state reports it.
+fn homunculus_state(homunculus: &net::Homunculus, id: Option<u32>, following: bool) -> Value {
+    json!({
+        "id": id,
+        "name": homunculus.name,
+        "level": homunculus.level,
+        "hunger": homunculus.hunger,
+        "intimacy": homunculus.intimacy,
+        "hp": homunculus.hp,
+        "skill_points": homunculus.skill_points,
+        "vaporized": homunculus.vaporized(),
+        "following": following,
+    })
+}
+
+/// The quests in the quest window's order (in progress, on hold, waiting; by id on each tab), each with its title and
+/// summary (null when unknown), seconds left (null for no end) and hunts with the lines the window shows.
+pub(crate) fn quests_state(quests: &[net::Quest], texts: &HashMap<u32, crate::quest::QuestText>, messages: &[String], now: u64) -> Value {
+    let mut listed: Vec<&net::Quest> = quests.iter().collect();
+    listed.sort_by_key(|quest| (crate::quest::tab_of(quest, texts), quest.id));
+    json!(
+        listed
+            .iter()
+            .map(|quest| {
+                let text = texts.get(&quest.id);
+                json!({
+                    "id": quest.id,
+                    "active": quest.active,
+                    "title": text.map(|text| text.title.clone()),
+                    "summary": text.map(|text| text.summary.clone()),
+                    "ends_in_s": (quest.end > 0).then(|| u64::from(quest.end).saturating_sub(now)),
+                    "hunts": quest.hunts.iter().map(|hunt| json!({
+                        "name": hunt.name,
+                        "count": hunt.count,
+                        "needed": hunt.needed,
+                        "levels": hunt.levels,
+                        "line": crate::quest_tracker::hunt_line(hunt, messages),
+                    })).collect::<Vec<_>>(),
+                })
+            })
+            .collect::<Vec<_>>()
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::escape::WindowId;
+
+    #[test]
+    fn a_click_names_the_window_it_reaches() {
+        let named = |menu, top| top_named(menu, top).map(Top::name);
+        assert_eq!(named(false, Some(Top::Esc(WindowId::Reputation))).as_deref(), Some("Reputation"));
+        assert_eq!(named(false, Some(Top::Panel(Panel::Skills))).as_deref(), Some("Skills"));
+        assert_eq!(named(false, None), None);
+        // Named as `windows` names them.
+        assert_eq!(named(false, Some(Top::Esc(WindowId::ExpansionAsked))).as_deref(), Some("InventoryExpansion"));
+        assert_eq!(named(false, Some(Top::PartyBooking)).as_deref(), Some("PartyBooking"));
+        assert_eq!(named(false, Some(Top::MakingMaterial)).as_deref(), Some("MakingMaterial"));
+        // The game menu takes every click while it's up, over the storage's Close too.
+        assert_eq!(named(true, Some(Top::Panel(Panel::Storage))).as_deref(), Some("GameMenu"));
+        assert_eq!(named(true, None).as_deref(), Some("GameMenu"));
+    }
+
+    /// The canvas's size `grade` gets in the tests.
+    const WINDOW: [f32; 2] = [1024.0, 768.0];
+
+    #[test]
+    fn a_play_mode_keeps_ground_skills_and_magic_squares_on_the_screen() {
+        let scene = || {
+            json!({
+                "ground_skills": [
+                    {"id": 1, "kind": 0x7f, "cell": [10, 10], "range": 0, "point": [300.0, 200.0]},
+                    {"id": 2, "kind": 0x7f, "cell": [40, 40], "range": 0, "point": null},
+                    {"id": 3, "kind": INVISIBLE_UNIT, "cell": [11, 10], "range": 0, "point": [330.0, 200.0]},
+                ],
+                "cast_squares": [{"cell": [12, 12], "width": 5.0, "point": [400.0, 300.0]}, {"cell": [50, 50], "width": 5.0, "point": null}],
+            })
+        };
+        let mut all = scene();
+        grade(&mut all, Grade::Test, false, WINDOW);
+        assert_eq!(all, scene());
+        let mut assist = scene();
+        grade(&mut assist, Grade::Assist, false, WINDOW);
+        let ids: Vec<_> = assist["ground_skills"].as_array().unwrap().iter().map(|skill| skill["id"].clone()).collect();
+        assert_eq!(ids, [json!(1)], "on the screen and not the hidden trap's unit");
+        assert_eq!(assist["cast_squares"], json!([{"cell": [12, 12], "width": 5.0, "point": [400.0, 300.0]}]));
+        let mut fair = scene();
+        grade(&mut fair, Grade::Fair, false, WINDOW);
+        assert!(fair.get("ground_skills").is_none() && fair.get("cast_squares").is_none());
+    }
+
+    #[test]
+    fn clicks_a_cell_where_the_ground_takes_the_click() {
+        let screen = [1024.0, 768.0];
+        // A cell 20 pixels wide round (500, 400); a click at a point walks to the cell under it.
+        let project = |[dx, dy]: [f32; 2]| Some([500.0 + dx * 20.0, 400.0 + dy * 20.0]);
+        let under = |at: [f32; 2]| Some([(at[0] / 20.0).round() as i32, (at[1] / 20.0).round() as i32]);
+        assert_eq!(cell_click_point([25, 20], project, screen, under), Ok([500.0, 400.0]));
+        // A monster over the middle and the left of it: the nearest point clear of it.
+        let monster = |at: [f32; 2]| at[0] < 503.0;
+        assert_eq!(cell_click_point([25, 20], project, screen, |at| if monster(at) { None } else { under(at) }), Ok([504.0, 400.0]));
+        assert_eq!(cell_click_point([25, 20], project, screen, |_| None), Err("cell [25, 20] is covered".into()));
+        assert_eq!(cell_click_point([25, 20], |_| None, screen, under), Err("cell [25, 20] is off the screen".into()));
+        assert_eq!(cell_click_point([25, 20], |_| Some([-5.0, 400.0]), screen, under), Err("cell [25, 20] is off the screen".into()));
+    }
+
+    #[test]
+    fn clicks_an_item_where_a_monster_over_it_doesnt_take_the_click() {
+        use crate::picking::{Kind, Target};
+        let item = Target { owner: Owner::Item(7), kind: Kind::Item, sprite: [480.0, 380.0, 520.0, 420.0], area: [480.0, 380.0, 520.0, 420.0], depth: 10.0 };
+        let monster =
+            Target { owner: Owner::Unit(9), kind: Kind::Monster, sprite: [470.0, 300.0, 505.0, 415.0], area: [470.0, 300.0, 505.0, 415.0], depth: 9.0 };
+        let screen = [1024.0, 768.0];
+        let at = owner_point(&[item, monster], Owner::Item(7), "item 7", false, screen, |_| false).unwrap();
+        assert!(at[0] >= 505.0 || at[1] >= 415.0, "{at:?} is under the monster");
+        assert_eq!(owner_point(&[item], Owner::Item(7), "item 7", false, screen, |_| false), Ok([500.0, 400.0]));
+        assert_eq!(owner_point(&[item], Owner::Item(7), "item 7", false, screen, |_| true), Err("item 7 is covered".into()));
+        assert_eq!(owner_point(&[monster], Owner::Item(7), "item 7", false, screen, |_| false), Err("item 7 isn't drawn on the screen".into()));
+    }
+
+    #[test]
+    fn a_play_mode_leaves_out_what_is_above_it() {
+        let scene = || {
+            json!({
+                "units": [
+                    {"id": 1, "kind": "monster", "job": 1002, "cell": [10, 10], "position": [10.0, 10.0], "screen": [1, 2, 3, 4], "hp": [30, 120], "moving_to": [12, 10], "rot": 90, "facing_me": true},
+                    {"id": 2, "kind": "monster", "job": 1002, "cell": [30, 30], "position": [30.0, 30.0]},
+                    {"id": 3, "kind": "npc", "job": 139, "name": "#warp_2_pass_2_2", "cell": [47, 38], "screen": [5, 6, 7, 8]},
+                    // In front of the camera but past the window's edges: below it, and left of it.
+                    {"id": 6, "kind": "monster", "job": 1015, "cell": [23, 169], "screen": [599, 818, 675, 939]},
+                    {"id": 7, "kind": "monster", "job": 1002, "cell": [2, 12], "screen": [-82, 45, -36, 83]},
+                    // Half in the window's bottom right corner.
+                    {"id": 8, "kind": "monster", "job": 1002, "cell": [19, 3], "screen": [1000, 740, 1060, 800]},
+                ],
+                "ground_items": [
+                    {"id": 4, "cell": [11, 10], "screen": [1, 1, 2, 2]},
+                    {"id": 5, "cell": [40, 40], "screen": null},
+                    {"id": 9, "cell": [26, 11], "screen": [1100, 10, 1120, 30]},
+                ],
+                "player": {"cell": [10, 11], "hits_taken": [{"amount": 5}]},
+                "quests": [{"id": 1}],
+            })
+        };
+        let mut all = scene();
+        grade(&mut all, Grade::Test, false, WINDOW);
+        assert_eq!(all, scene());
+
+        let mut assist = scene();
+        grade(&mut assist, Grade::Assist, false, WINDOW);
+        let units = assist["units"].as_array().unwrap();
+        assert_eq!(units.iter().map(|unit| unit["id"].clone()).collect::<Vec<_>>(), [1, 8], "the off-screen monsters and the hidden warp are left out");
+        assert_eq!(units[0]["hp"], json!(0.25));
+        assert!(units[0].get("moving_to").is_none() && units[0].get("rot").is_none());
+        assert_eq!((&units[0]["cell"], &units[0]["facing_me"]), (&json!([10, 10]), &json!(true)));
+        assert_eq!(assist["ground_items"].as_array().unwrap().iter().map(|item| item["id"].clone()).collect::<Vec<_>>(), [4]);
+        assert_eq!(assist["quests"], json!([{"id": 1}]));
+
+        let mut fair = scene();
+        grade(&mut fair, Grade::Fair, false, WINDOW);
+        assert_eq!(fair["units"].as_array().unwrap().len(), 2);
+        let unit = &fair["units"][0];
+        assert!(["cell", "position", "hp", "facing_me"].iter().all(|key| unit.get(key).is_none()));
+        assert_eq!(unit["id"], 1);
+        assert!(fair["ground_items"][0].get("cell").is_none() && fair["player"].get("hits_taken").is_none());
+        assert_eq!(fair["player"]["cell"], json!([10, 11]));
+        assert_eq!(fair["quests"], json!([]));
+        let mut open = scene();
+        grade(&mut open, Grade::Fair, true, WINDOW);
+        assert_eq!(open["quests"], json!([{"id": 1}]));
+    }
+
+    #[test]
+    fn a_play_mode_keeps_dying_units_while_drawn() {
+        assert_eq!([dying(Some(1)), dying(Some(0))], ["died", "left_sight"]);
+        let scene = || json!({"units": [{"id": 1, "kind": "monster", "job": 1002, "screen": [1, 2, 3, 4], "area": null, "dying": "died"}, {"id": 2, "kind": "monster", "job": 1002, "dying": "left_sight"}]});
+        for mode in [Grade::Assist, Grade::Fair] {
+            let mut shown = scene();
+            grade(&mut shown, mode, false, WINDOW);
+            assert_eq!(
+                shown["units"].as_array().map(|units| units.iter().map(|unit| (unit["id"].clone(), unit["dying"].clone())).collect::<Vec<_>>()),
+                Some(vec![(json!(1), json!("died"))])
+            );
+        }
+    }
+
+    #[test]
+    fn a_play_mode_names_units_as_drawn() {
+        let scene = || json!({"units": [{"id": 1, "kind": "npc", "job": 53, "name": "Guide#01prontera", "screen": [1, 2, 3, 4]}], "minimap": {"quest_heads": ["Kriemhild#15"]}});
+        let mut all = scene();
+        grade(&mut all, Grade::Test, false, WINDOW);
+        assert_eq!((all["units"][0]["name"].as_str(), all["minimap"]["quest_heads"][0].as_str()), (Some("Guide#01prontera"), Some("Kriemhild#15")));
+        for mode in [Grade::Assist, Grade::Fair] {
+            let mut shown = scene();
+            grade(&mut shown, mode, false, WINDOW);
+            assert_eq!(shown["units"][0]["name"], "Guide");
+            assert_eq!(shown["minimap"]["quest_heads"][0], "Kriemhild");
+        }
+        assert_eq!(crate::actor::shown_name("Smile Assistance#prt"), "Smile Assistance");
+        assert_eq!(crate::actor::shown_name("Poring"), "Poring");
+    }
+
+    /// Every top-level field `game_state` writes, read from its source: the keys of its `json!` and the `state["…"]`
+    /// lines.
+    #[test]
+    fn grades_every_state_field() {
+        let source = include_str!("control.rs");
+        let body = &source[source.find("fn game_state(").unwrap()..source.find("\nfn grade(").unwrap()];
+        let start = body.find("let mut state = json!({").unwrap();
+        let block = &body[start..start + body[start..].find("\n    });").unwrap()];
+        let key = |line: &str, prefix: &str, end: &str| line.strip_prefix(prefix).and_then(|rest| rest.split_once(end)).map(|(key, _)| key.to_owned());
+        let mut keys: Vec<String> = block.lines().filter_map(|line| key(line, "        \"", "\":")).collect();
+        keys.extend(body.lines().filter_map(|line| key(line, "    state[\"", "\"] =")).filter(|key| !key.contains('"')));
+        assert!(keys.len() > 140, "found {} fields", keys.len());
+        let ungraded: Vec<_> = keys.iter().filter(|key| !FIELD_GRADES.iter().any(|(graded, _)| graded == key)).collect();
+        assert!(ungraded.is_empty(), "state fields without a grade in FIELD_GRADES: {ungraded:?}");
+        let mut scene = json!({"map": "prontera.gat", "enemies": ["Someone"], "targets": [], "boss": null, "made_up": 1});
+        let has = |scene: &Value, key: &str| scene.get(key).is_some();
+        grade(&mut scene, Grade::Assist, false, WINDOW);
+        assert!(has(&scene, "map") && has(&scene, "targets") && !["enemies", "boss", "made_up"].iter().any(|key| has(&scene, key)));
+        grade(&mut scene, Grade::Fair, false, WINDOW);
+        assert!(has(&scene, "map") && !has(&scene, "targets"));
+    }
+
+    #[test]
+    fn test_only_commands() {
+        let test = |line: &str| test_only(&serde_json::from_str(line).unwrap());
+        assert!(test(r#"{"cmd":"trace"}"#) && test(r#"{"cmd":"clock","action":"pause"}"#) && test(r#"{"cmd":"say","text":"@warp prontera"}"#));
+        assert!(test(r#"{"cmd":"wait","packet":"0x08c8"}"#) && test(r#"{"cmd":"wait","ms":100,"pause":true}"#));
+        assert!(test(r#"{"cmd":"wait","ms":100,"do":{"cmd":"say","text":"@heal"}}"#));
+        assert!(test(r#"{"cmd":"hunt_state"}"#) && test(r#"{"cmd":"hunt_do","actions":[{"do":"stop_attack"}]}"#));
+        // A / command is the game's own, as typed in the chat box (#1121).
+        assert!(!test(r#"{"cmd":"say","text":"/sit"}"#) && !test(r#"{"cmd":"say","text":"/!"}"#));
+        assert!(!test(r#"{"cmd":"say","text":"hello @all"}"#) && !test(r#"{"cmd":"wait","event":"Chat","ms":100}"#) && !test(r#"{"cmd":"state"}"#));
+    }
+
+    #[test]
+    fn draws_a_fresh_frame_for_state_only_when_due() {
+        // In the game, the clock running, something since the last frame: draw.
+        assert!(fresh_frame_due(true, false, false));
+        // Not outside the game, not on a paused clock (frame stepping stays the tests'), not twice.
+        assert!(!fresh_frame_due(false, false, false));
+        assert!(!fresh_frame_due(true, true, false));
+        assert!(!fresh_frame_due(true, false, true));
+    }
+
+    #[test]
+    fn lists_quests_as_the_quest_window_shows_them() {
+        let hunt = |name: &str, count, needed| net::Hunt { id: 1, name: name.into(), count, needed, levels: [0, 0] };
+        let quests = [
+            net::Quest { id: 9, active: false, end: 0, hunts: Vec::new() },
+            net::Quest { id: 7, active: true, end: 1_000_600, hunts: vec![hunt("Condor", 10, 10), hunt("Poring", 3, 10)] },
+        ];
+        let texts: HashMap<u32, crate::quest::QuestText> =
+            [(7, crate::quest::QuestText { title: "Hunt".into(), summary: "Condors and Porings".into(), ..Default::default() })].into();
+        let mut messages = vec![String::new(); 2031];
+        messages[2030] = "Complete".into();
+        let state = quests_state(&quests, &texts, &messages, 1_000_000);
+        // In progress before on hold; the active quest's two hunts, one done.
+        assert_eq!(
+            state,
+            json!([
+                {"id": 7, "active": true, "title": "Hunt", "summary": "Condors and Porings", "ends_in_s": 600, "hunts": [
+                    {"name": "Condor", "count": 10, "needed": 10, "levels": [0, 0], "line": "Condor ( Complete )"},
+                    {"name": "Poring", "count": 3, "needed": 10, "levels": [0, 0], "line": "Poring ( 3 / 10 )"},
+                ]},
+                {"id": 9, "active": false, "title": null, "summary": null, "ends_in_s": null, "hunts": []},
+            ])
+        );
+    }
+
+    #[test]
+    fn state_keeps_only_the_fields_asked_for() {
+        let mut game = json!({"map": "prontera.gat", "player": {"cell": [1, 2]}, "units": [], "windows": []});
+        keep_only(&mut game, &["player".into(), "units".into()]).unwrap();
+        assert_eq!(game, json!({"player": {"cell": [1, 2]}, "units": []}));
+        // A field the play mode left out stays out; a name that isn't a field is an error.
+        let mut graded = json!({"map": "prontera.gat"});
+        keep_only(&mut graded, &["navigation".into()]).unwrap();
+        assert_eq!(graded, json!({}));
+        assert!(keep_only(&mut json!({}), &["unitz".into()]).is_err());
+        // Outside the game there's nothing to keep.
+        let mut outside = Value::Null;
+        keep_only(&mut outside, &["player".into()]).unwrap();
+        assert!(outside.is_null());
+    }
+
+    #[test]
+    fn points_at_cells_on_the_screen() {
+        let screen = [1024.0, 768.0];
+        assert_eq!(cell_point(Some([0.5, 0.25]), screen, Grade::Assist), Ok([512.0, 192.0]));
+        assert_eq!(cell_point(None, screen, Grade::Test), Err("the cell is behind the camera".into()));
+        // Off the screen: refused under a play mode, a point for tests.
+        assert_eq!(cell_point(Some([1.5, 0.5]), screen, Grade::Assist), Err("the cell is off screen".into()));
+        assert_eq!(cell_point(Some([1.5, 0.5]), screen, Grade::Test), Ok([1536.0, 384.0]));
+    }
+
+    #[test]
+    fn parses_commands() {
+        let parse = |line: &str| serde_json::from_str::<Command>(line);
+        assert_eq!(parse(r#"{"cmd":"wheel","x":390,"y":360,"rows":-2}"#).unwrap(), Command::Wheel { x: 390.0, y: 360.0, rows: -2, pixels: None });
+        assert_eq!(parse(r#"{"cmd":"wheel","x":1,"y":2,"pixels":0}"#).unwrap(), Command::Wheel { x: 1.0, y: 2.0, rows: 0, pixels: Some(0.0) });
+        assert_eq!(
+            parse(r#"{"cmd":"click","x":512,"y":300.5,"button":"right"}"#).unwrap(),
+            Command::Click { x: 512.0, y: 300.5, button: Button::Right, mods: String::new(), count: None }
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"wait","packet":"0x08c8","pause":true,"do":{"cmd":"key","key":"F1"}}"#).unwrap(),
+            Command::Wait {
+                ms: None,
+                packet: Some(0x08c8),
+                event: None,
+                sent: None,
+                fresh: false,
+                pause: true,
+                first: Some(Box::new(Command::Key { key: "F1".into(), repeat: false, hold: None }))
+            }
+        );
+        assert!(matches!(parse(r#"{"cmd":"wait","packet":2248,"ms":500}"#), Ok(Command::Wait { packet: Some(0x08c8), ms: Some(500), .. })));
+        assert!(matches!(parse(r#"{"cmd":"wait","sent":"0x0447"}"#), Ok(Command::Wait { sent: Some(0x0447), packet: None, .. })));
+        assert_eq!(parse(r#"{"cmd":"clock","action":"step","ms":50}"#).unwrap(), Command::Clock { action: ClockAction::Step, ms: Some(50) });
+        assert_eq!(parse(r#"{"cmd":"state"}"#).unwrap(), Command::State { only: None });
+        assert_eq!(parse(r#"{"cmd":"state","only":["player","units"]}"#).unwrap(), Command::State { only: Some(vec!["player".into(), "units".into()]) });
+        assert_eq!(parse(r#"{"cmd":"cell_point","x":3,"y":4}"#).unwrap(), Command::CellPoint { x: Some(3), y: Some(4), cells: None });
+        assert_eq!(
+            parse(r#"{"cmd":"click_cell","x":3,"y":4}"#).unwrap(),
+            Command::ClickCell { x: 3, y: 4, button: Button::Left, mods: String::new(), count: None }
+        );
+        assert_eq!(
+            parse(r#"{"cmd":"click_item","id":7,"count":2}"#).unwrap(),
+            Command::ClickItem { id: 7, button: Button::Left, mods: String::new(), count: Some(2) }
+        );
+        assert_eq!(parse(r#"{"cmd":"cell_point","cells":[[1,2],[3,4]]}"#).unwrap(), Command::CellPoint { x: None, y: None, cells: Some(vec![[1, 2], [3, 4]]) });
+        // A missing coordinate, a misspelt field, an unknown command, a bad packet ID.
+        for wrong in [r#"{"cmd":"click","x":1}"#, r#"{"cmd":"click","x":1,"y":2,"buton":"left"}"#, r#"{"cmd":"fly"}"#, r#"{"cmd":"wait","packet":"zz"}"#] {
+            assert!(parse(wrong).is_err(), "{wrong}");
+        }
+
+        let (held, alt_e) = parse_key("Alt+E").unwrap();
+        assert_eq!((held, alt_e.physical_key, alt_e.text), (ModifiersState::ALT, PhysicalKey::Code(KeyCode::KeyE), None));
+        assert_eq!(parse_key("f12").unwrap().1.logical_key, Key::Named(NamedKey::F12));
+        assert_eq!(parse_key("a").unwrap().1.text.as_deref(), Some("a"));
+        assert_eq!(parse_key("+").unwrap().1.text.as_deref(), Some("+"));
+        assert!(parse_key("Hyper+Q").is_err() && parse_key("F13").is_err());
+
+        assert_eq!([base64(b"Man"), base64(b"Ma"), base64(b"M")], ["TWFu", "TWE=", "TQ=="]);
+
+        use crate::pin::{PinPad, PinStep};
+        let pin_kind = |step: PinStep| PinPad::new(0, step, false).kind();
+        assert_eq!(pin_kind(PinStep::Ask), "ask");
+        assert_eq!(pin_kind(PinStep::NewFirst), "new");
+        assert_eq!(pin_kind(PinStep::NewConfirm { first: "1357".into() }), "new");
+        assert_eq!(pin_kind(PinStep::ChangeOld), "change");
+        assert_eq!(pin_kind(PinStep::ChangeNewFirst { old: "1357".into() }), "change");
+        assert_eq!(pin_kind(PinStep::ChangeNewConfirm { old: "1357".into(), first: "2468".into() }), "change");
+        assert_eq!(None::<PinPad>.as_ref().map_or("none", |pad| pad.kind()), "none");
+    }
+
+    #[test]
+    fn reports_overweight_as_the_basic_info_window() {
+        // 1,745 / 2,470 is 70%: red at rathena's 70, not at 90; no limit yet, never.
+        let status = HashMap::from([(net::STATUS_WEIGHT, 17450), (net::STATUS_MAX_WEIGHT, 24700)]);
+        assert!(overweight(&status, 70) && !overweight(&status, 90));
+        assert!(!overweight(&HashMap::from([(net::STATUS_WEIGHT, 10)]), 50));
+    }
+
+    #[test]
+    fn reports_stats_and_skills() {
+        let status = HashMap::from([
+            (net::STATUS_STR, 1),
+            (net::STATUS_STR + 3, 9),
+            (net::STATUS_STR + 3 + net::STATUS_BONUS, 2),
+            (net::STATUS_STR_COST + 3, 2),
+            (net::STATUS_STR_COST + 5, 3),
+        ]);
+        let stats = stats_state(&status);
+        assert_eq!(stats.as_object().unwrap().len(), 6);
+        assert_eq!(stats["int"], json!({"value": 9, "bonus": 2, "cost": 2}));
+        assert_eq!(stats["str"], json!({"value": 1, "bonus": 0, "cost": 0}));
+        assert_eq!(stats["luk"]["cost"], 3);
+        // SP_ATK1 to SP_ASPD: 41 to 53.
+        let status: HashMap<u16, i64> = (net::STATUS_ATK..).zip([30, 12, 90, 70, 5, 8, 2, 4, 120, 60, 3, 9, 1356]).collect();
+        assert_eq!(
+            substats_state(&status),
+            json!({"atk": [30, 12], "matk": [70, 90], "hit": 120, "critical": 9, "def": [5, 8], "mdef": [2, 4], "flee": [60, 3], "aspd": 64})
+        );
+        let info = HashMap::from([(19, SkillInfo { resource: "MG_FIREBOLT".into(), name: "Fire Bolt".into(), max_level: 10, ..Default::default() })]);
+        let skills = [
+            net::Skill { id: 19, kind: net::Skill::ENEMY, level: 3, sp: 16, range: 9, upgradable: true },
+            net::Skill { id: 9999, kind: 0, level: 0, sp: 0, range: 0, upgradable: false },
+        ];
+        assert_eq!(
+            skills_state(&skills, &info),
+            json!([
+                {"id": 19, "name": "Fire Bolt", "level": 3, "max_level": 10, "upgradable": true},
+                {"id": 9999, "name": null, "level": 0, "max_level": null, "upgradable": false},
+            ])
+        );
+    }
+
+    #[test]
+    fn reports_the_players_look() {
+        let look = Look { hair: 1, hair_color: 3, clothes_color: 2, head_top: 16, head_mid: 0, head_bottom: 4, ..Look::default() };
+        assert_eq!(player_look(&look), json!({"hair": 1, "hair_color": 3, "clothes_color": 2, "head_top": 16, "head_mid": 0, "head_bottom": 4, "body": 0}));
+    }
+}

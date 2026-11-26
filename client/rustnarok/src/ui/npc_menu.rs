@@ -1,0 +1,436 @@
+//! An NPC's choice menu (ZC_MENU_LIST): 280 wide in the sys box frame with no title bar, 4 to 15 rows of 16 px, OK and
+//! Cancel at its bottom right. The Warp Portal and Teleport list is the same box with a heading, always four rows, at
+//! a place of its own.
+
+use std::time::{Duration, Instant};
+
+use rustnarok_client::grf::Grf;
+use rustnarok_client::text::Font;
+
+use crate::render::{Gpu, Texture};
+use crate::window::{Chrome, Frame, ScrollBar, Thumb};
+use crate::{Layer, UI, contains, pickup};
+
+pub const WIDTH: f32 = 280.0;
+/// Where it first opens, at every screen size (20 px under the say window's first place); then where it was left.
+pub const DEFAULT_POSITION: [f32; 2] = [200.0, 300.0];
+/// Up to this many items the window is its smallest; each item more adds a row up to MAX_ROWS, then the list scrolls.
+const MIN_ROWS: usize = 4;
+const MAX_ROWS: usize = 15;
+const MIN_HEIGHT: f32 = 120.0;
+const ROW: f32 = 16.0;
+/// The selected row's band, across the list at the top of its row.
+const BAND: f32 = 15.0;
+/// The list: at (12, 26), the window's size less 24 across and 55 down.
+const LIST_AT: [f32; 2] = [12.0, 26.0];
+const LIST_LESS: [f32; 2] = [24.0, 55.0];
+const LIST_FILL: [u8; 4] = [0xF0, 0xF0, 0xF0, 0xFF];
+/// The text's left inside the list.
+const TEXT_X: f32 = 3.0;
+/// The warp list's heading, in the strip over the list.
+const HEADING_AT: [f32; 2] = [12.0, 9.0];
+/// OK and Cancel, this far left of the window's right edge and up from its bottom.
+const OK_LEFT: f32 = 92.0;
+const CANCEL_LEFT: f32 = 46.0;
+const BUTTONS_UP: f32 = 24.0;
+const BUTTON: [f32; 2] = [42.0, 20.0];
+/// The wheel scrolls this many rows a notch.
+const WHEEL_ROWS: i64 = 3;
+/// A second press on the same row this soon, the pointer not moved, picks it.
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// The window's place, kept with the other windows.
+pub fn frame() -> Frame {
+    let mut frame = Frame::new(DEFAULT_POSITION, WIDTH);
+    frame.open = true;
+    frame
+}
+
+/// How many rows show for `count` items.
+fn rows(count: usize) -> usize {
+    count.clamp(MIN_ROWS, MAX_ROWS)
+}
+
+/// The window's size for `count` items.
+pub fn size(count: usize) -> [f32; 2] {
+    [WIDTH, MIN_HEIGHT + (rows(count) - MIN_ROWS) as f32 * ROW]
+}
+
+/// The list's box inside the window.
+fn list_box(count: usize) -> [f32; 4] {
+    let [width, height] = size(count);
+    [LIST_AT[0], LIST_AT[1], width - LIST_LESS[0], height - LIST_LESS[1]]
+}
+
+/// Where OK and Cancel go inside a window of `count` items.
+fn buttons(count: usize) -> [[f32; 2]; 2] {
+    let [width, height] = size(count);
+    [[width - OK_LEFT, height - BUTTONS_UP], [width - CANCEL_LEFT, height - BUTTONS_UP]]
+}
+
+/// The list's fill, a light grey, and the selected row's band on it, pixel (14, 10) of colorchip.bmp (white without it).
+pub struct Assets {
+    pub list: Texture,
+    pub band: Texture,
+}
+
+impl Assets {
+    pub fn load(gpu: &Gpu, grf: &Grf) -> Self {
+        let chip = crate::render::load_image(grf, &format!("{UI}colorchip.bmp")).ok().and_then(|image| image.get_pixel_checked(14, 10).map(|pixel| pixel.0));
+        let [list, band] = fills(chip);
+        Self { list: gpu.solid(list), band: gpu.solid(band) }
+    }
+}
+
+/// The list's and the band's colours, given colorchip.bmp's pixel when there is one.
+fn fills(chip: Option<[u8; 4]>) -> [[u8; 4]; 2] {
+    let [red, green, blue, _] = chip.unwrap_or([255; 4]);
+    [LIST_FILL, [red, green, blue, 255]]
+}
+
+/// Where the warp list opens on a `screen`, every time: (392, 480) at 1024 x 768.
+pub fn warp_place([width, height]: [f32; 2]) -> [f32; 2] {
+    [((width - 640.0) / 2.0).floor() + 200.0, (300.0 * height / 480.0).floor()]
+}
+
+/// The warp list's rows for the `maps` as the server named them: "Random" reads `random`, any other map its name in
+/// the `names` table (keyed without ".gat"; the bare file name without one), then `cancel` as the last row.
+pub fn warp_rows(maps: &[String], names: &std::collections::HashMap<String, String>, [random, cancel]: [String; 2]) -> Vec<String> {
+    let row = |map: &String| {
+        let stem = map.trim_end_matches(".gat");
+        if stem == "Random" { random.clone() } else { names.get(stem).cloned().unwrap_or_else(|| stem.to_owned()) }
+    };
+    maps.iter().map(row).chain([cancel.clone()]).collect()
+}
+
+/// The items, the selected one, the first row shown, the scroll bar's held thumb, and the last press on a row (when,
+/// where in the window, which).
+pub struct Menu {
+    pub items: Vec<String>,
+    pub selected: usize,
+    pub first: usize,
+    pub thumb: Thumb,
+    last_press: Option<(Instant, [f32; 2], usize)>,
+    /// The warp list: its heading and its own place, which isn't kept. It never grows past four rows.
+    warp: Option<(String, Frame)>,
+}
+
+impl Menu {
+    /// A new menu has its first item selected.
+    pub fn new(items: Vec<String>) -> Self {
+        Self { items, selected: 0, first: 0, thumb: Thumb::default(), last_press: None, warp: None }
+    }
+
+    /// The Warp Portal and Teleport list under its `heading`, opened on a `screen`.
+    pub fn warp_list(items: Vec<String>, heading: String, screen: [f32; 2]) -> Self {
+        let mut frame = Frame::new(warp_place(screen), WIDTH);
+        frame.open = true;
+        Self { warp: Some((heading, frame)), ..Self::new(items) }
+    }
+
+    /// The window's place: the warp list's own, an NPC menu's the `kept` one.
+    pub fn frame<'a>(&'a self, kept: &'a Frame) -> &'a Frame {
+        self.warp.as_ref().map_or(kept, |(_, frame)| frame)
+    }
+
+    pub fn frame_mut<'a>(&'a mut self, kept: &'a mut Frame) -> &'a mut Frame {
+        self.warp.as_mut().map_or(kept, |(_, frame)| frame)
+    }
+
+    /// The item count the window is sized for: the warp list's stays at four rows.
+    fn sized(&self) -> usize {
+        if self.warp.is_some() { MIN_ROWS } else { self.items.len() }
+    }
+
+    pub fn size(&self) -> [f32; 2] {
+        size(self.sized())
+    }
+
+    /// Where OK and Cancel go inside the window.
+    pub fn buttons(&self) -> [[f32; 2]; 2] {
+        buttons(self.sized())
+    }
+
+    /// The scroll bar at the list's right edge, as tall as the list, for a window at `corner`: it shows while there
+    /// are more items than rows.
+    fn bar(&self, corner: [f32; 2]) -> ScrollBar {
+        let [x, y, width, height] = list_box(self.sized());
+        let at = [corner[0] + x + width - ScrollBar::WIDTH, corner[1] + y];
+        ScrollBar { at, height, shown: rows(self.sized()), rows: self.items.len(), first: self.first }
+    }
+
+    /// How much narrower the rows are for the bar: its width while it shows.
+    fn bar_width(&self) -> f32 {
+        if self.bar([0.0; 2]).range() > 0 { ScrollBar::WIDTH } else { 0.0 }
+    }
+
+    /// The bar's arrows and thumb on screen for a window at `corner`, while it shows.
+    pub fn bar_boxes(&self, corner: [f32; 2]) -> Option<[[f32; 4]; 3]> {
+        self.bar(corner).boxes()
+    }
+
+    /// The pointer at height `local_y` in the window with the bar's thumb held: whole rows.
+    pub fn drag_thumb(&mut self, local_y: f32) {
+        if let Some(first) = self.thumb.first(local_y) {
+            self.first = first;
+        }
+    }
+
+    /// Up or Down: one row, stopping at the ends, with the view following.
+    pub fn step(&mut self, down: bool) {
+        let last = self.items.len().saturating_sub(1);
+        self.selected = if down { (self.selected + 1).min(last) } else { self.selected.saturating_sub(1) };
+        let shown = rows(self.sized());
+        if self.selected < self.first {
+            self.first = self.selected;
+        } else if self.selected >= self.first + shown {
+            self.first = self.selected + 1 - shown;
+        }
+    }
+
+    /// The wheel, `notches` down when positive: 3 rows a notch while there are more items than rows.
+    pub fn wheel(&mut self, notches: i32) {
+        let last = self.items.len().saturating_sub(rows(self.sized()));
+        self.first = (self.first as i64 + notches as i64 * WHEEL_ROWS).clamp(0, last as i64) as usize;
+    }
+
+    /// The item under `local`, a point inside the window.
+    pub fn row_at(&self, local: [f32; 2]) -> Option<usize> {
+        let [x, y, width, height] = list_box(self.sized());
+        if !contains([x, y], [width, height], local) {
+            return None;
+        }
+        let row = ((local[1] - y) / ROW) as usize;
+        let index = self.first + row;
+        (row < rows(self.sized()) && index < self.items.len()).then_some(index)
+    }
+
+    /// The rows shown: each one's item and its box inside the window, where `row_at` finds that item.
+    pub fn row_boxes(&self) -> Vec<(usize, [f32; 4])> {
+        let [x, y, width, _] = list_box(self.sized());
+        let width = width - self.bar_width();
+        (0..rows(self.sized()))
+            .map(|row| (self.first + row, row))
+            .filter(|(index, _)| *index < self.items.len())
+            .map(|(index, row)| (index, [x, y + row as f32 * ROW, width, ROW]))
+            .collect()
+    }
+
+    /// Whether a press at `local` drags the window: anywhere but the list and the buttons.
+    pub fn grips(&self, local: [f32; 2]) -> bool {
+        let [x, y, width, height] = list_box(self.sized());
+        !contains([x, y], [width, height], local) && !buttons(self.sized()).iter().any(|&place| contains(place, BUTTON, local))
+    }
+
+    /// A press at `local`: on the scroll bar, an arrow moves one row, the track three and the thumb is held
+    /// (`drag_thumb`); otherwise the row under it is selected. Returns true for a double click, the second press on
+    /// that row within 500 ms with the pointer where it was.
+    pub fn press(&mut self, local: [f32; 2], now: Instant) -> bool {
+        if let Some(first) = self.bar([0.0; 2]).press(local, &mut self.thumb) {
+            self.first = first;
+            self.last_press = None;
+            return false;
+        }
+        let Some(index) = self.row_at(local) else {
+            self.last_press = None;
+            return false;
+        };
+        let double = self.last_press.is_some_and(|(at, from, row)| row == index && from == local && now.saturating_duration_since(at) < DOUBLE_CLICK);
+        self.selected = index;
+        self.last_press = if double { None } else { Some((now, local, index)) };
+        double
+    }
+
+    /// The frame, the list, the selected row's band and the items at `corner`; the buttons are the caller's. A
+    /// `^RRGGBB` in one item colours the rows after it too; a long item is cut at the list's edge.
+    pub fn draw<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, frame: &'a pickup::Assets, assets: &'a Assets, corner: [f32; 2], font: &Font) {
+        let [width, height] = self.size();
+        pickup::draw_sysbox(layer, chrome, frame, [corner[0], corner[1], width, height]);
+        if let Some((heading, _)) = &self.warp {
+            layer.texts.push((heading.clone(), [corner[0] + HEADING_AT[0], corner[1] + HEADING_AT[1]], [0, 0, 0]));
+        }
+        let [x, y, list_width, list_height] = list_box(self.sized());
+        let [x, y] = [corner[0] + x, corner[1] + y];
+        layer.sprites.push((&assets.list, [x, y], [list_width, list_height]));
+        // With the bar up an item's text is cut that much sooner.
+        for (index, line) in item_lines(&self.items, font, list_width - TEXT_X - self.bar_width()).into_iter().enumerate() {
+            let Some(row) = index.checked_sub(self.first).filter(|&row| row < rows(self.sized())) else { continue };
+            let top = y + row as f32 * ROW;
+            if index == self.selected {
+                layer.sprites.push((&assets.band, [x, top], [list_width, BAND]));
+            }
+            let mut left = x + TEXT_X;
+            for (color, piece) in line {
+                let width = font.width(&piece);
+                layer.texts.push((piece, [left, top], color));
+                left += width;
+            }
+        }
+        self.bar(corner).draw(layer, chrome);
+    }
+}
+
+/// Each item's text as far as `width` goes, in colour pieces: a `^RRGGBB` in one item colours the items after it too.
+fn item_lines(items: &[String], font: &Font, width: f32) -> crate::iteminfo::ColoredLines {
+    let mut color = [0, 0, 0];
+    items.iter().map(|item| crate::wrap_plain(font, item, width, 0.0, &mut color, true).swap_remove(0)).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_list_is_grey_and_the_band_is_the_chips_colour() {
+        assert_eq!(fills(Some([0x10, 0x20, 0xC0, 0x00])), [LIST_FILL, [0x10, 0x20, 0xC0, 0xFF]]);
+        assert_eq!(fills(None), [LIST_FILL, [255; 4]]);
+    }
+
+    #[test]
+    fn grows_a_row_an_item_from_the_fifth_to_the_fifteenth() {
+        assert_eq!((size(0), size(4), buttons(4)), ([280.0, 120.0], [280.0, 120.0], [[188.0, 96.0], [234.0, 96.0]]));
+        assert_eq!((size(6), buttons(6)[0]), ([280.0, 152.0], [188.0, 128.0]));
+        assert_eq!((size(15), size(20)), ([280.0, 296.0], [280.0, 296.0]));
+        assert_eq!(list_box(6), [12.0, 26.0, 256.0, 97.0]);
+    }
+
+    #[test]
+    fn the_warp_list_keeps_four_rows_at_its_own_place() {
+        assert_eq!((warp_place([1024.0, 768.0]), warp_place([1280.0, 960.0])), ([392.0, 480.0], [520.0, 600.0]));
+        let kept = frame();
+        for count in [3, 5, 9] {
+            let list = Menu::warp_list((1..=count).map(|item| item.to_string()).collect(), "Select an Area to Warp".into(), [1024.0, 768.0]);
+            assert_eq!((list.size(), list.buttons()), ([280.0, 120.0], [[188.0, 96.0], [234.0, 96.0]]));
+            assert_eq!((list.frame(&kept).position, list.row_boxes().len()), ([392.0, 480.0], count.min(4)));
+        }
+        // An NPC menu still grows, at the kept place.
+        let menu = Menu::new((1..=9).map(|item| item.to_string()).collect());
+        assert_eq!((menu.size(), menu.frame(&kept).position, menu.row_boxes().len()), ([280.0, 200.0], DEFAULT_POSITION, 9));
+        // Five rows in four: the wheel shows rows 2 to 5, and Down from the fourth row brings the fifth into view.
+        let mut list = Menu::warp_list((1..=5).map(|item| item.to_string()).collect(), String::new(), [1024.0, 768.0]);
+        list.wheel(1);
+        assert_eq!(list.row_boxes().iter().map(|(index, _)| *index).collect::<Vec<_>>(), [1, 2, 3, 4]);
+        list.first = 0;
+        for _ in 0..4 {
+            list.step(true);
+        }
+        assert_eq!((list.selected, list.first, list.row_at([20.0, 27.0 + 3.0 * 16.0])), (4, 1, Some(4)));
+        // A drag moves the list's own frame, not the kept one.
+        let mut kept = frame();
+        list.frame_mut(&mut kept).position = [10.0, 20.0];
+        assert_eq!((list.frame(&kept).position, kept.position), ([10.0, 20.0], DEFAULT_POSITION));
+    }
+
+    #[test]
+    fn warp_rows_read_the_maps_names() {
+        let names = std::collections::HashMap::from([("izlude".to_owned(), "Izlude".to_owned())]);
+        let maps = ["Random.gat".to_owned(), "izlude.gat".to_owned(), "prt_fild08.gat".to_owned()];
+        assert_eq!(warp_rows(&maps, &names, ["Random Area".into(), "Cancel".into()]), ["Random Area", "Izlude", "prt_fild08", "Cancel"]);
+    }
+
+    #[test]
+    fn finds_the_row_under_the_pointer_when_scrolled() {
+        let mut menu = Menu::new((1..=20).map(|item| item.to_string()).collect());
+        assert_eq!(menu.row_at([20.0, 27.0]), Some(0));
+        menu.wheel(1);
+        assert_eq!((menu.first, menu.row_at([20.0, 27.0 + 16.0])), (3, Some(4)));
+        // Down to the last five: 20 items in 15 rows.
+        menu.wheel(9);
+        assert_eq!((menu.first, menu.row_at([20.0, 27.0 + 14.0 * 16.0])), (5, Some(19)));
+        assert_eq!(menu.row_at([5.0, 27.0]), None);
+        // Fewer items than rows: the empty rows pick nothing.
+        let menu = Menu::new(vec!["Stay".into(), "Leave".into()]);
+        assert_eq!((menu.row_at([20.0, 27.0 + 16.0]), menu.row_at([20.0, 27.0 + 32.0])), (Some(1), None));
+    }
+
+    #[test]
+    fn a_rows_target_is_where_a_press_picks_it() {
+        let middle = |[x, y, width, height]: [f32; 4]| [x + width / 2.0, y + height / 2.0];
+        // Two items: two targets, no empty rows.
+        let menu = Menu::new(vec!["Stay".into(), "Leave".into()]);
+        let boxes = menu.row_boxes();
+        assert_eq!(boxes.iter().map(|(index, _)| *index).collect::<Vec<_>>(), [0, 1]);
+        assert!(boxes.iter().all(|&(index, area)| menu.row_at(middle(area)) == Some(index)));
+        // Scrolled: only the rows shown, each where row_at finds it.
+        let mut menu = Menu::new((1..=20).map(|item| item.to_string()).collect());
+        menu.wheel(1);
+        let boxes = menu.row_boxes();
+        assert_eq!((boxes.len(), boxes[0].0, boxes[14].0), (15, 3, 17));
+        assert!(boxes.iter().all(|&(index, area)| menu.row_at(middle(area)) == Some(index)));
+    }
+
+    #[test]
+    fn steps_to_the_ends_and_keeps_the_selection_shown() {
+        let mut menu = Menu::new((1..=20).map(|item| item.to_string()).collect());
+        menu.step(false);
+        assert_eq!((menu.selected, menu.first), (0, 0));
+        for _ in 0..15 {
+            menu.step(true);
+        }
+        assert_eq!((menu.selected, menu.first), (15, 1));
+        for _ in 0..10 {
+            menu.step(true);
+        }
+        assert_eq!((menu.selected, menu.first), (19, 5));
+        menu.first = 0;
+        menu.step(false);
+        assert_eq!((menu.selected, menu.first), (18, 4));
+    }
+
+    #[test]
+    fn carries_a_colour_into_the_next_rows() {
+        let font = Font::load();
+        let items = ["^FF0000Red".to_owned(), "Still red".to_owned(), "^000000Black".to_owned()];
+        let lines = item_lines(&items, &font, 253.0);
+        assert_eq!(lines[1], [([0xFF, 0, 0], "Still red".to_owned())]);
+        assert_eq!(lines[2], [([0, 0, 0], "Black".to_owned())]);
+        // Cut at the list's edge.
+        let long = ["W".repeat(80)];
+        assert!(font.width(&item_lines(&long, &font, 253.0)[0][0].1) <= 253.0);
+    }
+
+    #[test]
+    fn a_bar_from_sixteen_items() {
+        let menu = |count: usize| Menu::new((1..=count).map(|item| item.to_string()).collect());
+        assert_eq!(menu(15).bar_boxes([0.0; 2]), None);
+        for count in [16, 20] {
+            // At (255, 26), as tall as the 15-row list: 241.
+            let [up, down, _] = menu(count).bar_boxes([0.0; 2]).unwrap();
+            assert_eq!((up, down), ([255.0, 26.0, 13.0, 13.0], [255.0, 254.0, 13.0, 13.0]));
+        }
+        // With the bar the rows end at it.
+        assert_eq!((menu(15).row_boxes()[0].1[2], menu(16).row_boxes()[0].1[2]), (256.0, 243.0));
+        // An arrow moves a row, the track three; the rows stay unselected.
+        let start = Instant::now();
+        let mut menu = menu(20);
+        assert!(!menu.press([260.0, 260.0], start));
+        assert_eq!((menu.first, menu.selected), (1, 0));
+        menu.press([260.0, 30.0], start);
+        assert_eq!(menu.first, 0);
+        let [_, _, thumb] = menu.bar_boxes([0.0; 2]).unwrap();
+        menu.press([260.0, thumb[1] + thumb[3] + 2.0], start);
+        assert_eq!(menu.first, 3);
+        // The thumb drags by whole rows, kept in 0..=5.
+        let [_, _, thumb] = menu.bar_boxes([0.0; 2]).unwrap();
+        let grab = thumb[1] + 2.0;
+        menu.press([260.0, grab], start);
+        menu.drag_thumb(grab + 500.0);
+        assert_eq!(menu.first, 5);
+        menu.drag_thumb(grab - 500.0);
+        assert_eq!(menu.first, 0);
+        assert!(menu.thumb.stop());
+    }
+
+    #[test]
+    fn picks_on_a_double_click_only() {
+        let start = Instant::now();
+        let mut menu = Menu::new(vec!["Stay".into(), "Leave".into()]);
+        let leave = [20.0, 27.0 + 16.0];
+        assert!(!menu.press(leave, start));
+        assert_eq!(menu.selected, 1);
+        // Too late, then moved, then a real double click.
+        assert!(!menu.press(leave, start + Duration::from_millis(600)));
+        assert!(!menu.press([21.0, 27.0 + 16.0], start + Duration::from_millis(700)));
+        assert!(menu.press([21.0, 27.0 + 16.0], start + Duration::from_millis(900)));
+    }
+}

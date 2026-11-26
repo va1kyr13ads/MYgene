@@ -1,0 +1,198 @@
+// MYgene V10.10 - Slayed Soul System.
+
+prontera,167,187,4	script	World Relic Keeper#MYgene	4_M_MINISTER,{
+
+    mes "^C9A13C[World Relic Keeper]^000000";
+    mes "^AA55FFSlayed Soul Reservoir^000000";
+    mes "Stored: "+MYGENE_SLAYED_SOULS+"/3000";
+    mes "Lifetime: "+
+        (MYGENE_SOUL_LIFETIME_HI*1000000000+
+         MYGENE_SOUL_LIFETIME_LO);
+
+    if (MYGENE_SLAYED_SOULS >= 3000)
+        mes "^CC9900Soul Overflow active.^000000";
+
+    next;
+
+    switch(select(
+        "Awaken Slayer:Renew Perfect Slayer:Check Soul Reservoir:Check Materials:About Awakening:Leave"
+    )) {
+
+    case 1:
+        .@mode = 0;
+        .@cost = 100;
+        break;
+
+    case 2:
+        .@mode = 1;
+        .@cost = 50;
+        break;
+
+    case 3:
+        mes "^AA55FFSlayed Soul Reservoir^000000";
+        mes "Stored: "+MYGENE_SLAYED_SOULS+"/3000";
+        mes "Free space: "+(3000-MYGENE_SLAYED_SOULS);
+        mes "Lifetime: "+
+            (MYGENE_SOUL_LIFETIME_HI*1000000000+
+             MYGENE_SOUL_LIFETIME_LO);
+        mes "Available soul renewals: "+
+            (MYGENE_SLAYED_SOULS/500);
+        next;
+        mes "Only 90% executions";
+        mes "can collect Slayed Souls.";
+        mes "Higher-level prey gives";
+        mes "more souls per execution.";
+        next;
+        mes "When storage is full:";
+        mes "65% chance of 10-300 Zeny";
+        mes "per eligible execution.";
+        close;
+
+    case 4:
+        mes "^C9A13C[Materials]^000000";
+        mes "Blue Gemstone: "+countitem(717);
+        mes "Red Gemstone: "+countitem(716);
+        mes "Yellow Gemstone: "+countitem(715);
+        mes "Total gems: "+
+            (countitem(715)+countitem(716)+countitem(717));
+        mes "Slayed Souls: "+MYGENE_SLAYED_SOULS;
+        close;
+
+    case 5:
+        mes "^AA55FFPerfect Awakening^000000";
+        mes "Base Level 40 required.";
+        mes "All jobs eligible.";
+        mes "Matching Slayer Card required.";
+        mes "90% execution must be enabled.";
+        next;
+        mes "First Awakening: 100 gems.";
+        mes "Renewal: 50 gems + 500 souls.";
+        mes "Duration: 7 days.";
+        mes "Maximum remaining: 14 days.";
+        next;
+        mes "Your original weapon, card";
+        mes "and identity are preserved.";
+        mes "Expired relics return to Base.";
+        close;
+
+    default:
+        close;
+    }
+
+    mes "^C9A13C[World Relic Keeper]^000000";
+
+    if (BaseLevel < 40) {
+        mes "Base Level 40 required.";
+        close;
+    }
+
+    .@weapon = getequipid(EQI_HAND_R);
+
+    .@card = 0;
+
+    switch (.@weapon) {
+    case 31001:
+    case 31004:
+        .@card = 31002;
+        break;
+    case 31006:
+    case 31008:
+        .@card = 31007;
+        break;
+    case 60010:
+    case 60012:
+        .@card = 60011;
+        break;
+    case 60013:
+    case 60015:
+        .@card = 60014;
+        break;
+    case 60016:
+    case 60018:
+        .@card = 60017;
+        break;
+    case 60019:
+    case 60021:
+        .@card = 60020;
+        break;
+    }
+
+    if (!.@card) {
+        mes "Equip a Slayer weapon.";
+        close;
+    }
+
+    if (.@mode == 0) {
+        if (.@weapon != 31001 &&
+            .@weapon != 31006 &&
+            .@weapon != 60010 &&
+            .@weapon != 60013 &&
+            .@weapon != 60016 &&
+            .@weapon != 60019) {
+            mes "Equip a Base Slayer.";
+            close;
+        }
+    } else {
+        if (.@weapon != 31004 &&
+            .@weapon != 31008 &&
+            .@weapon != 60012 &&
+            .@weapon != 60015 &&
+            .@weapon != 60018 &&
+            .@weapon != 60021) {
+            mes "Equip an awakened Perfect Slayer.";
+            close;
+        }
+    }
+
+    if (getequipcardid(EQI_HAND_R,0) != .@card) {
+        mes "^FF5555Matching card required.^000000";
+        mes "Required: "+getitemname(.@card);
+        mes "Unlock 90% execution first.";
+        close;
+    }
+
+    .@gems =
+        countitem(715)+countitem(716)+countitem(717);
+
+    mes "Weapon: "+getitemname(.@weapon);
+    mes "Execution: ^33993390%^000000";
+    mes "Gemstones: "+.@gems+"/"+.@cost;
+
+    if (.@mode)
+        mes "Souls: "+MYGENE_SLAYED_SOULS+"/500";
+
+    if (.@gems < .@cost) {
+        mes "^FF5555Insufficient gemstones.^000000";
+        close;
+    }
+
+    if (.@mode && MYGENE_SLAYED_SOULS < 500) {
+        mes "^FF5555Insufficient Slayed Souls.^000000";
+        close;
+    }
+
+    next;
+
+    if (select("Confirm:Cancel") == 2)
+        close;
+
+    if (getequipid(EQI_HAND_R) != .@weapon ||
+        getequipcardid(EQI_HAND_R,0) != .@card) {
+        mes "Your equipment has changed.";
+        close;
+    }
+
+    if (mygeneawakeningtest(.@mode)) {
+        mes "^AA55FFAwakening successful!^000000";
+        mes "Please equip your relic.";
+        mes "Remaining souls: "+MYGENE_SLAYED_SOULS;
+    } else {
+        mes "^FF5555Operation declined.^000000";
+        mes "Check your materials and";
+        mes "remaining rental duration.";
+        mes "Permanent test relics";
+        mes "cannot be renewed.";
+    }
+
+    close;
+}

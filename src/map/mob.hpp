@@ -335,6 +335,12 @@ struct s_dmglog{
 };
 
 struct mob_data : public block_list {
+    // MYGENE_CONQUEST_AI_V3
+    int32 mygene_cq_role = 0;
+    int32 mygene_cq_guardian = 0;
+    int32 mygene_cq_map = -1;
+    t_tick mygene_cq_next_ai = 0;
+    t_tick mygene_cq_ready_deadline = 0;
 	struct unit_data  ud;
 	struct view_data *vd;
 	bool vd_changed;
@@ -565,6 +571,16 @@ int32 mob_is_clone(int32 mob_id);
 
 int32 mob_clone_spawn(map_session_data *sd, int16 m, int16 x, int16 y, const char *event, int32 master_id, enum e_mode mode, int32 flag, uint32 duration);
 int32 mob_clone_delete(mob_data *md);
+
+int32 mygene_cq_spawn(
+    map_session_data* sd,
+    int32 role,
+    int32 guardian
+);
+
+bool mygene_cq_mentor_valid(
+    const mob_data* md
+);
 
 void mob_reload_itemmob_data(void);
 void mob_reload(void);

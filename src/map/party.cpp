@@ -4,6 +4,7 @@
 #include "party.hpp"
 
 #include <cstdlib>
+#include <ctime>
 
 #include <common/cbasetypes.hpp>
 #include <common/malloc.hpp>
@@ -28,6 +29,7 @@
 #include "pc.hpp"
 #include "pc_groups.hpp"
 #include "trade.hpp"
+#include "storage.hpp"
 
 static DBMap* party_db; // int32 party_id -> struct party_data* (releases data)
 static DBMap* party_booking_db; // uint32 char_id -> struct party_booking_ad_info* (releases data) // Party Booking [Spiria]
@@ -1295,8 +1297,121 @@ void party_exp_share(struct party_data* p, block_list* src, t_exp base_exp, t_ex
 }
 
 //Does party loot. first_charid holds the charid of the player who has time priority to take the item.
-int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* item, int32 first_charid)
+
+// MYgene: The Hidden Burden.
+static void mygene_spacebox_progress(
+    map_session_data* sd,
+    uint32 previous_weight,
+    uint32 previous_max_weight)
 {
+    if (!sd || !previous_max_weight ||
+        !sd->max_weight ||
+        pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") == 1)
+        return;
+
+    int64 count = pc_readreg2(sd, "#MYgeneSBCount");
+
+    if (count >= 50)
+        return;
+
+    // Each character must recover below 50% weight.
+    // Progress and cooldown are account-wide.
+    if ((uint64)previous_weight * 100 <
+        (uint64)previous_max_weight * 50) {
+        pc_setreg2(sd, "MYgeneSBArmed", 1);
+    }
+
+    if (pc_readreg2(sd, "MYgeneSBArmed") != 1)
+        return;
+
+    // Only count a genuine upward crossing caused by loot.
+    if (sd->max_weight != previous_max_weight ||
+        sd->weight <= previous_weight)
+        return;
+
+    if ((uint64)previous_weight * 100 >=
+        (uint64)previous_max_weight * 90)
+        return;
+
+    if ((uint64)sd->weight * 100 <
+        (uint64)sd->max_weight * 90)
+        return;
+
+    // Require another recovery below 50%.
+    pc_setreg2(sd, "MYgeneSBArmed", 0);
+
+    const int64 now = (int64)std::time(nullptr);
+    const int64 last = pc_readreg2(sd, "#MYgeneSBLast");
+
+    // Account-wide five-minute cooldown.
+    if (last > 0 && now - last < 300)
+        return;
+
+    ++count;
+
+    pc_setreg2(sd, "#MYgeneSBCount", count);
+    pc_setreg2(sd, "#MYgeneSBLast", now);
+
+    intif_saveregistry(sd);
+
+    // MYgene Hidden Burden milestone whispers.
+    switch (count) {
+        case 10:
+            clif_displaymessage(sd->fd,
+                "[Unknown Whisper] Something unseen seems to notice your burden.");
+            break;
+
+        case 20:
+            clif_displaymessage(sd->fd,
+                "[Unknown Whisper] The weight you carry is not yours alone.");
+            break;
+
+        case 30:
+            clif_displaymessage(sd->fd,
+                "[Unknown Whisper] There are places where the laws of this world hold no power.");
+            break;
+
+        case 40:
+            clif_displaymessage(sd->fd,
+                "[Unknown Whisper] Be patient, adventurer. The space between worlds is beginning to open.");
+            break;
+    }
+
+    // Reveal the discovery only after qualification.
+    if (count == 50) {
+        clif_displaymessage(sd->fd,
+            "[Mysterious Voice] Your burden has become too great.");
+
+        clif_displaymessage(sd->fd,
+            "There exists a space beyond the limits of this world...");
+
+        clif_displaymessage(sd->fd,
+            "Seek the Mysterious Keeper near Prontera's northern gate.");
+    }
+}
+
+int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* item, int32 first_charid, bool monster_autoloot)
+{
+    auto add_loot = [monster_autoloot](map_session_data* receiver, struct item* loot) -> int32 {
+        if (monster_autoloot && storage_spacebox_autoloot(receiver, loot))
+            return 0;
+
+        const uint32 previous_weight = receiver->weight;
+        const uint32 previous_max_weight = receiver->max_weight;
+
+        auto result = pc_additem(
+            receiver, loot, loot->amount,
+            LOG_TYPE_PICKDROP_PLAYER);
+
+        if (monster_autoloot && result == ADDITEM_SUCCESS)
+            mygene_spacebox_progress(
+                receiver,
+                previous_weight,
+                previous_max_weight);
+
+        return result;
+    };
+
 	TBL_PC* target = nullptr;
 	int32 i;
 
@@ -1315,7 +1430,7 @@ int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* 
 				if( (psd = p->data[i].sd) == nullptr || sd->m != psd->m || pc_isdead(psd) || (battle_config.idle_no_share && pc_isidle_party(psd)) )
 					continue;
 
-				if (pc_additem(psd,item,item->amount,LOG_TYPE_PICKDROP_PLAYER))
+				if (add_loot(psd,item))
 					continue; //Chosen char can't pick up loot.
 
 				//Successful pick.
@@ -1338,7 +1453,7 @@ int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* 
 			while (count > 0) { //Pick a random member.
 				i = rnd_value(0, count-1);
 
-				if (pc_additem(psd[i],item,item->amount,LOG_TYPE_PICKDROP_PLAYER)) { // Discard this receiver.
+				if (add_loot(psd[i],item)) { // Discard this receiver.
 					psd[i] = psd[count-1];
 					count--;
 				} else { // Successful pick.
@@ -1352,7 +1467,7 @@ int32 party_share_loot(struct party_data* p, map_session_data* sd, struct item* 
 	if (!target) {
 		target = sd; //Give it to the char that picked it up
 
-		if ((i = pc_additem(sd,item,item->amount,LOG_TYPE_PICKDROP_PLAYER)))
+		if ((i = add_loot(sd,item)))
 			return i;
 	}
 

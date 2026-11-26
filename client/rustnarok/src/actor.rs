@@ -1,0 +1,5511 @@
+//! Characters: layered player sprites (body + head with dye palettes) and movement along a path of cells.
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::time::{Duration, Instant};
+
+use image::RgbaImage;
+use rustnarok_client::grf::Grf;
+use rustnarok_client::lua::LookTables;
+use rustnarok_client::sprite::{self, Act, Palette, Pick, Spr};
+
+use crate::render::{Gpu, Texture};
+use crate::world;
+
+/// Sprite actions: each has 8 directions. Indices by kind of unit.
+pub const IDLE: usize = 0;
+pub const WALK: usize = 1;
+
+/// The status (EFST_ON_PUSH_CART) a unit pushing a cart has; its value is the cart's type.
+pub const PUSH_CART: u16 = 673;
+/// EFST_CHANGE_SIZE and EFST_CHANGE_SIZE_MONSTER (status.hpp). val1 on ZC_MSG_STATE_CHANGE3 is the size in percent.
+pub const CHANGE_SIZE: u16 = 1420;
+pub const CHANGE_SIZE_MONSTER: u16 = 1421;
+
+/// Jobs of the Super Novice line (and the Hyper Novice), whose cart is always their own.
+const SUPER_NOVICE_JOBS: [u16; 5] = [23, 4045, 4190, 4191, 4307];
+
+/// Baby jobs (rathena's JOB_BABY… and JOB_SUPER_BABY…), whose carts move by a baby cart's ACT.
+fn baby_job(job: u16) -> bool {
+    matches!(job, 4023..=4045 | 4096..=4112 | 4191 | 4220 | 4222..=4229 | 4238 | 4241 | 4242 | 4244)
+}
+
+/// Pushcart types from 10 on: the gift box, poring-loaded, poring and Mado carts.
+const NAMED_CARTS: [&str; 4] = ["선물상자카트", "포링싣은카트", "포링카트", "마도카트"];
+
+/// The sprite (without extension) and ACT of a pushcart type for a job: 손수레, 손수레1 … 손수레8 for types 1 to 9, then
+/// the named carts, the Super Novice's 슈노손수레 whatever the type. A baby's moves by its own ACT (베이비손수레…, with
+/// the grown-up's sprite), or has a sprite of its own: 손수레5베이비 … for types 6 to 9, 선물상자카트_미니 … from 10.
+pub fn cart_path(kind: i32, job: u16) -> (String, String) {
+    let folder = "data\\sprite\\이팩트\\";
+    let baby = baby_job(job);
+    let super_novice = SUPER_NOVICE_JOBS.contains(&job);
+    let named = usize::try_from(kind - 10).ok().and_then(|index| NAMED_CARTS.get(index)).filter(|_| !super_novice);
+    let name = if super_novice {
+        "슈노손수레".to_string()
+    } else if let Some(name) = named {
+        name.to_string()
+    } else if kind > 1 {
+        format!("손수레{}", kind - 1)
+    } else {
+        "손수레".to_string()
+    };
+    let numbered = name.strip_prefix("손수레").and_then(|number| number.parse::<i32>().ok());
+    let (sprite, act) = match numbered {
+        Some(5..) if baby => (format!("{name}베이비"), format!("{name}베이비")),
+        _ if baby && named.is_some() => (format!("{name}_미니"), format!("{name}_미니")),
+        _ if baby => (name.clone(), format!("베이비{name}")),
+        _ => (name.clone(), name),
+    };
+    (format!("{folder}{sprite}"), format!("{folder}{act}.act"))
+}
+
+/// Players only.
+pub const SIT: usize = 2;
+pub const PICKUP: usize = 3;
+/// A player's battle stance, weapon drawn (most weapons only show here and while attacking).
+pub const READY: usize = 4;
+
+/// Attack, flinch and death actions for a unit's object type (players vs. monsters and the rest).
+pub fn combat_actions(kind: u8) -> (usize, usize, usize) {
+    match kind {
+        // ponytail: players always use their first attack motion; the weapon decides it in the client.
+        // Mercenaries (9) are laid out like players.
+        0 | 9 => (5, 6, 8),
+        _ => (2, 3, 4),
+    }
+}
+
+/// How far into an action a frame is drawn.
+#[derive(Clone, Copy)]
+pub enum Timing {
+    /// Milliseconds into a looping action (standing), at the ACT's own frame delays.
+    Loop(f32),
+    /// Fraction (0..1) of a one-shot action stretched over a given duration (a skill's pose, a pickup).
+    Span(f32),
+    /// Milliseconds into a one-shot action at its ACT pace times a scale (attack, flinch, death), the last frame held.
+    Once(f32, f32),
+    /// World units walked so far: legs move with the distance walked, not the time.
+    Walk(f32),
+}
+/// ACT delays are in units of 24 ms.
+const DELAY_UNIT_MS: f32 = 24.0;
+/// Walking frames per world unit walked, times the ACT delay.
+const WALK_FRAMES: f32 = 1.48;
+/// An attack plays at its ACT pace times min(attackMT, ATTACK_PACE) / ATTACK_PACE (a bow, uncapped).
+const ATTACK_PACE: f32 = 432.0;
+/// A player's swing with a bow lands this much after its hit frame: the arrow's flight.
+const BOW_FLIGHT_MS: f32 = 192.0;
+
+/// When a swing's hit lands, `hit_ms` being its hit frame: with a `bow`, the arrow's flight later.
+pub fn bow_flight(hit_ms: f32, bow: bool) -> f32 {
+    if bow { hit_ms + BOW_FLIGHT_MS } else { hit_ms }
+}
+
+/// The frame of `count` a looping action shows `ms` in, at an ACT delay of `delay` units.
+pub fn loop_frame(ms: f32, delay: f32, count: usize) -> usize {
+    (ms / (delay * DELAY_UNIT_MS)) as usize % count.max(1)
+}
+
+/// The frame a one-shot action shows `ms` in: as looping, then its last frame.
+pub fn once_frame(ms: f32, delay: f32, count: usize) -> usize {
+    ((ms / (delay * DELAY_UNIT_MS)) as usize).min(count.max(1) - 1)
+}
+
+/// The walking frame after `distance` world units walked (a cell is 5).
+pub fn walk_frame(distance: f32, delay: f32, count: usize) -> usize {
+    (distance * WALK_FRAMES / delay) as usize % count.max(1)
+}
+
+/// How much an attack's ACT pace is stretched for an attack motion of `attack_ms` (ZC_NOTIFY_ACT's source speed):
+/// capped at ATTACK_PACE, except for players shooting a bow. An attack motion of 0 (Arrow Shower's) plays at the ACT's
+/// own pace.
+pub fn attack_scale(attack_ms: i32, bow: bool) -> f32 {
+    if attack_ms <= 0 {
+        return 1.0;
+    }
+    let motion = attack_ms as f32;
+    (if bow { motion } else { motion.min(ATTACK_PACE) }) / ATTACK_PACE
+}
+
+/// A job's sprite names: its body (also its garment motions), its .imf, its body dyes, and its weapons' folder and
+/// file prefix (None: no weapon drawn).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JobSprites {
+    pub body: &'static str,
+    pub imf: &'static str,
+    pub palette: &'static str,
+    pub weapon: Option<(&'static str, &'static str)>,
+}
+
+impl JobSprites {
+    /// A weapon file of this job (no extension): `name` is the weapon's name ending (`_단검`).
+    pub fn weapon_path(&self, race: &str, sex: &str, name: &str) -> Option<String> {
+        let (folder, prefix) = self.weapon?;
+        Some(format!("data\\sprite\\{race}\\{folder}\\{prefix}_{sex}{name}"))
+    }
+
+    /// The .imf (which frames put the head behind the body).
+    pub fn imf_path(&self, sex: &str) -> String {
+        format!("data\\imf\\{}_{sex}.imf", self.imf)
+    }
+}
+
+/// The sprite names of a job (src/job_sprites.txt), mounted and costume bodies included.
+pub fn job_sprites(job: u16) -> Option<JobSprites> {
+    static TABLE: LazyLock<HashMap<u16, JobSprites>> = LazyLock::new(|| parse_job_sprites(include_str!("job_sprites.txt")));
+    TABLE.get(&job).copied()
+}
+
+/// Lines of job, body, imf, palette and weapon names, tab-separated; `#` starts a comment line.
+fn parse_job_sprites(text: &'static str) -> HashMap<u16, JobSprites> {
+    text.lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let job = fields.next()?.parse().ok()?;
+            let (body, imf, palette, weapon) = (fields.next()?, fields.next()?, fields.next()?, fields.next()?);
+            let weapon = (weapon != "-").then(|| weapon.split_once('\\').unwrap_or((weapon, weapon)));
+            Some((job, JobSprites { body, imf, palette, weapon }))
+        })
+        .collect()
+}
+
+/// Option bits (rathena's OPTION_*) that put a player in another body: outfits, mounts and the Star Gladiator's
+/// union.
+const WEDDING: u32 = 0x1000;
+const UNION: u32 = 0x8000;
+const XMAS: u32 = 0x1_0000;
+const SUMMER: u32 = 0x4_0000;
+const HANBOK: u32 = 0x800_0000;
+const OKTOBERFEST: u32 = 0x1000_0000;
+const RIDING: u32 = 0x20;
+/// The five dragon colours.
+const DRAGONS: [u32; 5] = [0x8_0000, 0x80_0000, 0x100_0000, 0x200_0000, 0x400_0000];
+const WOLF_RIDING: u32 = 0x20_0000;
+const MADOGEAR: u32 = 0x40_0000;
+/// The mounts that swap the body for a mounted one.
+const MOUNTS: u32 = RIDING | DRAGONS[0] | DRAGONS[1] | DRAGONS[2] | DRAGONS[3] | DRAGONS[4] | WOLF_RIDING | MADOGEAR;
+/// Not a rathena option bit (theirs stop at 0x2000_0000): the all-jobs mount of the halter-lead items (status 613),
+/// kept in `Look::option` so every body choice through `sprite_job` sees it. It never comes from the server.
+pub const ALL_RIDING_LOOK: u32 = 0x8000_0000;
+/// The body each job rides on with the all-jobs mount, applied after the outfits and class mounts above (so a Knight
+/// on a Peco or in the wedding dress stays as he is). Jobs 4351–4357 also have mounts, 4358–4360, which no name table
+/// holds yet.
+const ALL_RIDING_BODIES: [(u16, u16); 150] = [
+    (0, 4124),
+    (1, 4116),
+    (2, 4130),
+    (3, 4122),
+    (4, 4126),
+    (5, 4119),
+    (6, 4141),
+    (7, 4199),
+    (8, 4156),
+    (9, 4134),
+    (10, 4138),
+    (11, 4154),
+    (12, 4145),
+    (14, 4203),
+    (15, 4125),
+    (16, 4131),
+    (17, 4142),
+    (18, 4137),
+    (19, 4149),
+    (20, 4147),
+    (23, 4128),
+    (24, 4115),
+    (25, 4114),
+    (4001, 4183),
+    (4002, 4184),
+    (4003, 4185),
+    (4004, 4186),
+    (4005, 4187),
+    (4006, 4188),
+    (4007, 4189),
+    (4008, 4200),
+    (4009, 4157),
+    (4010, 4136),
+    (4011, 4118),
+    (4012, 4150),
+    (4013, 4146),
+    (4015, 4204),
+    (4016, 4139),
+    (4017, 4135),
+    (4018, 4144),
+    (4019, 4121),
+    (4020, 4153),
+    (4021, 4152),
+    (4023, 4158),
+    (4024, 4159),
+    (4025, 4160),
+    (4026, 4161),
+    (4027, 4162),
+    (4028, 4163),
+    (4029, 4181),
+    (4030, 4207),
+    (4031, 4194),
+    (4032, 4195),
+    (4033, 4196),
+    (4034, 4164),
+    (4035, 4165),
+    (4037, 4210),
+    (4038, 4166),
+    (4039, 4167),
+    (4040, 4168),
+    (4041, 4169),
+    (4042, 4170),
+    (4043, 4171),
+    (4045, 4172),
+    (4046, 4155),
+    (4047, 4123),
+    (4048, 4123),
+    (4049, 4117),
+    (4054, 4202),
+    (4055, 4133),
+    (4056, 4198),
+    (4057, 4129),
+    (4058, 4197),
+    (4059, 4140),
+    (4060, 4202),
+    (4061, 4133),
+    (4062, 4198),
+    (4063, 4129),
+    (4064, 4197),
+    (4065, 4140),
+    (4066, 4201),
+    (4067, 4132),
+    (4068, 4148),
+    (4069, 4151),
+    (4070, 4127),
+    (4071, 4120),
+    (4072, 4143),
+    (4073, 4201),
+    (4074, 4132),
+    (4075, 4148),
+    (4076, 4151),
+    (4077, 4127),
+    (4078, 4120),
+    (4079, 4143),
+    (4096, 4209),
+    (4097, 4173),
+    (4098, 4206),
+    (4099, 4174),
+    (4100, 4205),
+    (4101, 4175),
+    (4102, 4208),
+    (4103, 4176),
+    (4104, 4177),
+    (4105, 4178),
+    (4106, 4179),
+    (4107, 4180),
+    (4108, 4182),
+    (4190, 4192),
+    (4191, 4193),
+    (4211, 4213),
+    (4212, 4214),
+    (4215, 4216),
+    (4218, 4219),
+    (4220, 4221),
+    (4222, 4230),
+    (4223, 4231),
+    (4224, 4232),
+    (4225, 4233),
+    (4226, 4234),
+    (4227, 4235),
+    (4228, 4236),
+    (4229, 4237),
+    (4238, 4234),
+    (4239, 4245),
+    (4240, 4246),
+    (4241, 4247),
+    (4242, 4248),
+    (4243, 4245),
+    (4244, 4247),
+    (4252, 4265),
+    (4253, 4266),
+    (4254, 4267),
+    (4255, 4268),
+    (4256, 4269),
+    (4257, 4270),
+    (4258, 4271),
+    (4259, 4272),
+    (4260, 4273),
+    (4261, 4274),
+    (4262, 4275),
+    (4263, 4276),
+    (4264, 4277),
+    (4302, 4309),
+    (4303, 4310),
+    (4304, 4311),
+    (4305, 4312),
+    (4306, 4313),
+    (4307, 4314),
+    (4308, 4315),
+    (4316, 4309),
+];
+
+/// rathena `OPTION_FALCON` (`src/map/status.hpp`).
+pub const OPTION_FALCON: u32 = 0x10;
+/// rathena `OPTION_WUG`.
+pub const OPTION_WUG: u32 = 0x10_0000;
+/// rathena `OPTION_WUGRIDER`: the wolf the player is riding. Same bit as the mount body.
+pub const OPTION_WUGRIDER: u32 = WOLF_RIDING;
+/// rathena's OPTION_HIDE, OPTION_CLOAK and OPTION_CHASEWALK: the unit is out of sight.
+pub const UNSEEN_OPTIONS: u32 = OPTION_HIDE | OPTION_CLOAK | OPTION_CHASEWALK;
+/// rathena's option bits that keep a unit out of sight: Hiding, Cloaking, a GM's @hide, Chase Walk.
+pub const OPTION_HIDE: u32 = 0x2;
+pub const OPTION_CLOAK: u32 = 0x4;
+pub const OPTION_INVISIBLE: u32 = 0x40;
+pub const OPTION_CHASEWALK: u32 = 0x4000;
+/// rathena OPTION_ORCISH: the head is the orc face.
+pub const OPTION_ORCISH: u32 = 0x800;
+const HIDDEN_OPTIONS: u32 = UNSEEN_OPTIONS | OPTION_INVISIBLE;
+/// rathena EFST_CLAIRVOYANCE. While it is on, hidden units show as silhouettes.
+pub const CLAIRVOYANCE: u16 = 184;
+/// rathena EF_FOOT and EF_FOOT2 (EF_HIT1 is 0, so these are 326 and 327): a chase walk's footprints.
+pub const EF_FOOT: u32 = 326;
+pub const EF_FOOT2: u32 = 327;
+
+/// How much of a unit shows.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Seen {
+    Whole,
+    /// Its shadow only: our own character in Hiding.
+    Shadow,
+    /// A black figure, no shadow: someone hidden while Clairvoyance is on.
+    Silhouette,
+    Nothing,
+}
+
+/// A name as the screen draws it: names come as "name#script part", and only the name shows.
+pub fn shown_name(name: &str) -> &str {
+    name.split('#').next().unwrap_or_default()
+}
+
+/// What shows of a unit with these option bits. Others in Hiding, Cloaking or Chase Walk are silhouettes while
+/// `clairvoyance` (status 184) is on; GM hide shows nothing. Our own character in Hiding is a shadow, and is never
+/// a silhouette.
+// ponytail: clairvoyance is taken from our own character's status icons.
+pub fn seen(option: u32, own: bool, clairvoyance: bool) -> Seen {
+    if option & HIDDEN_OPTIONS == 0 {
+        Seen::Whole
+    } else if own && option & (OPTION_CLOAK | OPTION_INVISIBLE | OPTION_CHASEWALK) == 0 {
+        Seen::Shadow
+    } else if !own && clairvoyance && option & OPTION_INVISIBLE == 0 && option & UNSEEN_OPTIONS != 0 {
+        Seen::Silhouette
+    } else {
+        Seen::Nothing
+    }
+}
+
+/// Chase Walk's counter reaches 12 for the left print (326) and 24 for the right (327), then goes back to 1.
+const CHASE_LEFT_AT: u32 = 12;
+const CHASE_RIGHT_AT: u32 = 24;
+
+/// A chase walk's footprint counter: ticks counted, where the last check saw the unit, and the tick clock.
+#[derive(Default)]
+struct ChaseSteps {
+    c: u32,
+    last: Option<[f32; 3]>,
+    clock: Option<Instant>,
+}
+
+/// The option bits that change what a player wears (`Look::option`): outfits, mounts and the orcish face.
+pub const BODY_OPTIONS: u32 = WEDDING
+    | UNION
+    | XMAS
+    | SUMMER
+    | HANBOK
+    | OKTOBERFEST
+    | RIDING
+    | DRAGONS[0]
+    | DRAGONS[1]
+    | DRAGONS[2]
+    | DRAGONS[3]
+    | DRAGONS[4]
+    | WOLF_RIDING
+    | MADOGEAR
+    | OPTION_ORCISH;
+
+/// The job whose body a player of `job` is drawn with under `option`: a wedding or holiday outfit (not in the union),
+/// else its mount's or union's body, else its own; then the all-jobs mount's body over that (`ALL_RIDING_LOOK`).
+pub fn sprite_job(job: u16, option: u32) -> u16 {
+    if option & WEDDING != 0 {
+        return 22;
+    }
+    if option & UNION == 0
+        && let Some(&(_, outfit)) = [(XMAS, 26), (SUMMER, 27), (HANBOK, 28), (OKTOBERFEST, 29)].iter().find(|(bit, _)| option & bit != 0)
+    {
+        return outfit;
+    }
+    let bodies: [(u32, &[(u16, u16)]); 9] = [
+        (RIDING, &[(7, 13), (14, 21), (4008, 4014), (4015, 4022), (4030, 4036), (4037, 4044), (4066, 4082), (4073, 4083), (4102, 4110), (4258, 4281)]),
+        (DRAGONS[0], &[(4054, 4080), (4060, 4081), (4096, 4109), (4252, 4280)]),
+        (DRAGONS[1], &[(4054, 4088), (4060, 4089)]),
+        (DRAGONS[2], &[(4054, 4090), (4060, 4091)]),
+        (DRAGONS[3], &[(4054, 4092), (4060, 4093)]),
+        (DRAGONS[4], &[(4054, 4094), (4060, 4095)]),
+        (WOLF_RIDING, &[(4056, 4084), (4062, 4085), (4098, 4111), (4257, 4278)]),
+        (MADOGEAR, &[(4058, 4086), (4064, 4087), (4100, 4112), (4253, 4279)]),
+        (UNION, &[(4047, 4048), (4226, 4238), (4239, 4243), (4241, 4244), (4302, 4316)]),
+    ];
+    let job = bodies.iter().filter(|(bit, _)| option & bit != 0).flat_map(|(_, pairs)| pairs.iter()).find(|(from, _)| *from == job).map_or(job, |&(_, to)| to);
+    if option & ALL_RIDING_LOOK == 0 {
+        return job;
+    }
+    ALL_RIDING_BODIES.iter().find(|(from, _)| *from == job).map_or(job, |&(_, to)| to)
+}
+
+/// Outfit bodies (wedding and holidays) show no weapon or shield.
+fn outfit(job: u16) -> bool {
+    matches!(job, 22 | 26..=30)
+}
+
+/// How big a player of `job` is drawn: babies smaller (Doram babies 0.8, the first baby jobs 0.75, the rest 0.82).
+fn body_scale(job: u16) -> f32 {
+    let baby = matches!(
+        job,
+        4023..=4045 | 4096..=4112 | 4158..=4182 | 4191 | 4193..=4196 | 4205..=4210 | 4220 | 4222..=4238 | 4241 | 4242 | 4244 | 4247 | 4248 | 4352 | 4354
+    );
+    match job {
+        _ if !baby => 1.0,
+        _ if is_doram(job) => 0.8,
+        4023..=4029 | 4045 | 4191 => 0.75,
+        _ => 0.82,
+    }
+}
+
+/// How much higher the glints of a status sit over a unit's feet: a mounted job's own 6 (4 for a few), else a baby's or a
+/// Doram's lower term, else 6 riding and 0 on foot; none for anything but a player.
+pub fn glint_rise(player: bool, job: u16, option: u32) -> f32 {
+    if !player {
+        return 0.0;
+    }
+    match job {
+        13 | 21 | 4014 | 4022 | 4080..=4095 | 4278..=4281 => return 6.0,
+        4036 | 4044 | 4109..=4112 => return 4.0,
+        _ => {}
+    }
+    let riding = option & MOUNTS != 0;
+    match (baby_job(job), is_doram(job), riding) {
+        (true, _, true) => 4.0,
+        (true, _, false) => -1.0,
+        (_, true, true) => -3.0,
+        (_, true, false) => -2.0,
+        (_, _, true) => 6.0,
+        _ => 0.0,
+    }
+}
+
+/// Whether an option word has its unit riding a mount.
+pub fn rides(option: u32) -> bool {
+    option & MOUNTS != 0
+}
+
+/// Doram jobs live under 도람족 instead of 인간족.
+pub fn is_doram(job: u16) -> bool {
+    matches!(job, 4217..=4221 | 4308 | 4315)
+}
+
+/// The head sprite under `data\sprite\` when `option` has the orcish bit. None keeps the hair.
+pub fn orcish_head(job: u16, option: u32) -> Option<&'static str> {
+    (option & OPTION_ORCISH != 0).then_some(if is_doram(job) { r"이팩트\orcface_doram" } else { r"이팩트\orcface" })
+}
+
+/// The glow sprite under `data\sprite\` for a mercenary of `job`. Archers, and jobs outside 6017–6046, have none.
+pub fn mercenary_glow(job: u16) -> Option<&'static str> {
+    match job {
+        6027..=6036 => Some(r"인간족\용병\창용병_창_검광"),
+        6037..=6046 => Some(r"인간족\용병\검용병_검_검광"),
+        _ => None,
+    }
+}
+
+struct Layer {
+    spr: Spr,
+    act: Act,
+    palette: Option<Palette>,
+    part: Part,
+}
+
+/// What a sprite layer is on a character.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Part {
+    Body,
+    Head,
+    HeadBottom,
+    HeadMid,
+    HeadTop,
+    Weapon,
+    /// The weapon's glow (`_검광`), right over it.
+    WeaponGlow,
+    Shield,
+    Robe,
+}
+
+impl Part {}
+
+/// How a character looks: job, hair and the view IDs of what it wears.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look {
+    pub job: u16,
+    pub sex: u8,
+    pub hair: u16,
+    pub hair_color: u16,
+    pub clothes_color: u16,
+    pub weapon: u32,
+    /// The shield drawn: a shield's item id, or 0. A left-hand weapon is never drawn as a shield.
+    pub shield: u32,
+    /// The left hand: a shield or a second weapon (item ids), or 0.
+    pub left: u32,
+    pub head_top: u16,
+    pub head_mid: u16,
+    pub head_bottom: u16,
+    pub robe: u16,
+    /// The option bits that change the body (`BODY_OPTIONS`): outfits, mounts and the orcish face.
+    pub option: u32,
+    /// 2nd outfit: 1, or the outfit's job id (4332–4349). Anything else is the normal body.
+    pub body: u16,
+}
+
+/// A 2nd-outfit body: the flag 1, or an outfit job id.
+pub fn second_outfit(body: u16) -> bool {
+    body == 1 || (4332..=4349).contains(&body)
+}
+
+/// A player's body sprite and dye. `fallback` is the normal body when the 2nd outfit's files are missing.
+pub struct BodyFiles {
+    pub sprite: String,
+    pub dye: String,
+    pub fallback: Option<(String, String)>,
+}
+
+/// Sprite and dye paths for sprite job `job`. Sex is male when `male` is set. A 2nd outfit uses `costume_1`.
+pub fn body_files(job: u16, male: bool, color: u16, style: u16) -> Option<BodyFiles> {
+    let names = job_sprites(job)?;
+    let sex = if male { "남" } else { "여" };
+    let race = if is_doram(job) { "도람족" } else { "인간족" };
+    let dye_root = if is_doram(job) { "data\\palette\\도람족\\body" } else { "data\\palette\\몸" };
+    let sprite = format!("data\\sprite\\{race}\\몸통\\{sex}\\{}_{sex}", names.body);
+    let dye = format!("{dye_root}\\{}_{sex}_{color}.pal", names.palette);
+    if second_outfit(style) {
+        Some(BodyFiles {
+            sprite: format!("data\\sprite\\{race}\\몸통\\{sex}\\costume_1\\{}_{sex}_1", names.body),
+            dye: format!("{dye_root}\\costume_1\\{}_{sex}_{color}_1.pal", names.palette),
+            fallback: Some((sprite, dye)),
+        })
+    } else {
+        Some(BodyFiles { sprite, dye, fallback: None })
+    }
+}
+
+/// The body to load: the 2nd outfit when `present`, otherwise the normal body.
+pub fn chosen_body<'a>(style: u16, costume: &'a str, normal: &'a str, present: bool) -> &'a str {
+    if second_outfit(style) && present { costume } else { normal }
+}
+
+/// A character's head alone, in their hair colour: the first standing frame facing front (the big minimap's player).
+pub fn head_image(grf: &Grf, look: &Look) -> Option<RgbaImage> {
+    let sex = if look.sex == 0 { "여" } else { "남" };
+    let race = if is_doram(look.job) { "도람족" } else { "인간족" };
+    let palettes = if is_doram(look.job) { "data\\palette\\도람족\\머리" } else { "data\\palette\\머리" };
+    let hair = look.hair.max(1);
+    let path = format!("data\\sprite\\{race}\\머리통\\{sex}\\{hair}_{sex}");
+    let spr = Spr::parse(&grf.read(&format!("{path}.spr")).ok()?).ok()?;
+    let act = Act::parse(&grf.read(&format!("{path}.act")).ok()?).ok()?;
+    let palette = (look.hair_color > 0)
+        .then(|| grf.read(&format!("{palettes}\\머리{hair}_{sex}_{}.pal", look.hair_color)).ok().and_then(|bytes| sprite::parse_palette(&bytes)))
+        .flatten();
+    let layer = act.actions.first()?.first()?.layers.iter().find(|layer| layer.image >= 0)?;
+    spr.image(layer.kind, layer.image as usize, palette.as_ref())
+}
+
+/// The cell a drawn position (in cells, centres on the integers) is on: floor(p + 0.5) per axis.
+pub fn drawn_cell(position: [f32; 2]) -> [i32; 2] {
+    position.map(|value| (value + 0.5).floor() as i32)
+}
+
+/// Drawn jobs that hold a weapon in each hand (the Assassin line).
+pub fn dual_wielder(job: u16) -> bool {
+    matches!(job, 12 | 4013 | 4035 | 4059 | 4065 | 4101 | 4254)
+}
+
+/// A shield's item id.
+pub fn shield_id(item: u32) -> bool {
+    matches!(item, 2101..=2199 | 28901..=28998 | 460000..=469999)
+}
+
+/// The shield part a left hand gives: itself when it's a shield id or 0, else None (a weapon: no shield). ponytail: a
+/// shield sent by a view id below the shield ranges is taken for a weapon.
+pub fn shield_part(left: u32) -> Option<u32> {
+    (left == 0 || shield_id(left)).then_some(left)
+}
+
+/// The left hand of a player's look holds a weapon: an item with a ClassNum that isn't a shield.
+pub fn left_weapon(look: &Look, tables: &LookTables) -> bool {
+    !shield_id(look.left) && tables.item_views.get(&look.left).is_some_and(|&view| view > 0)
+}
+
+/// The glow file (no extension) of a body that never draws a weapon, for drawn job `job`; None for every other body.
+/// The Taekwon's only shows with the body style of its own job; `madogear` is the Madogear type (2 the suit).
+pub fn body_glow(job: u16, sex: &str, style: u16, madogear: u8, names: Option<&JobSprites>) -> Option<Option<String>> {
+    let path = |file: String| Some(format!("data\\sprite\\인간족\\{file}"));
+    let suit = madogear == 2;
+    Some(match job {
+        4047 | 4048 | 4226 | 4238 | 4239 | 4241 | 4243 | 4244 | 4302 | 4316 => names?.weapon_path("인간족", sex, "_발광"),
+        4046 | 4225 => (style == job).then(|| format!("data\\sprite\\인간족\\태권소년\\태권소년_{sex}_발광")),
+        4084 | 4085 | 4111 => path(format!("레인져늑대\\레인져늑대_{sex}_검광")),
+        4278 => path(format!("windhawk\\wolf_windhawk_{sex}_검광")),
+        4086 | 4087 | 4112 => path(format!("마도기어\\{}_{sex}_검광", if suit { "마도아머" } else { "마도기어" })),
+        4279 => path(format!("meister_madogear\\meister_madogear{}_{sex}_검광", if suit { 2 } else { 1 })),
+        _ => return None,
+    })
+}
+
+/// One weapon's sprite and glow files (no extension) for drawn job `job`, by what `exists` finds (an .act there):
+/// the item's own name first (a Doram's always under 인간족, so never found), else its type's name, remapped for some
+/// jobs; the glow likewise, its own name's first. Neither for the cases that skip the type's name.
+pub fn weapon_files(
+    item: u32,
+    job: u16,
+    sex: &str,
+    doram: bool,
+    names: &JobSprites,
+    tables: &LookTables,
+    exists: impl Fn(&str) -> bool,
+) -> (Option<String>, Option<String>) {
+    let race = if doram { "도람족" } else { "인간족" };
+    let class = tables.class_num(item);
+    let own = tables.weapon_name(class);
+    let first = names.weapon_path("인간족", sex, own).filter(|path| !doram && exists(path));
+    let knuckle_on_priest = class == 12 && matches!(job, 8 | 4009 | 4031 | 4057 | 4063 | 4099 | 4256);
+    if class == 0 || shield_id(item) || item == 1599 || knuckle_on_priest {
+        return (first, None);
+    }
+    let kind = match (job, class) {
+        (2 | 9 | 16 | 4003 | 4010 | 4017 | 4025 | 4032 | 4039, 5) => 10,
+        (6 | 4007 | 4029, 6..=8) => 2,
+        (17 | 4018 | 4040, 6) => 1,
+        (12 | 17 | 4013 | 4018 | 4035 | 4040 | 4059 | 4065 | 4072 | 4079 | 4101 | 4108 | 4254, 7 | 8) => 2,
+        (_, class) => class,
+    };
+    let second = names.weapon_path(race, sex, tables.weapon_name(tables.weapon_types.get(&kind).copied().unwrap_or(kind)));
+    let glow = [names.weapon_path(race, sex, own), second.clone()].into_iter().flatten().map(|path| format!("{path}_검광")).find(|path| exists(path));
+    (first.or(second.filter(|path| exists(path))), glow)
+}
+
+/// A dual-wielding player's weapon name ending (`_단검_단검`) and whether it has a glow; None for a type without a
+/// name (no other name is tried).
+pub fn dual_weapon<'a>(look: &Look, job: u16, tables: &'a LookTables) -> Option<(&'a str, bool)> {
+    let kind = dual_type(job, look.weapon, look.left);
+    let name = tables.weapons.get(&kind).filter(|_| kind > 0)?;
+    Some((name, matches!(kind, 1..=7 | 16..=18 | 25..=30)))
+}
+
+/// The weapon type a dual-wielding player's sprite and motion use: the pair's combined type; on the Assassin line 0, 7
+/// and 8 become 2.
+pub fn dual_type(job: u16, right: u32, left: u32) -> u32 {
+    match dual_wield_type(right, left) {
+        0 | 7 | 8 if dual_wielder(job) => 2,
+        kind => kind,
+    }
+}
+
+/// The combined weapon type of a right- and left-hand weapon (item ids): 25 – 30 for the pairs, else the right
+/// one's dagger 1, sword 2 or axe 6, or 0. An empty right hand takes the left hand's item.
+pub fn dual_wield_type(right: u32, left: u32) -> u32 {
+    let kind = |item: u32| match item {
+        1200..=1249 | 13000..=13099 | 28700..=28899 | 510000..=519999 => 1,
+        1100..=1149 | 13400..=13499 | 500000..=509999 => 2,
+        1300..=1349 | 520000..=529999 => 6,
+        _ => 0,
+    };
+    let (right, left) = if right == 0 { (left, 0) } else { (right, left) };
+    match (kind(right), kind(left)) {
+        (2, 2) => 26,
+        (2, 1) | (1, 2) => 28,
+        (2, 6) => 30,
+        (1, 1) => 25,
+        (1, 6) => 29,
+        (6, 6) => 27,
+        (right, _) => right,
+    }
+}
+
+/// The attack motion for a player's drawn job and weapon type: action 11 for the types its row lists, else 10. A
+/// player never swings with action 5 (it has no weapon pictures).
+pub fn attack_action(job: u16, sex: u8, weapon_type: u32) -> usize {
+    let female = sex == 0;
+    let types: &[u32] = match job {
+        0 | 23 | 4001 | 4023 | 4045 | 4190 | 4191 | 4307 if female => &[1],
+        0 | 23 | 4001 | 4023 | 4045 | 4190 | 4191 | 4307 => &[2, 3, 6, 7, 8, 9, 10, 23],
+        1
+        | 7
+        | 13
+        | 14
+        | 21
+        | 4002
+        | 4008
+        | 4014
+        | 4015
+        | 4022
+        | 4024
+        | 4030
+        | 4036
+        | 4037
+        | 4044
+        | 4054
+        | 4060
+        | 4066
+        | 4073
+        | 4080..=4083
+        | 4088..=4096
+        | 4102
+        | 4109
+        | 4110
+        | 4252
+        | 4258
+        | 4280
+        | 4281 => &[4, 5],
+        2 | 5 | 4003 | 4006 | 4025 | 4028 => &[1],
+        // Every type but the bow.
+        3 | 4004 | 4026 => return if weapon_type == 11 { 10 } else { 11 },
+        6 | 11 | 17 | 19 | 20 | 4007 | 4012 | 4018 | 4020 | 4021 | 4029 | 4034 | 4040 | 4042 | 4043 | 4056 | 4062 | 4068 | 4069 | 4072 | 4075 | 4076 | 4079
+        | 4084 | 4085 | 4098 | 4104 | 4105 | 4108 | 4111 | 4257 | 4260 | 4263 | 4264 | 4278 => &[11],
+        8 | 4009 | 4031 | 4057 | 4063 | 4099 | 4256 => &[15],
+        9 | 4010 | 4032 | 4049 | 4055 | 4061 | 4097 | 4227 | 4240 | 4242 | 4255 | 4303 if female => &[10, 23],
+        9 | 4010 | 4032 | 4049 | 4055 | 4061 | 4097 | 4227 | 4240 | 4242 | 4255 | 4303 => &[1],
+        10 | 18 | 4011 | 4019 | 4033 | 4041 | 4058 | 4064 | 4071 | 4078 | 4086 | 4087 | 4100 | 4107 | 4112 | 4253 | 4259 | 4279 => &[2, 6, 7, 8],
+        job if dual_wielder(job) => &[16, 25, 26, 27, 28, 29, 30],
+        15 | 4016 | 4038 | 4070 | 4077 | 4106 | 4262 => &[0, 12],
+        16 | 4017 | 4039 | 4067 | 4074 | 4103 | 4261 => &[5, 10, 15, 23],
+        24 | 4215 | 4228 | 4229 | 4306 => &[18, 19, 20, 21],
+        25 | 4211 | 4212 | 4222 | 4223 | 4224 | 4304 | 4305 => &[22],
+        _ => &[],
+    };
+    if types.contains(&weapon_type) { 11 } else { 10 }
+}
+
+/// Identifies a decoded image: layer, image kind, index, the layer's tint, and how it was turned ahead of time for a
+/// flat preview (`SpriteSet::flat_frame`): 0 upright, else degrees clockwise, plus 360 when mirrored first.
+pub type ImageKey = (usize, u32, usize, [u8; 4], u16);
+
+/// One image of a frame: which image, top-left offset from the feet, size (negative width = mirrored), and degrees
+/// to turn it clockwise about its middle.
+pub type Placed = (ImageKey, [f32; 2], [f32; 2], f32);
+
+/// An image turned `degrees` clockwise about its middle (mirrored left to right first when `mirror`), on a canvas just
+/// big enough for it; pixels picked nearest, the rest clear.
+fn turn_image(image: &RgbaImage, degrees: i32, mirror: bool) -> RgbaImage {
+    let (sin, cos) = (degrees as f32).to_radians().sin_cos();
+    let [width, height] = [image.width() as f32, image.height() as f32];
+    let size = [(width * cos.abs() + height * sin.abs()).round().max(1.0), (width * sin.abs() + height * cos.abs()).round().max(1.0)];
+    RgbaImage::from_fn(size[0] as u32, size[1] as u32, |x, y| {
+        let [dx, dy] = [x as f32 + 0.5 - size[0] / 2.0, y as f32 + 0.5 - size[1] / 2.0];
+        // Turned back: where this pixel came from.
+        let [source_x, source_y] = [dx * cos + dy * sin + width / 2.0, -dx * sin + dy * cos + height / 2.0];
+        if source_x < 0.0 || source_y < 0.0 || source_x >= width || source_y >= height {
+            return image::Rgba([0; 4]);
+        }
+        let column = source_x as u32;
+        *image.get_pixel(if mirror { image.width() - 1 - column } else { column }, source_y as u32)
+    })
+}
+
+/// rathena's OPT1_* (status.hpp): the body states that colour a sprite.
+const OPT1_STONE: u16 = 1;
+const OPT1_FREEZE: u16 = 2;
+const OPT1_STONEWAIT: u16 = 6;
+/// rathena's OPT2_* bits (status.hpp).
+const OPT2_POISON: u16 = 0x0001;
+const OPT2_CURSE: u16 = 0x0002;
+const OPT2_DPOISON: u16 = 0x0080;
+
+/// The RGB a unit's whole sprite is multiplied by. A body state wins over a health state.
+/// None when the state has no colour, or it has ended.
+pub fn status_tint(body: u16, health: u16) -> Option<[u8; 3]> {
+    match body {
+        OPT1_STONE => Some([64, 64, 64]),
+        OPT1_FREEZE => Some([0, 128, 255]),
+        OPT1_STONEWAIT => Some([128, 128, 128]),
+        // ponytail: stacked health bits take deadly poison, then curse over poison.
+        _ if health & OPT2_DPOISON != 0 => Some([255, 50, 255]),
+        _ if health & OPT2_CURSE != 0 => Some([200, 50, 50]),
+        _ if health & OPT2_POISON != 0 => Some([255, 128, 255]),
+        _ => None,
+    }
+}
+
+/// Whether a body state (stone, frozen) stops the unit's animation where it is.
+pub fn stilled(body: u16) -> bool {
+    matches!(body, OPT1_STONE | OPT1_FREEZE)
+}
+
+/// Multiplies a layer's RGB by `tint` and keeps its alpha.
+fn multiply_rgb(color: [u8; 4], tint: [u8; 3]) -> [u8; 4] {
+    [
+        (u16::from(color[0]) * u16::from(tint[0]) / 255) as u8,
+        (u16::from(color[1]) * u16::from(tint[1]) / 255) as u8,
+        (u16::from(color[2]) * u16::from(tint[2]) / 255) as u8,
+        color[3],
+    ]
+}
+
+/// One layer's colour under a status tint. None leaves the layer's own colour.
+fn layer_color(color: [u8; 4], tint: Option<[u8; 3]>) -> [u8; 4] {
+    tint.map_or(color, |tint| multiply_rgb(color, tint))
+}
+
+/// A character's sprites (body, head, what it wears) or a single NPC/monster sprite, plus the textures decoded so far.
+pub struct SpriteSet {
+    layers: Vec<Layer>,
+    /// Laid out like a player's body: standing and sitting frames go by head direction.
+    player: bool,
+    /// A player's: where its garment, head and headgear go among its layers.
+    dressing: Option<Dressing>,
+    /// How big it's drawn (babies are smaller).
+    scale: f32,
+    /// Status colour multiplied into every layer. None keeps each layer's own colour.
+    tint: Option<[u8; 3]>,
+    /// MYgene-only: recolor base Fabre green pixels to yellow at decode time.
+    mygene_yellow_fabre: bool,
+    /// Recolor original Thief Bug animation frames to crimson without altering ACT timing.
+    mygene_red_thief_bug: bool,
+    mygene_blue_chonchon: bool,
+    mygene_slayer_color: Option<[u8; 3]>,
+    textures: HashMap<ImageKey, Texture>,
+    /// A mounted rider's body without the mount, when a headgear sits by it.
+    unmounted: Option<Act>,
+    /// The action the unit is in and the frame delay it took when it started it (`action_delay`).
+    delay: std::cell::Cell<Option<(usize, f32)>>,
+}
+
+impl SpriteSet {
+    /// Which part an image is (`PartGroup`).
+    /// Whether Manhole turns an image into a grey ghost: the body and what comes after the headgears (not the head and its gear).
+    pub fn manhole_ghost(&self, key: ImageKey) -> bool {
+        !matches!(self.layers.get(key.0).map(|layer| layer.part), Some(Part::Head | Part::HeadBottom | Part::HeadMid | Part::HeadTop))
+    }
+
+    /// How far the swing moves an image: the head 40 px, any gear 10, the body not at all.
+    pub fn swing_reach(&self, key: ImageKey) -> f32 {
+        match self.layers.get(key.0).map(|layer| layer.part) {
+            Some(Part::Head) => 40.0,
+            Some(Part::Body) | None => 0.0,
+            Some(_) => 10.0,
+        }
+    }
+
+    pub fn part_group(&self, key: ImageKey) -> PartGroup {
+        match self.layers.get(key.0).map(|layer| layer.part) {
+            Some(Part::Weapon | Part::WeaponGlow) => PartGroup::Weapon,
+            Some(Part::Shield | Part::Robe) => PartGroup::Gear,
+            _ => PartGroup::Body,
+        }
+    }
+}
+
+impl SpriteSet {
+    pub fn player(grf: &Grf, look: &Look, tables: &LookTables) -> Option<Self> {
+        let sex = if look.sex == 0 { "여" } else { "남" };
+        // Outfits and mounts change the body; the weapons and dyes go by it too.
+        let job = sprite_job(look.job, look.option);
+        let names = job_sprites(job)?;
+        let class = names.body;
+        let race = if is_doram(look.job) { "도람족" } else { "인간족" };
+        // Doram palettes sit in their own folder.
+        let palettes = if is_doram(look.job) { "data\\palette\\도람족\\머리" } else { "data\\palette\\머리" };
+        let load = |path: String, palette: Option<Palette>, part: Part| -> Option<Layer> {
+            Some(Layer {
+                spr: Spr::parse(&grf.read(&format!("{path}.spr")).ok()?).ok()?,
+                act: Act::parse(&grf.read(&format!("{path}.act")).ok()?).ok()?,
+                palette,
+                part,
+            })
+        };
+        // Color 0 is the sprite's own palette.
+        let dye = |path: String, color: u16| -> Option<Palette> { (color > 0).then(|| grf.read(&path).ok().and_then(|bytes| sprite::parse_palette(&bytes)))? };
+        // ponytail: there is no head sprite 0; rathena allows hair 0, so show the first style.
+        let hair = look.hair.max(1);
+        let files = body_files(job, look.sex != 0, look.clothes_color, look.body)?;
+        let costume = load(files.sprite.clone(), dye(files.dye.clone(), look.clothes_color), Part::Body);
+        let body = match &files.fallback {
+            Some((sprite, dye_path)) if chosen_body(look.body, &files.sprite, sprite, costume.is_some()) != files.sprite.as_str() => {
+                load(sprite.clone(), dye(dye_path.clone(), look.clothes_color), Part::Body)
+            }
+            _ => costume,
+        }?;
+        // The orcish bit replaces the hair with the orc face, placed as the head.
+        let head = match orcish_head(look.job, look.option) {
+            Some(face) => load(format!("data\\sprite\\{face}"), None, Part::Head),
+            None => load(
+                format!("data\\sprite\\{race}\\머리통\\{sex}\\{hair}_{sex}"),
+                dye(format!("{palettes}\\머리{hair}_{sex}_{}.pal", look.hair_color), look.hair_color),
+                Part::Head,
+            ),
+        };
+        // ponytail: the orc face replaces the head, so headgear is left off.
+        let orcish = orcish_head(look.job, look.option).is_some();
+        // A headgear filling several slots shows once. Doram wear their own cut of some.
+        let headgear = |view: u16, part: Part| {
+            let name = tables.headgears.get(&view)?;
+            let doram = is_doram(look.job).then(|| load(format!("data\\sprite\\악세사리\\{sex}_doram\\{sex}{name}"), None, part)).flatten();
+            doram.or_else(|| load(format!("data\\sprite\\악세사리\\{sex}\\{sex}{name}"), None, part))
+        };
+        let bottom = (!orcish).then(|| headgear(look.head_bottom, Part::HeadBottom)).flatten();
+        let mid = (!orcish && look.head_mid != look.head_bottom).then(|| headgear(look.head_mid, Part::HeadMid)).flatten();
+        let top = (!orcish && look.head_top != look.head_bottom && look.head_top != look.head_mid).then(|| headgear(look.head_top, Part::HeadTop)).flatten();
+        // Some bodies hold no weapon sprite, only a glow of their own. ponytail: the Madogear type isn't tracked per
+        // unit yet, so type 0.
+        // On the all-jobs mount neither the weapon nor its glow is drawn.
+        let weapon = if look.option & ALL_RIDING_LOOK != 0 {
+            None
+        } else if let Some(glow) = body_glow(job, sex, look.body, 0, Some(&names)) {
+            Some((None, glow.and_then(|path| load(path, None, Part::WeaponGlow))))
+        // Two weapons: one sprite for both hands, named by the pair's type alone; its glow only for some types.
+        } else if left_weapon(look, tables) {
+            dual_weapon(look, job, tables).and_then(|(name, glows)| {
+                let path = names.weapon_path(race, sex, name)?;
+                let glow = glows.then(|| load(format!("{path}_검광"), None, Part::WeaponGlow)).flatten();
+                Some((load(path, None, Part::Weapon), glow))
+            })
+        } else {
+            let (weapon, glow) = weapon_files(look.weapon, job, sex, is_doram(look.job), &names, tables, |path| grf.contains(&format!("{path}.act")));
+            (look.weapon > 0 && (weapon.is_some() || glow.is_some()))
+                .then(|| (weapon.and_then(|path| load(path, None, Part::Weapon)), glow.and_then(|path| load(path, None, Part::WeaponGlow))))
+        };
+        // The four classic shields have names; newer ones are named by their view ID.
+        let shield = (look.shield > 0).then(|| {
+            let name = match tables.view(look.shield) {
+                1 => "_가드".to_owned(),
+                2 => "_버클러".to_owned(),
+                3 => "_쉴드".to_owned(),
+                4 => "_미러쉴드".to_owned(),
+                view => format!("_{view}_방패"),
+            };
+            load(format!("data\\sprite\\방패\\{class}\\{class}_{sex}{name}"), None, Part::Shield)
+        });
+        // Most garments share one picture for every job (Doram have their own); how it moves is per job.
+        let robe = tables.robes.get(&look.robe).and_then(|name| {
+            let per_job = format!("data\\sprite\\로브\\{name}\\{sex}\\{class}_{sex}");
+            let shared = format!("data\\sprite\\로브\\{name}\\{name}{}.spr", if is_doram(look.job) { "_doram" } else { "" });
+            Some(Layer {
+                spr: Spr::parse(&grf.read(&shared).or_else(|_| grf.read(&format!("{per_job}.spr"))).ok()?).ok()?,
+                act: Act::parse(&grf.read(&format!("{per_job}.act")).ok()?).ok()?,
+                palette: None,
+                part: Part::Robe,
+            })
+        });
+
+        let rules = tables.layers.as_ref();
+        let robe_over_body = match &robe {
+            Some(_) => body
+                .act
+                .actions
+                .iter()
+                .enumerate()
+                .map(|(index, frames)| {
+                    // Without the tables: over the body only facing away.
+                    let fallback = (3..=5).contains(&(index % 8));
+                    (0..frames.len())
+                        .map(|frame| rules.and_then(|rules| rules.robe_over_body(look.robe, look.sex, job, index, frame)).unwrap_or(fallback))
+                        .collect()
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let place = |view: u16, slot: u8, default: i32| -> [Option<i32>; 8] {
+            std::array::from_fn(|direction| {
+                let place = rules.and_then(|rules| rules.headgear_priority(direction, slot, view)).unwrap_or(default);
+                (place != -1).then_some(place)
+            })
+        };
+        let headgear =
+            [(&bottom, Part::HeadBottom, look.head_bottom, 2, 300), (&mid, Part::HeadMid, look.head_mid, 4, 100), (&top, Part::HeadTop, look.head_top, 3, 200)]
+                .into_iter()
+                .filter(|(layer, ..)| layer.is_some())
+                .map(|(_, part, view, slot, default)| {
+                    let offsets = std::array::from_fn(|direction| {
+                        is_doram(look.job).then(|| rules?.doram_headgear_offset(view, direction, look.sex)).flatten().unwrap_or_default()
+                    });
+                    let layer = usize::from(HEAD_HIDING.contains(&view));
+                    let ignores_riding = rules.is_some_and(|rules| rules.ignores_riding(view));
+                    Worn { part, places: place(view, slot, default), offsets, layer, ignores_riding }
+                })
+                .collect::<Vec<_>>();
+        // On a mount, headgear the data marks sits by the body without it: that body's ACT, loaded only then.
+        let mounted = job == sprite_job(look.job, look.option & MOUNTS) && job != look.job;
+        let unmounted = (mounted && headgear.iter().any(|worn| worn.ignores_riding))
+            .then(|| {
+                let class = job_sprites(look.job)?.body;
+                Act::parse(&grf.read(&format!("data\\sprite\\{race}\\몸통\\{sex}\\{class}_{sex}.act")).ok()?).ok()
+            })
+            .flatten();
+        let dressing = Dressing {
+            head_first: grf.read(&names.imf_path(sex)).ok().and_then(|bytes| sprite::parse_imf(&bytes).ok()).unwrap_or_default(),
+            robe_over_body,
+            robe_over_headgear: robe.is_some() && rules.is_some_and(|rules| rules.robe_over_headgear(look.robe)),
+            headgear,
+            head_hidden: !orcish && [look.head_top, look.head_mid, look.head_bottom].iter().any(|view| HEAD_HIDING.contains(view)),
+            outfit: outfit(job),
+            madogear: MADOGEAR_BODIES.contains(&job),
+            female: look.sex == 0,
+        };
+        let (weapon, glow) = weapon.unwrap_or_default();
+        Some(Self {
+            layers: [Some(body), head, bottom, mid, top, weapon, glow, shield.flatten(), robe].into_iter().flatten().collect(),
+            player: true,
+            dressing: Some(dressing),
+            scale: body_scale(job),
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted,
+            delay: Default::default(),
+        })
+    }
+
+    /// An NPC or monster: one sprite named in the client's `JobNameTable`.
+    /// A mercenary (jobs 6017 to 6046): its body by the job name table's path under the human bodies (`여\활용병`), laid
+    /// out like a player's, and the weapon of its kind (the unit carries none). Lancers and swordsmen also draw the
+    /// weapon's glow, right after the weapon, on the weapon's frame.
+    pub fn mercenary(grf: &Grf, job: u16, name: &str) -> Option<Self> {
+        let weapon = match job {
+            6017..=6026 => "활용병_활",
+            6027..=6036 => "창용병_창",
+            6037..=6046 => "검용병_검",
+            _ => return None,
+        };
+        let load = |path: String, part: Part| -> Option<Layer> {
+            Some(Layer {
+                spr: Spr::parse(&grf.read(&format!("{path}.spr")).ok()?).ok()?,
+                act: Act::parse(&grf.read(&format!("{path}.act")).ok()?).ok()?,
+                palette: None,
+                part,
+            })
+        };
+        let body = load(format!("data\\sprite\\인간족\\몸통\\{name}"), Part::Body)?;
+        let weapon = load(format!("data\\sprite\\인간족\\용병\\{weapon}"), Part::Weapon);
+        let glow = mercenary_glow(job).and_then(|path| load(format!("data\\sprite\\{path}"), Part::WeaponGlow));
+        Some(Self {
+            layers: [Some(body), weapon, glow].into_iter().flatten().collect(),
+            player: true,
+            dressing: None,
+            scale: 1.0,
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted: None,
+            delay: Default::default(),
+        })
+    }
+
+    /// The sprite folders to look in for a unit of this kind (5 monster, 8 homunculus), first match wins.
+    pub fn folders(kind: u8) -> &'static [&'static str] {
+        match kind {
+            5 => &["몬스터", "npc"],
+            8 => &["homun", "몬스터", "npc"],
+            _ => &["npc", "몬스터"],
+        }
+    }
+
+    pub fn single(grf: &Grf, name: &str, kind: u8) -> Option<Self> {
+        Self::folders(kind).iter().find_map(|folder| Self::at(grf, &format!("data\\sprite\\{folder}\\{name}")))
+    }
+
+    /// One sprite by path without extension, e.g. `data\sprite\shadow`.
+    pub fn at(grf: &Grf, path: &str) -> Option<Self> {
+        Self::with_act(grf, path, &format!("{path}.act"))
+    }
+
+    /// Like `at`, moving by another ACT (a pet's accessory changes how it moves).
+    pub fn with_act(grf: &Grf, path: &str, act: &str) -> Option<Self> {
+        Some(Self {
+            layers: vec![Layer {
+                spr: Spr::parse(&grf.read(&format!("{path}.spr")).ok()?).ok()?,
+                act: Act::parse(&grf.read(act).ok()?).ok()?,
+                palette: None,
+                part: Part::Body,
+            }],
+            player: false,
+            dressing: None,
+            scale: 1.0,
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted: None,
+            delay: Default::default(),
+        })
+    }
+
+    /// Recolor only MYgene's new Yellow Fabre while reusing the original
+    /// Fabre animation and sprites from the player's authorized game data.
+    pub fn make_yellow_fabre(&mut self) {
+        self.mygene_yellow_fabre = true;
+        self.textures.clear();
+    }
+
+    /// Keep the full original Thief Bug ACT animation, recoloring its SPR frames.
+    pub fn make_red_thief_bug(&mut self) {
+        self.mygene_red_thief_bug = true;
+        self.textures.clear();
+    }
+
+    // MYGENE_APPROVED_BLUE_CHON
+    pub fn make_blue_chonchon(&mut self) {
+        if !self.mygene_blue_chonchon {
+            self.mygene_blue_chonchon = true;
+            self.textures.clear();
+        }
+    }
+
+    // MYGENE_SLAYER456: only custom IDs or exact custom names qualify.
+    pub fn make_slayer456(&mut self, job: u16, name: &str) {
+        let color = match job {
+            31053 => Some([170, 75, 255]),
+            31054 => Some([255, 135, 35]),
+            31055 => Some([100, 100, 120]),
+            1010 if name.trim().eq_ignore_ascii_case("Purple Willow") => Some([170, 75, 255]),
+            1195 if name.trim().eq_ignore_ascii_case("Orange Rideword") => Some([255, 135, 35]),
+            1023 if name.trim().eq_ignore_ascii_case("Dark Orc") => Some([100, 100, 120]),
+            _ => None,
+        };
+        if self.mygene_slayer_color != color {
+            self.mygene_slayer_color = color;
+            self.textures.clear();
+        }
+    }
+
+    /// Colours every layer from here on. None clears the status colour.
+    pub fn set_tint(&mut self, tint: Option<[u8; 3]>) {
+        self.tint = tint;
+    }
+
+    /// Places the frame of `action` facing `direction` (head turned `head_direction`: 0 straight, 1 and 2 to the sides)
+    /// at `timing`, decoding any images not seen yet.
+    pub fn frame(&mut self, gpu: &Gpu, action: usize, direction: u8, head_direction: u16, timing: Timing) -> Vec<Placed> {
+        self.frame_at(gpu, action * 8 + usize::from(direction % 8), head_direction, timing)
+    }
+
+    /// Like `frame`, by the ACT's own action number (sprites like the cursors aren't laid out in eights).
+    pub fn frame_at(&mut self, gpu: &Gpu, index: usize, head_direction: u16, timing: Timing) -> Vec<Placed> {
+        let mut placed = self.place(index, head_direction, timing);
+        for &(key, ..) in &placed {
+            self.decode(gpu, key);
+        }
+        placed.retain(|(key, ..)| self.textures.contains_key(key));
+        placed
+    }
+
+    /// Like `frame_at`, every layer plain white at alpha 254 whatever the ACT says (Holy Water's bottle and glows).
+    pub fn frame_plain(&mut self, gpu: &Gpu, index: usize, timing: Timing) -> Vec<Placed> {
+        let mut placed = self.place(index, 0, timing);
+        for (key, ..) in &mut placed {
+            key.3 = [255, 255, 255, 254];
+            self.decode(gpu, *key);
+        }
+        placed.retain(|(key, ..)| self.textures.contains_key(key));
+        placed
+    }
+
+    /// A frame for a flat preview (character select, the equipment window): as `frame`, but turned layers come as
+    /// pictures turned ahead of time and placed upright by their bounding box, as 2D sprites don't turn.
+    pub fn flat_frame(&mut self, gpu: &Gpu, action: usize, direction: u8, head_direction: u16, timing: Timing) -> Vec<Placed> {
+        let mut placed = self.frame(gpu, action, direction, head_direction, timing);
+        for (key, position, size, angle) in &mut placed {
+            let degrees = (angle.round() as i32).rem_euclid(360) as u16;
+            if degrees == 0 {
+                continue;
+            }
+            let mirrored = size[0] < 0.0;
+            let turned = (key.0, key.1, key.2, key.3, degrees + if mirrored { 360 } else { 0 });
+            self.decode(gpu, turned);
+            let (Some(upright), Some(image)) = (self.textures.get(key), self.textures.get(&turned)) else { continue };
+            // The picture keeps the layer's zoom: its pixels are as big as the upright image's.
+            let zoom = [size[0].abs() / upright.size[0], size[1] / upright.size[1]];
+            let middle = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
+            let turned_size = [image.size[0] * zoom[0], image.size[1] * zoom[1]];
+            (*key, *position, *size, *angle) = (turned, [middle[0] - turned_size[0] / 2.0, middle[1] - turned_size[1] / 2.0], turned_size, 0.0);
+        }
+        placed
+    }
+
+    /// Decodes an image into a texture once: its layer's palette and tint, and, for a flat preview, turned.
+    fn decode(&mut self, gpu: &Gpu, key: ImageKey) {
+        if self.textures.contains_key(&key) {
+            return;
+        }
+        let layer = &self.layers[key.0];
+        let Some(mut image) = layer.spr.image(key.1, key.2, layer.palette.as_ref()) else { return };
+        // MYGENE_APPROVED_BLUE_CHON
+        if self.mygene_blue_chonchon {
+            for pixel in image.pixels_mut() {
+                if pixel.0[3] == 0 {
+                    continue;
+                }
+
+                let brightness = pixel.0[0]
+                    .max(pixel.0[1])
+                    .max(pixel.0[2]);
+
+                if brightness <= 24 {
+                    continue;
+                }
+
+                pixel.0[0] = (u16::from(brightness) * 45 / 100) as u8;
+                pixel.0[1] = (u16::from(brightness) * 68 / 100) as u8;
+                pixel.0[2] = brightness;
+            }
+        }
+
+        if let Some(color) = self.mygene_slayer_color {
+            for pixel in image.pixels_mut() {
+                let [r, g, b, a] = pixel.0;
+                let light = r.max(g).max(b);
+                if a == 0 || light <= 24 { continue; }
+                for channel in 0..3 {
+                    pixel.0[channel] = (u16::from(light) * u16::from(color[channel]) / 255) as u8;
+                }
+            }
+        }
+        if self.mygene_yellow_fabre {
+            // Bright green Fabre armor becomes golden yellow; whites, shadows
+            // and transparent edges are left intact.
+            for pixel in image.pixels_mut() {
+                let [r, g, b, alpha] = pixel.0;
+                if alpha != 0 && g > r.saturating_add(8) && g > b.saturating_add(8) {
+                    pixel.0[0] = g;
+                    pixel.0[1] = (u16::from(g) * 235 / 255) as u8;
+                    pixel.0[2] = b / 2;
+                }
+            }
+        }
+        if self.mygene_red_thief_bug {
+            // Hue-neutral red treatment preserves the original silhouette,
+            // highlights, shadows and alpha while turning armor crimson.
+            // Do this once per decoded frame, never on shared base sprite data.
+            for pixel in image.pixels_mut() {
+                let [r, g, b, a] = pixel.0;
+                if a == 0 { continue; }
+                let light = r.max(g).max(b);
+                let dark = r.min(g).min(b);
+                // Leave almost-black outlines unchanged. Retain the source
+                // value contrast, while giving brighter shell pixels a red hue.
+                if light > 24 {
+                    pixel.0[0] = light;
+                    pixel.0[1] = (u16::from(dark) * 2 / 5 + u16::from(light) / 5).min(255) as u8;
+                    pixel.0[2] = (u16::from(dark) * 3 / 5).min(255) as u8;
+                }
+            }
+        }
+        if key.3 != [255; 4] {
+            for pixel in image.pixels_mut() {
+                for (channel, tint) in pixel.0.iter_mut().zip(key.3) {
+                    *channel = (u16::from(*channel) * u16::from(tint) / 255) as u8;
+                }
+            }
+        }
+        if key.4 != 0 {
+            image = turn_image(&image, i32::from(key.4 % 360), key.4 >= 360);
+        }
+        self.textures.insert(key, gpu.texture(&image, false));
+    }
+
+    fn place(&self, index: usize, head_direction: u16, timing: Timing) -> Vec<Placed> {
+        let action = index / 8;
+        let Some(body_frames) = self.layers[0].act.actions.get(index).filter(|frames| !frames.is_empty()) else { return Vec::new() };
+        // One delay for the action, in every direction and for every layer.
+        // ponytail: garments and headgear with frames of their own play them at the body's delay too.
+        let delay = self.action_delay(action);
+        let animated = |_: &Layer, count: usize| animated(delay, count, timing);
+        // A player standing or sitting has its frames in three groups, one per head direction: the body holds its
+        // group's frame and the head animates within its group. Cycling through the groups shakes the head side to
+        // side, as the head anchors differ.
+        let look = (self.player && (action == IDLE || action == SIT)).then(|| usize::from(head_direction.min(2)));
+        let frame_index = match look {
+            Some(look) => look.min(body_frames.len() - 1),
+            None => animated(&self.layers[0], body_frames.len()),
+        };
+        let body_frame = &body_frames[frame_index];
+
+        let frames_of =
+            |part: Part| self.layers.iter().position(|layer| layer.part == part).and_then(|number| Some((number, self.layers[number].act.actions.get(index)?)));
+        // The head's frames count the frames of what's worn on it.
+        let head_count = frames_of(Part::Head).map(|(_, frames)| frames.len()).filter(|&count| count > 0).unwrap_or(body_frames.len());
+        let order = match &self.dressing {
+            Some(dressing) => dressing.order(index, frame_index),
+            None => vec![Part::Body, Part::Weapon, Part::WeaponGlow],
+        };
+
+        // A player's parts draw one ACT layer each; the headgear go by the head's anchor.
+        let pc = self.dressing.is_some();
+        let head_frame = frames_of(Part::Head).and_then(|(_, frames)| frames.get(frame_index));
+        let head_shift = head_frame.map_or([0, 0], |head| sprite::head_shift(body_frame, head));
+        let mut placed = Vec::new();
+        for part in order {
+            let Some((number, frames)) = frames_of(part) else { continue };
+            let layer = &self.layers[number];
+            // The head goes with the body's frame (standing or sitting, the head direction's), as do weapons and
+            // shields; garments and headgear too unless they have frames to play in turn (garments then from the
+            // first group while standing or sitting).
+            let own = |count: usize| animated(layer, count);
+            let frame = match part {
+                Part::Body => Some(frame_index),
+                Part::Robe => layer_frame(frames.len(), head_count, if look.is_some() { 0 } else { frame_index }, frame_index, own),
+                Part::HeadBottom | Part::HeadMid | Part::HeadTop => layer_frame(frames.len(), head_count, frame_index, frame_index, own),
+                // A frame the layer lacks: nothing drawn.
+                Part::Head | Part::Weapon | Part::WeaponGlow | Part::Shield => Some(frame_index),
+            };
+            let Some(frame) = frame.and_then(|frame| frames.get(frame)) else { continue };
+            let worn = self.dressing.as_ref().and_then(|dressing| dressing.headgear.iter().find(|worn| worn.part == part));
+            let (shift, pick) = match (part, worn) {
+                (_, None) if !pc => ([0, 0], Pick::All),
+                (Part::Body | Part::Weapon | Part::WeaponGlow, _) => ([0, 0], Pick::Layer(0)),
+                (Part::Head, _) => (head_shift, Pick::Layer(1)),
+                (_, Some(worn)) => {
+                    let mut shift = sprite::gear_shift(head_shift, head_frame, frame);
+                    // On a mount: the body's anchor height without the mount, standing, walking, sitting or dead.
+                    if worn.ignores_riding
+                        && (matches!(action, IDLE | WALK | SIT) || DEAD_ACTIONS.contains(&index))
+                        && let Some(&[_, y, _]) = body_frame.anchors.first()
+                        && let Some(&[_, unmounted, _]) = self.unmounted.as_ref().and_then(|act| act.actions.get(index)?.get(frame_index)?.anchors.first())
+                    {
+                        shift[1] += unmounted - y;
+                    }
+                    // Moved for its wearer, by the way the head looks (turned one way or the other off the body's).
+                    let turn = match look {
+                        Some(1) => 1,
+                        Some(2) => 7,
+                        _ => 0,
+                    };
+                    let [x, y] = worn.offsets[(index + turn) % 8];
+                    ([shift[0] + x, shift[1] + y], Pick::Unzoomed(worn.layer))
+                }
+                _ => ([0, 0], Pick::All),
+            };
+            placed.extend(sprite::place(&layer.spr, frame, shift, pick).into_iter().map(|placement| {
+                (
+                    (number, placement.kind, placement.image, layer_color(placement.color, self.tint), 0),
+                    placement.position.map(|value| value * self.scale),
+                    placement.size.map(|value| value * self.scale),
+                    placement.angle as f32,
+                )
+            }));
+        }
+        placed
+    }
+
+    /// The body's frame at `timing` (not for standing or sitting players, whose frames follow the head) and the sound
+    /// it plays: its ACT event, other than "atk", which marks when a hit lands.
+    pub fn body_frame(&self, index: usize, timing: Timing) -> Option<(usize, Option<&str>)> {
+        let body = &self.layers[0];
+        let frames = body.act.actions.get(index).filter(|frames| !frames.is_empty())?;
+        let frame = animated(self.action_delay(index / 8), frames.len(), timing);
+        let sound = usize::try_from(frames[frame].event).ok().and_then(|event| body.act.events.get(event)).map(String::as_str).filter(|&name| name != "atk");
+        Some((frame, sound))
+    }
+
+    /// The `.wav` an ACT frame's event plays, if any.
+    pub fn frame_sound(&self, index: usize, frame: usize) -> Option<&str> {
+        let body = &self.layers[0];
+        let event = usize::try_from(body.act.actions.get(index)?.get(frame)?.event).ok()?;
+        body.act.events.get(event).map(String::as_str).filter(|name| name.to_lowercase().ends_with(".wav"))
+    }
+
+    /// How long `action` takes to play through once at its own frame delays.
+    pub fn action_ms(&self, action: usize, direction: u8) -> Option<f32> {
+        self.index_ms(action * 8 + usize::from(direction % 8))
+    }
+
+    /// How many actions the sprite has.
+    pub fn actions(&self) -> usize {
+        self.layers[0].act.actions.len()
+    }
+
+    /// How many frames the ACT's action `index` has.
+    pub fn frames(&self, index: usize) -> usize {
+        self.layers[0].act.actions.get(index).map_or(0, Vec::len)
+    }
+
+    /// Like `action_ms`, by the ACT's own action number.
+    /// How many frames an action (by index) has.
+    pub fn frame_count(&self, index: usize) -> Option<usize> {
+        self.layers.first()?.act.actions.get(index).map(Vec::len)
+    }
+
+    /// When a hit lands in an attack (action `index`) played at `scale` times its ACT pace: at the frame with an
+    /// "atk" event, else the second-to-last.
+    pub fn hit_ms(&self, index: usize, scale: f32) -> Option<f32> {
+        let body = &self.layers[0];
+        let frames = body.act.actions.get(index).filter(|frames| !frames.is_empty())?;
+        let atk = |frame: &sprite::Frame| usize::try_from(frame.event).ok().and_then(|event| body.act.events.get(event)).is_some_and(|name| name == "atk");
+        let frame = frames.iter().position(atk).unwrap_or(frames.len().saturating_sub(2));
+        let delay = body.act.delays.get(index).copied().unwrap_or(4.0).max(1.0);
+        Some(frame as f32 * delay * DELAY_UNIT_MS * scale)
+    }
+
+    /// When frame `frame` of action `index` comes, played at `scale` times its ACT pace.
+    pub fn frame_ms(&self, index: usize, frame: usize, scale: f32) -> Option<f32> {
+        let delay = self.first_delay(index / 8);
+        self.layers[0].act.actions.get(index).map(|_| frame as f32 * delay * DELAY_UNIT_MS * scale)
+    }
+
+    pub fn index_ms(&self, index: usize) -> Option<f32> {
+        let frames = self.layers[0].act.actions.get(index)?.len();
+        Some(frames as f32 * self.first_delay(index / 8) * DELAY_UNIT_MS)
+    }
+
+    /// An action's frame delay, the same in every direction: its direction 0's (4 when the ACT has none there), at
+    /// least 1. Used for how long an action lasts; see `action_delay` for what's drawn.
+    // ponytail: a delay of 0 or less, which keeps the previous action's when drawn, counts as 4 here.
+    fn first_delay(&self, action: usize) -> f32 {
+        let delay = self.layers[0].act.delays.get(action * 8).copied().unwrap_or(4.0);
+        if delay > 0.0 { delay.max(1.0) } else { 4.0 }
+    }
+
+    /// The frame delay the unit's frames play at in `action`: taken when the action starts from its direction 0 (4
+    /// when the ACT has none there; under 1 is 1), or the one it had when that's 0 or less, and kept in every direction
+    /// until the next action.
+    /// The frame delay taken when the action it is in started (4 before any).
+    pub fn current_delay(&self) -> f32 {
+        self.delay.get().map_or(4.0, |(_, delay)| delay)
+    }
+
+    fn action_delay(&self, action: usize) -> f32 {
+        let (was, had) = self.delay.get().unwrap_or((usize::MAX, 4.0));
+        if was == action {
+            return had;
+        }
+        let delay = self.layers[0].act.delays.get(action * 8).copied().unwrap_or(4.0);
+        let delay = if delay > 0.0 { delay.max(1.0) } else { had };
+        self.delay.set(Some((action, delay)));
+        delay
+    }
+
+    pub fn texture(&self, key: ImageKey) -> &Texture {
+        &self.textures[&key]
+    }
+
+    /// A texture decoded earlier, if it still is (a copy left behind a unit whose look has changed since).
+    pub fn texture_of(&self, key: ImageKey) -> Option<&Texture> {
+        self.textures.get(&key)
+    }
+}
+
+/// Which of `count` frames plays at `timing`, at the action's frame `delay` (`SpriteSet::action_delay`).
+fn animated(delay: f32, count: usize, timing: Timing) -> usize {
+    match timing {
+        Timing::Loop(elapsed_ms) => loop_frame(elapsed_ms, delay, count),
+        Timing::Span(progress) => ((progress * count as f32) as usize).min(count - 1),
+        Timing::Once(elapsed_ms, scale) => once_frame(elapsed_ms, delay * scale, count),
+        Timing::Walk(distance) => walk_frame(distance, delay, count),
+    }
+}
+
+/// Which of a garment's or headgear's `count` frames shows with the body at frame `base`. One with n frames to each of
+/// the head's `head_count` plays them in turn (`own(n)`: which of n frames its own clock is at) within group `group`, so
+/// balloons bob and wings flap; any other shows frame `base`. None when it has no such frame.
+fn layer_frame(count: usize, head_count: usize, group: usize, base: usize, own: impl Fn(usize) -> usize) -> Option<usize> {
+    let n = count / head_count.max(1);
+    let frame = if n > 1 && count.is_multiple_of(head_count) { own(n) + n * group } else { base };
+    (frame < count).then_some(frame)
+}
+
+/// Where a garment goes among a character's layers.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum RobeAt {
+    /// Behind everything.
+    Behind,
+    /// Over the body, under the head.
+    OverBody,
+    /// Over the body and the headgear too (bags).
+    OverHeadgear,
+}
+
+/// Garments over the headgear go at this place among the layers (headgear: middle 100, upper 200, lower 300).
+const OVER_HEADGEAR: i32 = 400;
+
+/// A character's layers back to front, facing `direction` (0 the camera, turning clockwise): a garment behind, a shield
+/// turned away, the body and head (the head behind the body in some frames facing away: `head_first`) with a garment
+/// over the body between them, the weapon and a shield turned this way (when `armed`), then the headgear by its
+/// place (`headgear`: part and place; the body's layers are 1, 2, ... so a negative place goes behind them all), and a
+/// garment worn over the headgear.
+fn stack(direction: usize, armed: bool, head_first: bool, robe: RobeAt, headgear: &[(Part, i32)]) -> Vec<Part> {
+    let turned_away = (2..=5).contains(&direction);
+    let mut body = vec![Part::Body];
+    if robe == RobeAt::OverBody {
+        body.push(Part::Robe);
+    }
+    let mut walk = Vec::new();
+    if robe == RobeAt::Behind {
+        walk.push(Part::Robe);
+    }
+    if armed && turned_away {
+        walk.push(Part::Shield);
+    }
+    if head_first {
+        walk.push(Part::Head);
+        walk.extend(body);
+    } else {
+        walk.extend(body);
+        walk.push(Part::Head);
+    }
+    if armed {
+        walk.extend([Part::Weapon, Part::WeaponGlow]);
+        if !turned_away {
+            walk.push(Part::Shield);
+        }
+    }
+    let mut placed: Vec<(i32, Part)> = (1..).zip(walk).chain(headgear.iter().map(|&(part, place)| (place, part))).collect();
+    if robe == RobeAt::OverHeadgear {
+        placed.push((OVER_HEADGEAR, Part::Robe));
+    }
+    placed.sort_by_key(|&(place, _)| place);
+    placed.into_iter().map(|(_, part)| part).collect()
+}
+
+/// Headgear views that hide the head under them.
+const HEAD_HIDING: [u16; 7] = [331, 1931, 2171, 2494, 2587, 2606, 2607];
+
+/// A headgear layer's place among the layers facing each way (None hides it there), and how far it's moved facing
+/// each way (Doram wear some headgear a little off).
+struct Worn {
+    part: Part,
+    places: [Option<i32>; 8],
+    offsets: [[i32; 2]; 8],
+    /// The ACT layer drawn: 0, or 1 for a headgear that hides the head.
+    layer: usize,
+    /// On a mount it sits by the body without the mount (the data's `isIgnoreRiding`).
+    ignores_riding: bool,
+}
+
+/// What places a player's garment, head and headgear among its layers.
+struct Dressing {
+    /// By action and frame: the head goes behind the body (the job's .imf).
+    head_first: Vec<Vec<bool>>,
+    /// By action and body frame: the garment goes over the body rather than behind everything.
+    robe_over_body: Vec<Vec<bool>>,
+    /// Over the body, the garment goes over the headgear too.
+    robe_over_headgear: bool,
+    /// Each headgear layer: its place and how far it's moved, facing each way.
+    headgear: Vec<Worn>,
+    /// The headgear hides the head.
+    head_hidden: bool,
+    /// An outfit body: no weapon or shield.
+    outfit: bool,
+    /// A Madogear body: never a shield, and no garment for a woman.
+    madogear: bool,
+    female: bool,
+}
+
+/// Sprite jobs on a Madogear.
+const MADOGEAR_BODIES: [u16; 3] = [4086, 4087, 4112];
+/// A player's dead action (all eight directions).
+const DEAD_ACTIONS: std::ops::RangeInclusive<usize> = 64..=71;
+
+impl Dressing {
+    /// The layers to draw in action `index` (direction included) at body frame `frame`, back to front.
+    fn order(&self, index: usize, frame: usize) -> Vec<Part> {
+        let direction = index % 8;
+        let at = |table: &[Vec<bool>]| table.get(index).and_then(|frames| frames.get(frame)).copied().unwrap_or(false);
+        let robe = match (at(&self.robe_over_body), self.robe_over_headgear) {
+            (false, _) => RobeAt::Behind,
+            (true, false) => RobeAt::OverBody,
+            (true, true) => RobeAt::OverHeadgear,
+        };
+        let headgear: Vec<(Part, i32)> = self.headgear.iter().filter_map(|worn| Some((worn.part, worn.places[direction]?))).collect();
+        // Weapons and shields show in the battle stance and the weapon attacks.
+        let armed = !self.outfit && matches!(index, 32..=39 | 80..=95);
+        let mut order = stack(direction, armed, at(&self.head_first), robe, &headgear);
+        if self.head_hidden {
+            order.retain(|&part| part != Part::Head);
+        }
+        // The dead and a woman on a Madogear wear no garment; a Madogear carries no shield.
+        let robe_off = DEAD_ACTIONS.contains(&index) || self.madogear && self.female;
+        order.retain(|&part| !(part == Part::Robe && robe_off || part == Part::Shield && self.madogear));
+        order
+    }
+}
+
+/// A one-shot action playing over a fixed time.
+struct Shot {
+    action: usize,
+    started: Instant,
+    pace: Pace,
+    /// Keep showing the last frame afterwards (death).
+    hold: bool,
+}
+
+/// How a flinch plays for d = the hit's target motion / 288 (`delay`: the action's ACT frame delay). Over 1, at the ACT's
+/// pace with the last frame held until d times its length; up to 1, a player's frames last d times their delay and
+/// anyone else's d × 24 ms each; at 0, as the ACT has it.
+fn flinch_pace(d: f32, player: bool, delay: f32) -> Pace {
+    match d {
+        d if d > 1.0 => Pace::Hold(d),
+        d if d > 0.0 && player => Pace::Act(d),
+        d if d > 0.0 => Pace::Act(d / delay),
+        _ => Pace::Act(1.0),
+    }
+}
+
+/// The frames whose sounds play when an animation moves from `last` to `now` ((action, frame)) in an action of `count`
+/// frames: those passed since the last, wrapping round a loop. In a new action from frame 1: a sound on frame 0 of an
+/// action just begun doesn't play.
+pub fn frames_passed(last: Option<(usize, usize)>, now: (usize, usize), count: usize) -> Vec<usize> {
+    match last {
+        Some((action, frame)) if action == now.0 && frame == now.1 => Vec::new(),
+        Some((action, frame)) if action == now.0 && frame < now.1 => (frame + 1..=now.1).collect(),
+        Some((action, frame)) if action == now.0 => (frame + 1..count).chain(0..=now.1).collect(),
+        _ => (1..=now.1).collect(),
+    }
+}
+
+/// Whether a hit that lands makes its target flinch, by what it plays now: not a player in its own swing, nor a monster
+/// or NPC in one of its special idle actions (5 to 8). A monster's own attack is cut.
+pub fn flinches(kind: u8, playing: usize) -> bool {
+    match kind {
+        0 => playing != combat_actions(kind).0,
+        _ => !(5..=8).contains(&playing),
+    }
+}
+
+/// How a one-shot action plays: stretched over a duration, at its ACT pace times a scale, or at its ACT pace with the
+/// last frame held until its length times a factor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Pace {
+    Stretch(f32),
+    Act(f32),
+    Hold(f32),
+}
+
+/// The client's damage numbers (data\sprite\이팩트\숫자.spr), one image per digit then K and M, and its MISS label
+/// (msg.spr).
+pub struct Digits {
+    digits: Vec<Texture>,
+    pub miss: Texture,
+}
+
+impl Digits {
+    pub fn load(gpu: &Gpu, grf: &Grf) -> Option<Self> {
+        let spr = Spr::parse(&grf.read("data\\sprite\\이팩트\\숫자.spr").ok()?).ok()?;
+        // 0 to 9 must be there; K and M (10, 11) may not.
+        let digits: Vec<Texture> = (0..12).map_while(|glyph| spr.image(0, glyph, None).map(|image| gpu.texture(&image, false))).collect();
+        if digits.len() < 10 {
+            return None;
+        }
+        let messages = Spr::parse(&grf.read("data\\sprite\\이팩트\\msg.spr").ok()?).ok()?;
+        let frame = |index: usize| messages.image(0, index, None).or_else(|| messages.image(1, index, None)).map(|image| gpu.texture(&image, false));
+        Some(Self { digits, miss: frame(0)? })
+    }
+
+    /// The glyphs of `number` (`number_glyphs`) centered on the anchor: texture, top-left offset and size in sprite
+    /// pixels. Each is centred on its own slot, `DIGIT_STEP` apart, whatever its width.
+    pub fn place(&self, number: i32, scale: f32, extended: bool) -> Vec<(&Texture, [f32; 2], [f32; 2])> {
+        let digits: Vec<&Texture> = number_glyphs(number.unsigned_abs(), extended).into_iter().filter_map(|glyph| self.digits.get(glyph)).collect();
+        let count = digits.len();
+        digits
+            .into_iter()
+            .enumerate()
+            .map(|(index, texture)| {
+                let size = texture.size.map(|value| value * scale);
+                let middle = digit_slot(index, count) * scale;
+                (texture, [middle - size[0] / 2.0, -size[1] / 2.0], size)
+            })
+            .collect()
+    }
+}
+
+/// The glyphs a number shows as: its digits (0 to 9); with the game's extended numbers a million and up in thousands
+/// then K (10), a hundred million and up in millions then M (11); without, at most 999,999.
+// ponytail: heals go the same way as damage.
+pub fn number_glyphs(number: u32, extended: bool) -> Vec<usize> {
+    let (value, unit) = match number {
+        number if extended && number >= 100_000_000 => (number / 1_000_000, Some(11)),
+        number if extended && number >= 1_000_000 => (number / 1000, Some(10)),
+        number if extended => (number, None),
+        number => (number.min(999_999), None),
+    };
+    value.to_string().bytes().map(|digit| usize::from(digit - b'0')).chain(unit).collect()
+}
+
+/// The middle of digit `index` (the first, leftmost, is 0) of a `count`-digit number, in sprite pixels from the
+/// number's middle at scale 1.
+pub fn digit_slot(index: usize, count: usize) -> f32 {
+    (index as f32 - (count as f32 - 1.0) / 2.0) * DIGIT_STEP
+}
+
+/// Monster jobs (sprite IDs): 1001–3998 and 20021–31999.
+pub fn is_monster_job(job: u16) -> bool {
+    (1001..=3998).contains(&job) || (20021..=31999).contains(&job)
+}
+
+/// NPC jobs: 45–999.
+pub fn is_npc_job(job: u16) -> bool {
+    (45..=999).contains(&job)
+}
+
+/// Sprite pixels between the middles of two digits of a number at scale 1.
+pub const DIGIT_STEP: f32 = 9.55;
+/// A hit's number lasts 70 ticks of 24 ms.
+pub const HIT_NUMBER_TICKS: f32 = 70.0;
+
+/// Where a hit's number is `ticks` (24 ms each) after it shows, and how it looks.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NumberMotion {
+    /// World units above the target's feet: up to 32.7 at tick 30, then below the feet by the end.
+    pub height: f32,
+    /// World units it has drifted along each ground axis (`number_drift` gives the signs).
+    pub drift: f32,
+    pub scale: f32,
+    pub alpha: f32,
+}
+
+/// A hit's number: it pops up from 2.7 world units over the feet, arcs up and falls away, drifting diagonally,
+/// shrinking from 5 times its size to 1.2 (1.3 for a critical) and fading.
+pub fn hit_number(ticks: f32, critical: bool) -> NumberMotion {
+    NumberMotion {
+        height: 8.0 / 3.0 + 2.0 * ticks - ticks * ticks / 30.0,
+        drift: 0.8 * (ticks / 3.0 + 3.0),
+        scale: (5.0 - 0.24 * ticks).max(if critical { 1.3 } else { 1.2 }),
+        alpha: ((250.0 - 3.4 * ticks) / 255.0).clamp(0.0, 1.0),
+    }
+}
+
+/// How long, in 24 ms ticks: a heal's number, a multi-hit's total, a MISS.
+pub const HEAL_NUMBER_TICKS: f32 = 120.0;
+pub const TOTAL_NUMBER_TICKS: f32 = 120.0;
+pub const MISS_TICKS: f32 = 80.0;
+/// The message sprite's (`이팩트\msg`) critical burst and Lucky actions; Lucky plays once (28 frames of 24 ms).
+pub const BURST_ACTION: usize = 2;
+pub const LUCKY_ACTION: usize = 3;
+pub const LUCKY_MS: f32 = 672.0;
+/// Lucky shows this many world units over the feet.
+pub const LUCKY_HEIGHT: f32 = 20.0;
+
+/// A heal's number: from 12 units over the feet, rising slowly, shrinking from 5 times its size to 1, fading.
+pub fn heal_number(ticks: f32) -> NumberMotion {
+    NumberMotion { height: 12.0 + 0.18 * ticks, drift: 0.0, scale: (5.0 - 0.24 * ticks).max(1.0), alpha: ((250.0 - 2.0 * ticks) / 255.0).clamp(0.0, 1.0) }
+}
+
+/// A multi-hit's running total: high over the target at 27 units, rising slowly, popping from half its size to 3
+/// times, then fading after tick 90.
+// ponytail: the game grows it by 0.18·t every drawn frame (so faster at higher frame rates); here every 24 ms tick.
+pub fn total_number(ticks: f32) -> NumberMotion {
+    let ticks_whole = ticks.floor();
+    NumberMotion {
+        height: 27.0 + 0.1 * ticks,
+        drift: 0.0,
+        scale: (0.5 + 0.09 * ticks_whole * (ticks_whole + 1.0)).min(3.0),
+        alpha: ((250.0 - 8.0 * (ticks - 90.0).max(0.0)) / 255.0).clamp(0.0, 1.0),
+    }
+}
+
+/// MISS: over the attacker, from 12 units over its feet, rising quickly at its own size, fading.
+pub fn miss_number(ticks: f32) -> NumberMotion {
+    NumberMotion { height: 12.0 + 0.54 * ticks, drift: 0.0, scale: 1.0, alpha: ((250.0 - 3.0 * ticks) / 255.0).clamp(0.0, 1.0) }
+}
+
+/// The burst behind a critical hit's number: on the number's path, shrinking from 3 times its size to 1, fading; its
+/// frames go by every two ticks and hold on the last.
+pub fn burst(ticks: f32) -> NumberMotion {
+    NumberMotion { scale: (3.0 - 0.144 * ticks).max(1.0), alpha: ((255.0 - 3.45 * ticks) / 255.0).clamp(0.0, 1.0), ..hit_number(ticks, true) }
+}
+
+/// Which way (x east, z north: each 1 or -1) a hit's number drifts from a unit facing `rot` (`angle_of`'s degrees):
+/// diagonally away from where it faces. A facing the server set counts from 180 (north) up past 360, so all but
+/// north and north-west drift north-east, as the game does.
+pub fn number_drift(rot: f32, from_server: bool) -> [f32; 2] {
+    let angle = match (from_server, rot) {
+        (true, rot) if rot < 180.0 => rot + 360.0,
+        (false, rot) if rot > 180.0 => rot - 360.0,
+        (_, rot) => rot,
+    };
+    match angle {
+        angle if (0.0..90.0).contains(&angle) => [-1.0, 1.0],
+        angle if (90.0..180.0).contains(&angle) => [-1.0, -1.0],
+        angle if (180.0..270.0).contains(&angle) => [1.0, -1.0],
+        _ => [1.0, 1.0],
+    }
+}
+
+/// How far the cart's rope lets it lag: one cell.
+pub const CART_ROPE: f32 = world::CELL;
+/// Cart frames a world unit rolled, at an ACT delay of 1 (a delay of 4 makes it 0.23).
+const CART_FRAMES: f32 = 0.92;
+/// The falcon flies this far above the ground.
+pub const FALCON_HEIGHT: f32 = 25.0;
+/// Blitz Beat: its damage packet sends the caster's falcon diving at the target.
+pub const BLITZ_BEAT: u16 = 129;
+/// The falcon and warg move by rules per game tick, 1/60 s.
+const TICK: f32 = 1.0 / 60.0;
+/// The falcon's dive and follow counter run on 16 ms ticks.
+const TICK_MS: u128 = 16;
+// ponytail: a new falcon starts two cells behind its hunter, a new warg three behind its ranger.
+const FALCON_START: f32 = world::CELL * 2.0;
+const WARG_START: f32 = world::CELL * 3.0;
+/// A new falcon closes 1/25 of the way a tick until it first comes within 25. Then it flies 1 a tick while farther
+/// than 12, closes 1/20 of the way while farther than 3, and hovers within that.
+const FALCON_ARRIVED: f32 = 25.0;
+const FALCON_FAR: f32 = 12.0;
+const FALCON_NEAR: f32 = 3.0;
+/// The warg waits until its owner is farther than 15, then runs 0.7 a tick; within 15.7 it's put at 14.9.
+const WARG_WAIT: f32 = 15.0;
+const WARG_RUN: f32 = 0.7;
+const WARG_CATCH: f32 = 15.7;
+const WARG_STOP: f32 = 14.9;
+/// The warg's shadow, twice a body's; the baby warg's a body's.
+pub const WARG_SHADOW: f32 = 2.0;
+const BABY_WARG_SHADOW: f32 = 1.0;
+/// The warg's hurt and dead actions (a monster's).
+const WARG_HURT: usize = 3;
+const WARG_DEAD: usize = 4;
+/// A player's flinch and dead actions.
+const PLAYER_FLINCH: usize = 6;
+const PLAYER_DEAD: usize = 8;
+/// Baby Hunters, whose falcon is the baby one; Baby Rangers' and the other baby wolf-keepers' warg; and the Windhawks.
+const BABY_FALCON_JOBS: [u16; 1] = [4034];
+const BABY_WARG_JOBS: [u16; 2] = [4098, 4111];
+/// Rangers (grown-up, trans, baby), whose falcon is the owl.
+const OWL_JOBS: [u16; 3] = [4056, 4062, 4098];
+const WINDHAWK_JOBS: [u16; 2] = [4257, 4278];
+
+/// The MVP tomb, which casts no shadow.
+const MVP_TOMB: u16 = 565;
+
+/// Sprite jobs that keep their shadow while sitting: the Star Gladiator line's union forms, which float.
+const SITTING_SHADOW_JOBS: [u16; 5] = [4048, 4238, 4243, 4244, 4316];
+
+/// How wide a unit's shadow is, in cells (0 for none): its sprite job's factor from the data's tables, 1 when the job
+/// isn't listed. A player (`player`) casts none while dead or sitting, but for the floating union forms.
+pub fn shadow_factor(factors: &HashMap<u16, f32>, player: bool, job: u16, option: u32, sitting: bool, dead: bool) -> f32 {
+    let sprite = if player { sprite_job(job, option) } else { job };
+    if player && (dead || sitting && !SITTING_SHADOW_JOBS.contains(&sprite)) || sprite == MVP_TOMB {
+        return 0.0;
+    }
+    factors.get(&sprite).copied().unwrap_or(1.0)
+}
+
+/// Cell steps of the eight facings, from south, turning west. World X is east, Z is north.
+const FACING: [[f32; 2]; 8] = [[0.0, -1.0], [-1.0, -1.0], [-1.0, 0.0], [-1.0, 1.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [1.0, -1.0]];
+
+/// World XZ of a fractional cell's center.
+pub fn world_xz(cell: [f32; 2]) -> [f32; 2] {
+    [(cell[0] + 0.5) * world::CELL, (cell[1] + 0.5) * world::CELL]
+}
+
+/// One step of a rope. Farther than `reach` from `leader`, move straight in until exactly `reach` away.
+pub fn rope_step(from: [f32; 2], leader: [f32; 2], reach: f32) -> [f32; 2] {
+    let dx = leader[0] - from[0];
+    let dz = leader[1] - from[1];
+    let distance = (dx * dx + dz * dz).sqrt();
+    if distance <= reach || distance < 1.0e-4 {
+        return from;
+    }
+    let scale = (distance - reach) / distance;
+    [from[0] + dx * scale, from[1] + dz * scale]
+}
+
+/// `reach` world units behind a leader facing `direction`.
+fn place_behind(leader: [f32; 2], direction: u8, reach: f32) -> [f32; 2] {
+    let [dx, dz] = FACING[usize::from(direction % 8)];
+    let length = (dx * dx + dz * dz).sqrt();
+    [leader[0] - dx / length * reach, leader[1] - dz / length * reach]
+}
+
+/// What a share `fraction` taken each tick comes to over `ticks` ticks.
+fn per_ticks(fraction: f32, ticks: f32) -> f32 {
+    1.0 - (1.0 - fraction).powf(ticks)
+}
+
+/// `fraction` of the way from `from` to `to`.
+fn toward(from: [f32; 2], to: [f32; 2], fraction: f32) -> [f32; 2] {
+    [from[0] + (to[0] - from[0]) * fraction, from[1] + (to[1] - from[1]) * fraction]
+}
+
+/// `distance` from `from` toward `to`, not past it.
+fn advance(from: [f32; 2], to: [f32; 2], distance: f32) -> [f32; 2] {
+    let apart = f32::hypot(to[0] - from[0], to[1] - from[1]);
+    if apart <= distance || apart < 1e-4 { to } else { toward(from, to, distance / apart) }
+}
+
+/// The falcon's step over `ticks` ticks toward its `owner`: where it gets to, and whether it's still arriving.
+fn falcon_step(from: [f32; 2], owner: [f32; 2], arriving: bool, ticks: f32) -> ([f32; 2], bool) {
+    let distance = f32::hypot(owner[0] - from[0], owner[1] - from[1]);
+    if arriving && distance > FALCON_ARRIVED {
+        return (toward(from, owner, per_ticks(1.0 / 25.0, ticks)), true);
+    }
+    let at = if distance > FALCON_FAR {
+        advance(from, owner, ticks)
+    } else if distance > FALCON_NEAR {
+        toward(from, owner, per_ticks(1.0 / 20.0, ticks))
+    } else {
+        from
+    };
+    (at, false)
+}
+
+/// The warg's step over `ticks` ticks toward its `owner`: where it gets to, and whether it ran.
+fn warg_step(from: [f32; 2], owner: [f32; 2], ticks: f32) -> ([f32; 2], bool) {
+    if f32::hypot(owner[0] - from[0], owner[1] - from[1]) <= WARG_WAIT {
+        return (from, false);
+    }
+    let at = advance(from, owner, WARG_RUN * ticks);
+    let left = f32::hypot(at[0] - owner[0], at[1] - owner[1]);
+    if left < WARG_CATCH && left > 1e-4 {
+        return (toward(owner, at, WARG_STOP / left), true);
+    }
+    (at, true)
+}
+
+/// The exact way (degrees, as `Actor::rot`) from `from` to its owner; `rot` when it's right on them.
+fn facing(from: [f32; 2], owner: [f32; 2], rot: f32) -> f32 {
+    let [dx, dz] = [owner[0] - from[0], owner[1] - from[1]];
+    if f32::hypot(dx, dz) < 1e-3 { rot } else { dx.atan2(-dz).to_degrees().rem_euclid(360.0) }
+}
+
+/// The falcon's or warg's sprite for an owner of `job`, as (sprite path, ACT path) to try in order, and its shadow.
+fn companion_sprites(warg: bool, job: u16) -> (Vec<(String, String)>, f32) {
+    let pair = |path: &str, act: &str| (format!("data\\sprite\\{path}"), format!("data\\sprite\\{act}.act"));
+    let same = |path: &str| pair(path, path);
+    let mut tries = Vec::new();
+    let mut shadow = if warg { WARG_SHADOW } else { 0.0 };
+    match (warg, job) {
+        // ponytail: the Windhawk wolf's shadow is the warg's.
+        (false, job) if WINDHAWK_JOBS.contains(&job) => tries.push(same("이팩트\\windhawk_hawk")),
+        (true, job) if WINDHAWK_JOBS.contains(&job) => tries.push(same("이팩트\\windhawk_wolf")),
+        (false, job) if BABY_FALCON_JOBS.contains(&job) => tries.push(pair("이팩트\\매", "이팩트\\베이비매")),
+        (false, job) if OWL_JOBS.contains(&job) => tries.push(same("이팩트\\owl")),
+        (false, 4012) => tries.push(same("이팩트\\매2")),
+        (false, 4050) => tries.push(same("몬스터\\demon_pungus")),
+        (false, 4051) => tries.push(same("몬스터\\explosion")),
+        (false, 4052) => tries.push(same("몬스터\\lude")),
+        (true, job) if BABY_WARG_JOBS.contains(&job) => {
+            tries.push(pair("몬스터\\워그", "몬스터\\베이비워그"));
+            shadow = BABY_WARG_SHADOW;
+        }
+        _ => {}
+    }
+    let name = if warg { "워그" } else { "매" };
+    tries.extend(["이팩트", "몬스터", "npc"].map(|folder| same(&format!("{folder}\\{name}"))));
+    (tries, shadow)
+}
+
+fn falcon_out(option: u32) -> bool {
+    option & OPTION_FALCON != 0
+}
+
+/// The warg on the ground. Hidden while the player is riding it.
+fn warg_out(option: u32) -> bool {
+    option & OPTION_WUG != 0 && option & OPTION_WUGRIDER == 0
+}
+
+/// A falcon or a warg following a player: where it stands, the way it faces, and its sprite.
+/// A pushcart on its rope: where it stands (world XZ), the way it faces (degrees, as `Actor::rot`) and how far it has
+/// rolled (world units).
+pub struct Cart {
+    pub sprites: SpriteSet,
+    pub at: [f32; 2],
+    pub rot: f32,
+    pub rolled: f32,
+}
+
+impl Cart {
+    /// A new cart stands on its leader's spot, facing the leader's way, until the leader walks off.
+    pub fn new(sprites: SpriteSet, leader: [f32; 2], direction: u8) -> Self {
+        Self { sprites, at: leader, rot: rot_of(direction), rolled: 0.0 }
+    }
+
+    /// Pulled in to a rope's length when the leader is farther, turned toward it. A leader suddenly far off (a warp,
+    /// a teleport) has the cart start over on its spot.
+    pub fn step(&mut self, leader: [f32; 2], direction: u8) {
+        let [dx, dz] = [leader[0] - self.at[0], leader[1] - self.at[1]];
+        // ponytail: more than two ropes away counts as a jump, not a pull.
+        if f32::hypot(dx, dz) > CART_ROPE * 3.0 {
+            (self.at, self.rot) = (leader, rot_of(direction));
+            return;
+        }
+        let at = rope_step(self.at, leader, CART_ROPE);
+        self.rolled += f32::hypot(at[0] - self.at[0], at[1] - self.at[1]);
+        self.at = at;
+        let [dx, dz] = [leader[0] - at[0], leader[1] - at[1]];
+        if f32::hypot(dx, dz) > 1e-3 {
+            self.rot = dx.atan2(-dz).to_degrees().rem_euclid(360.0);
+        }
+    }
+
+    /// Which of `count` frames shows: the wheels turn with the distance rolled over the ACT's delay, looping.
+    pub fn frame(&self, count: usize) -> usize {
+        let delay = self.sprites.layers.first().and_then(|layer| layer.act.delays.first()).copied().filter(|delay| *delay > 0.0);
+        (self.rolled * CART_FRAMES / delay.map_or(4.0, |delay| delay.max(1.0))) as usize % count.max(1)
+    }
+}
+
+/// A falcon's dive at a Blitz Beat's target: what it moves each tick (world units: x, height, z), and whether its
+/// swing (the vertical flips) has started.
+struct Dive {
+    v: [f32; 3],
+    swing: bool,
+}
+
+pub struct Companion {
+    pub at: [f32; 2],
+    /// The falcon's height over the ground: 25, but for a dive and its way back.
+    pub lift: f32,
+    /// Its follow counter c: 1…6 while following, counting on through a dive. It ticks on whole 16 ms, counted up to
+    /// `counted`.
+    count: u32,
+    counted: Instant,
+    dive: Option<Dive>,
+    /// The exact way it faces, in degrees (as `Actor::rot`): always toward its owner.
+    pub rot: f32,
+    /// It moved in its last step (the falcon flying in, the warg running).
+    pub moving: bool,
+    /// The falcon on its way in from where it appeared, until it first comes within 25.
+    arriving: bool,
+    /// What it plays and since when.
+    action: (usize, Instant),
+    /// When it last stepped: the rules run per tick over the time since.
+    stepped: Instant,
+    /// Its shadow, a body's being 1 (the falcon, up in the air, has none).
+    pub shadow: f32,
+    sprites: Option<SpriteSet>,
+}
+
+impl Companion {
+    fn spawn(grf: &Grf, warg: bool, job: u16, at: [f32; 2], owner: [f32; 2]) -> Self {
+        let (tries, shadow) = companion_sprites(warg, job);
+        let sprites = tries.iter().find_map(|(path, act)| SpriteSet::with_act(grf, path, act));
+        let now = Instant::now();
+        let action = if warg { IDLE } else { WALK };
+        Self {
+            at,
+            lift: FALCON_HEIGHT,
+            count: 0,
+            counted: now,
+            dive: None,
+            rot: facing(at, owner, 0.0),
+            moving: false,
+            arriving: !warg,
+            action: (action, now),
+            stepped: now,
+            shadow,
+            sprites,
+        }
+    }
+
+    /// Sends the falcon at a Blitz Beat's `target` (its feet, world units), `ground` being the ground's height where
+    /// the falcon is: a tenth of the way each tick it flies, to the feet at the first 10. A packet in a dive turns it
+    /// to the new target; its counter and swing stay.
+    pub fn dive(&mut self, target: world::Vector, ground: f32) {
+        let y = ground + self.lift;
+        let v = [(target[0] - self.at[0]) / 10.0, (target[1] - y) / 10.0, (target[2] - self.at[1]) / 10.0];
+        match &mut self.dive {
+            Some(dive) => dive.v = v,
+            None => self.dive = Some(Dive { v, swing: false }),
+        }
+    }
+
+    /// One whole 16 ms tick of the falcon's own motion. In a dive, with c as it is before the step: with the swing
+    /// started and c > 35 it ends (no move; the falcon follows again, arriving); else x moves, z too, and the height
+    /// unless 10 < c < 25, from c = 25 on flipping its climb ×−1.9 each tick as the swing; then c + 1. Following, c runs
+    /// 1…6 and a falcon off its height settles back by a 25th of the gap.
+    fn tick(&mut self) {
+        let Some(dive) = &mut self.dive else {
+            self.count = if self.count.is_multiple_of(6) { 1 } else { self.count + 1 };
+            // ponytail: the way back to 25 over the ground is a 25th of the gap a tick; the game's isn't known.
+            if self.lift != FALCON_HEIGHT {
+                self.lift += (FALCON_HEIGHT - self.lift) / 25.0;
+                if (self.lift - FALCON_HEIGHT).abs() < 0.01 {
+                    self.lift = FALCON_HEIGHT;
+                }
+            }
+            return;
+        };
+        let c = self.count;
+        if dive.swing && c > 35 {
+            self.dive = None;
+            self.arriving = true;
+            return;
+        }
+        self.at[0] += dive.v[0];
+        self.at[1] += dive.v[2];
+        if !(c > 10 && c < 25) {
+            self.lift += dive.v[1];
+            if c >= 25 {
+                dive.v[1] *= -1.9;
+                dive.swing = true;
+            }
+        }
+        self.count += 1;
+    }
+
+    /// Runs the whole ticks up to `now`; whether a dive is still on.
+    fn run_ticks(&mut self, now: Instant) -> bool {
+        let whole = (now.saturating_duration_since(self.counted).as_millis() / TICK_MS).min(10_000) as u32;
+        for _ in 0..whole {
+            self.tick();
+        }
+        self.counted += Duration::from_millis(u64::from(whole) * TICK_MS as u64);
+        self.dive.is_some()
+    }
+
+    pub fn sprites(&self) -> Option<&SpriteSet> {
+        self.sprites.as_ref()
+    }
+
+    /// Plays `action` from now, unless it already is.
+    fn play(&mut self, action: usize, now: Instant) {
+        if self.action.0 != action {
+            self.action = (action, now);
+        }
+    }
+
+    /// The falcon flaps (its idle action) once it has arrived, and until then shows its walk (the birds' one gliding frame).
+    /// The warg runs, stands, flinches once or lies dead.
+    pub fn frame(&mut self, gpu: &Gpu, direction: u8, now: Instant) -> Vec<Placed> {
+        let Some(sprites) = &mut self.sprites else { return Vec::new() };
+        let (action, since) = self.action;
+        let action = if action < sprites.actions() / 8 { action } else { IDLE };
+        let ms = now.saturating_duration_since(since).as_secs_f32() * 1000.0;
+        let timing = match action {
+            _ if self.dive.is_some() => Timing::Span(0.0),
+            WARG_HURT | WARG_DEAD => Timing::Once(ms, 1.0),
+            _ => Timing::Loop(ms),
+        };
+        sprites.frame(gpu, action, direction, 0, timing)
+    }
+}
+
+/// The exact facing, in degrees, of a step or an offset toward a target: atan2(dx, −dz), so 0 faces south (the
+/// camera at its default turn), 90 east, 180 north, 270 west.
+pub fn angle_of(step: [i32; 2]) -> f32 {
+    (step[0] as f32).atan2(-(step[1] as f32)).to_degrees().rem_euclid(360.0)
+}
+
+/// How long a hit counts as recent for the test driver's `attacking_me_ms` and `hits_taken`.
+pub const HIT_SHOWN: Duration = Duration::from_secs(3);
+
+/// Whether a unit on `from` facing `rot` faces the cell `to`: within 22.5° of the way there, and not on it.
+pub fn faces(rot: f32, from: [i32; 2], to: [i32; 2]) -> bool {
+    if from == to {
+        return false;
+    }
+    let off = (rot - angle_of([to[0] - from[0], to[1] - from[1]])).rem_euclid(360.0);
+    off.min(360.0 - off) <= 22.5 + 1e-3
+}
+
+/// The exact facing of one of the sprites' eight directions (0 south, turning west).
+pub fn rot_of(direction: u8) -> f32 {
+    (360.0 - f32::from(direction % 8) * 45.0) % 360.0
+}
+
+/// Which of its eight directions a unit facing `rot` shows to a camera turned `yaw` degrees: the angle between them,
+/// rounded to the nearest direction (`round`) or floored, so the unit switches as soon as the camera turns at all one
+/// way.
+pub fn view_direction(rot: f32, yaw: f32, round: bool) -> u8 {
+    let seen = (-yaw - rot).rem_euclid(360.0);
+    let direction = if !round {
+        (seen / 45.0) as u8
+    } else if !(22.5..=337.5).contains(&seen) {
+        0
+    } else {
+        ((seen + 22.5) / 45.0) as u8
+    };
+    direction % 8
+}
+
+/// Other units show this long after the server moves them.
+pub const REMOTE_DELAY: Duration = Duration::from_millis(72);
+/// A knockback slides the unit to its new cell over this many ms.
+const SLIDE_MS: u64 = 200;
+// ponytail: farther than this many cells a move (a pet put back at its owner, say) jumps instead of sliding.
+const SLIDE_REACH: f32 = 5.0;
+
+/// When a walk at `speed` ms a cell from `start` (in cells) at `begin` (whole ms, `whole_ms`) reaches each cell of
+/// `path`: the first after its straight-line distance, then `speed` a straight step and `speed`·1.414 a diagonal one
+/// (rathena counts speed·14/10), each cut to whole ms.
+fn arrivals(start: [f32; 2], begin: u64, path: &[[i32; 2]], speed: f32) -> Vec<([i32; 2], u64)> {
+    let (mut from, mut at) = (start, begin);
+    path.iter()
+        .enumerate()
+        .map(|(index, &cell)| {
+            let to = cell.map(|value| value as f32);
+            let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+            at += match index {
+                0 => (speed * (dy * dy + dx * dx).sqrt()) as u64,
+                _ if dx != 0.0 && dy != 0.0 => (speed * 1.414) as u64,
+                _ => speed as u64,
+            };
+            from = to;
+            (cell, at)
+        })
+        .collect()
+}
+
+/// The world point (on a frame centred on a map `half` its size in cells) of a cell position: 5 units a cell, cells'
+/// centres 2.5 in.
+fn world_point(cell: [f32; 2], half: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|axis| (cell[axis] - half[axis]) * world::CELL + 2.5)
+}
+
+/// The facing of a step of `dx`, `dz` world units, as the game works it out: atan2(dx, −dz) in degrees by 3.141592,
+/// not π, so every angle is 1.0000002 times too big (north 180.0000458, east 90.0000229, west 269.99997, south 0).
+#[allow(clippy::approx_constant)]
+pub fn step_rot(dx: f32, dz: f32) -> f32 {
+    let rot = (f64::from(dx).atan2(-f64::from(dz)) as f32) / 3.141_592 * 180.0;
+    if rot < 0.0 { rot + 360.0 } else { rot }
+}
+
+/// When a server tick comes here, by a tick the server told and when that came.
+pub fn local_time((tick, at): (u32, Instant), server_tick: u32) -> Instant {
+    let ms = server_tick.wrapping_sub(tick) as i32;
+    let apart = Duration::from_millis(u64::from(ms.unsigned_abs()));
+    if ms >= 0 { at + apart } else { at.checked_sub(apart).unwrap_or(at) }
+}
+
+/// A tick the server sends this far behind our clock counts as late; four late in a row step the clock back this much.
+const CLOCK_STEP: i64 = 144;
+const LATE_IN_A_ROW: u8 = 4;
+
+/// Our guess of the server's tick: set outright on entering a map and by the first ZC_NOTIFY_TIME after a map load,
+/// then nudged by every tick the server sends (ZC_NOTIFY_TIME, move entries, our own walks).
+#[derive(Default)]
+pub struct ServerClock {
+    at: Option<(u32, Instant)>,
+    late: u8,
+}
+
+impl ServerClock {
+    pub fn set(&mut self, tick: u32, at: Instant) {
+        self.at = Some((tick, at));
+        self.late = 0;
+        crate::set_shown_clock(tick, at);
+    }
+
+    /// The server's tick at `at`, by our guess.
+    pub fn tick(&self, at: Instant) -> Option<u32> {
+        let (tick, then) = self.at?;
+        let ms = if at >= then { at.duration_since(then).as_millis() as i64 } else { -(then.duration_since(at).as_millis() as i64) };
+        Some(tick.wrapping_add(ms as u32))
+    }
+
+    /// A tick heard at `at`: one ahead of our guess sets it at once; more than 144 ms behind on four packets in a row
+    /// steps it back 144 ms; anything else starts that count again.
+    pub fn heard(&mut self, tick: u32, at: Instant) {
+        let Some(guess) = self.tick(at) else { return self.set(tick, at) };
+        let ahead = i64::from(tick.wrapping_sub(guess) as i32);
+        if ahead > 0 {
+            self.set(tick, at);
+        } else if -ahead > CLOCK_STEP {
+            self.late += 1;
+            if self.late == LATE_IN_A_ROW
+                && let Some((tick, then)) = self.at
+            {
+                self.set(tick.wrapping_sub(CLOCK_STEP as u32), then);
+            }
+        } else {
+            self.late = 0;
+        }
+    }
+
+    /// When the server's `tick` is on our clock.
+    pub fn local(&self, tick: u32) -> Option<Instant> {
+        self.at.map(|clock| local_time(clock, tick))
+    }
+}
+
+/// How opaque a unit spawned in view is this long after: 68/255, then 8 more every 1/60 s, opaque after 24 steps
+/// (400 ms).
+// ponytail: the steps counted to the nearest 60th of a second.
+pub fn spawn_alpha(since: Duration) -> f32 {
+    let steps = (since.as_secs_f32() * 60.0).round();
+    (68.0 + 8.0 * steps).min(255.0) / 255.0
+}
+
+/// Something on the map that moves cell by cell.
+pub struct Actor {
+    pub name: String,
+    /// Object type from the map server (player, NPC, monster, ...).
+    pub kind: u8,
+    /// Job (class, or NPC/monster sprite) ID.
+    pub job: u16,
+    /// A player's guild (0: none).
+    pub guild: u32,
+    /// The level the server shows (monsters' and players'; 0 for NPCs and pets).
+    pub level: u16,
+    /// A player's looks, to rebuild its sprites when they change.
+    pub look: Option<Look>,
+    /// Script NPCs the client never draws.
+    pub hidden: bool,
+    pub sprites: Option<SpriteSet>,
+    pub cell: [i32; 2],
+    /// The cells ahead and when (whole ms) the unit reaches each.
+    path: Vec<([i32; 2], u64)>,
+    /// The walk's nodes already reached, for a shown clock that steps back.
+    passed: Vec<([i32; 2], u64)>,
+    /// Where it's drawn, in world units on a frame centred on its map (`half` the map's size in cells), and when it
+    /// was last updated (whole ms). Each update moves it toward the end of the step under way.
+    at: [f32; 2],
+    half: [f32; 2],
+    last: u64,
+    /// Milliseconds per straight step (the server's speed).
+    pub step_ms: f32,
+    /// The walk's odometer: world units it has been drawn moving along a path, since it appeared. Each update adds
+    /// the way it moved, so a changed walk never winds the legs back.
+    distance: f32,
+    /// Cells a finished step just left (not a slide). Cleared at the start of the next update.
+    /// Chase Walk's footprint counter (`step_chase`).
+    chase: ChaseSteps,
+    /// The facing in the sprites' eight directions, and exactly, in degrees (`angle_of`, `step_rot`: 0 south, 90
+    /// east).
+    pub direction: u8,
+    pub rot: f32,
+    /// The facing came from the server (appearing, turning) rather than from walking or turning to a target.
+    pub facing_from_server: bool,
+    /// Sliding (a knockback): the path is one straight move that doesn't turn the unit.
+    sliding: bool,
+    /// Frames left showing the walk after a stop that put it on the stop cell's centre.
+    walk_frames: u8,
+    /// Players only: 0 looking straight ahead, 1 and 2 turned to the sides. `kept_head` is the one its last entry
+    /// packet or own turn gave, which it goes back to after doing something else (`turn`).
+    pub head_direction: u16,
+    kept_head: u16,
+    animation_started: Instant,
+    shot: Option<Shot>,
+    /// Swings still to start (a multi-hit skill's later hits): the action, when, and its pace.
+    swings: Vec<(usize, Instant, f32)>,
+    /// Until then it's in a flurry of swings (Sonic Blow's), which a walk doesn't wait for.
+    flurry_until: Option<Instant>,
+    /// A player who fought stands ready until moving again.
+    ready: bool,
+    /// Sitting down (until it stands or walks).
+    pub sitting: bool,
+    /// When a dying unit is removed.
+    pub remove_at: Option<Instant>,
+    /// Why it's going: the vanish packet's type (rathena's `clr_type`: 0 out of sight, 1 dead).
+    pub vanish: Option<u8>,
+    /// Fading out: from when, over how many milliseconds (a corpse, a unit walking out of sight).
+    pub fade: Option<(Instant, f32)>,
+    /// Spawned in view: fading in since then (`spawn_alpha`).
+    pub fade_in: Option<Instant>,
+    /// A dead player: lying there until revived (players aren't removed when they die).
+    pub dead: bool,
+    /// Its cast bar is up (`Game::casts`), set each frame before `update`.
+    pub casting: bool,
+    /// Hiding, cloaking or chase-walking (the unit's option has UNSEEN_OPTIONS).
+    pub cloaked: bool,
+    /// The option bits that hide it (`seen`).
+    pub hide_option: u32,
+    /// The unit packet's xSize and ySize: a hidden NPC's pick box (`hidden_npc_pick`).
+    pub pick_size: [u8; 2],
+    /// rathena's opt1 and opt2: the body and health state that colour the sprite.
+    pub body_state: u16,
+    pub health_state: u16,
+    /// The pushcart it pulls.
+    pub cart: Option<Cart>,
+    /// The server's option word (rathena OPTION_*), falcon and warg included.
+    pub option: u32,
+    /// The falcon, while OPTION_FALCON is set.
+    pub falcon: Option<Companion>,
+    /// The warg, while OPTION_WUG is set and the player is not riding it.
+    pub warg: Option<Companion>,
+    /// The action and frame last seen, so a frame's sound plays once each time it comes up.
+    heard: Option<(usize, usize)>,
+    /// Locked by Blade Stop or Cursed Circle since then: the animation holds that frame.
+    pub held: Option<Instant>,
+    /// ChangeSize's percent, when that status is on. It multiplies the size table's factor.
+    pub size_percent: Option<i32>,
+    /// The statuses on that leave copies of the unit behind it (the quickens and the like), and the copies.
+    blurs: Vec<u16>,
+    /// Kagemusya is on: a copy is due every tick.
+    shadowing: bool,
+    shadow_due: bool,
+    /// Make Blur: the colour now multiplying the unit (white: none), the time its ticks are counted to, the ticks it has
+    /// run, whether a copy is due, and the ticks left of Snap's blur.
+    blur_colour: [u8; 3],
+    blur_clock: Option<Instant>,
+    blur_age: u32,
+    blur_due: bool,
+    snap_left: u32,
+    /// Striking (445): on for a player, the ticks it has run, whether a copy is due, and the colour its override gives it.
+    striking: bool,
+    strike_age: u32,
+    strike_due: bool,
+    strike_tint: Option<[u8; 3]>,
+    /// Escape: the run, the aims copies are due at, where the unit was drawn last and the effects its copies started.
+    escape: Option<Escape>,
+    escape_due: Vec<[f32; 3]>,
+    /// Hallucination Walk (EFST 334 and 869, effect 792): tints the unit #FAFAFA and leaves an Escape copy every 20 ticks.
+    hallucination: bool,
+    hallu_age: u32,
+    hallu_due: bool,
+    /// Cloud Kill's poison (EFST 1318, effect 2277): the ticks each running copy has run; the unit is dark grey while any runs.
+    clouds: Vec<u32>,
+    /// When the map this unit is on finished loading (the player's), so the server's replay of its statuses is told apart.
+    pub loaded_at: Option<Instant>,
+    last_feet: Option<[f32; 3]>,
+    launches: Vec<(u32, [f32; 3])>,
+    /// What statuses do to how its own parts are drawn: by status, the body flags and colour (`status_body`).
+    glows: Vec<(u16, u32, Option<[u8; 3]>)>,
+    pub ghosts: Vec<Ghost>,
+    /// Whom it last hit (an attack or a skill that did damage), and when: what a player sees as it swinging at them.
+    pub last_hit: Option<(u32, Instant)>,
+    /// Cursed Circle: the body darkened.
+    pub cursed: bool,
+    /// Magic Power's toggle: flips each frame the weapon is drawn.
+    pub flicker: std::cell::Cell<bool>,
+}
+
+/// The effect that leaves copies of a unit behind it while a status is on (the quickens, Overthrust...).
+pub const AFTERIMAGE: u32 = 166;
+/// Striking's copies (EFST 445): a frozen copy every 5th tick, whatever the player does.
+pub const STRIKING: u32 = 925;
+/// Hallucination Walk's copies and tint (#FAFAFA, effect 792, EFST 334 and 869).
+pub const HALLU_TINT: [u8; 3] = [250, 250, 250];
+pub const HALLUCINATION_WALK: u32 = 792;
+/// Cloud Kill's poison (EFST 1318): the whole unit drawn #696969, blended, while a copy of effect 2277 runs (99 999 ticks).
+pub const CLOUD_POISON: u32 = 2277;
+const CLOUD_TINT: [u8; 3] = [105; 3];
+const CLOUD_TICKS: u32 = 99_999;
+/// How long after a map load a status-on for the player is the server's replay of it.
+// ponytail: an estimate; the replay comes right after the load is acknowledged.
+pub const REPLAY_WINDOW: Duration = Duration::from_secs(2);
+/// Kagemusya's grey copies (EFST 656): a frozen copy every tick, 5 units behind the unit.
+pub const KAGEMUSYA: u32 = 1004;
+/// The tint of Kagemusya's copies (#C0C0C0), and where they stand: 5 units straight behind.
+const SHADOW_TINT: [u8; 3] = [192; 3];
+const SHADOW_BEHIND: f32 = 5.0;
+
+/// How a status has its unit's own parts drawn: the body, head and headgears added on; the weapon added on; two grown
+/// added-on copies of the body, head and headgears (Assumptio); four growing copies of every part, the part itself at
+/// alpha 150 (Kaite).
+pub const GLOW_ADDITIVE: u32 = 0x1;
+pub const GLOW_WEAPON: u32 = 0x2;
+/// Magic Power's flicker: the weapon drawn once more added on, on every other drawn frame (players only).
+pub const GLOW_FLICKER: u32 = 0x4;
+pub const GLOW_OUTLINE: u32 = 0x8;
+pub const GLOW_REFLECT: u32 = 0x200;
+/// A flag may carry one number (an age or an alpha, 0 to 255) in the top byte, from this bit.
+pub const PARAM_SHIFT: u32 = 24;
+/// Marsh of Abyss' and Great Echo's swing: a player's head and gear run round circles; the age n (0 to 35) is in the top byte.
+pub const GLOW_SWING: u32 = 0x40;
+/// Manhole's: a player's parts sink 24 000 / D px; the body and everything after the headgears turn into a faint grey ghost.
+pub const GLOW_MANHOLE: u32 = 0x100000;
+/// Hovering's two blue copies of every part; their alpha (0 to 160) is in the top byte.
+pub const GLOW_BLUE: u32 = 0x4000;
+/// Soul Link's two blue copies of a player's parts, 1 and 2 % bigger; the glow's alpha (0 to 200) is in the top byte.
+pub const GLOW_SOUL: u32 = 0x80;
+/// Spirit Link's stack of ten white outlines round a monster's parts; the counter f (50 to 199) is in the top byte.
+pub const GLOW_STACK: u32 = 0x100;
+/// The drop-in landing of High Jump and Lope: the counter f (0 to 34) is in the top byte.
+pub const GLOW_DROP: u32 = 0x400;
+/// Swhoo's white copy of every part, added on; its alpha is in the top byte.
+pub const GLOW_WHITE: u32 = 0x200000;
+/// Sky Net Blow's two red copies of every part; their alpha is in the top byte.
+pub const GLOW_RED: u32 = 0x40000;
+/// Sound of Destruction's: four copies slide out of every part; the age n (0 to 69) of the effect's 30th tick on is in the upper half.
+pub const GLOW_SPREAD: u32 = 0x1000;
+
+/// How far the swing (466) moves a part at its age n: round a circle `reach` px wide, eased by the cosine, as whole pixels
+/// from the anchor `(x, y)` in sprite pixels (y down). The body has a reach of 0, the head 40, any other part 10.
+pub fn swing_offset(n: u32, reach: f32, [x, y]: [f32; 2]) -> [f32; 2] {
+    // ponytail: sums are rounded to a millionth before they are cut, so a float's dust doesn't take a whole pixel off.
+    let whole = |value: f64| ((value * 1e6).round() / 1e6).trunc();
+    let mut angle = whole(180.0 - 180.0 * (5.0 * f64::from(n)).to_radians().cos());
+    if angle >= 360.0 {
+        angle -= 360.0;
+    }
+    let (sin, cos) = angle.to_radians().sin_cos();
+    let reach = f64::from(reach);
+    [whole(f64::from(x) + reach * sin) as f32, whole(f64::from(y) + reach - reach * cos) as f32]
+}
+
+/// The alpha of Hovering's blue copies at tick t (0 to 199): they open over 10 ticks, glow, and close from tick 150.
+pub fn blue_alpha(t: u32) -> f32 {
+    copies_alpha(match t {
+        0..=25 => t,
+        26..=150 => 25,
+        151..=175 => 175 - t,
+        _ => 0,
+    })
+}
+
+/// The alpha of a flash's added-on copies at its phase f: 15 f to 10, 160 to 20, then 5 · (51 − f) down to nothing at 51.
+pub fn copies_alpha(f: u32) -> f32 {
+    match f {
+        0..=10 => 15.0 * f as f32,
+        11..=20 => 160.0,
+        21..=50 => 5.0 * (51 - f) as f32,
+        _ => 0.0,
+    }
+}
+
+/// The body flags and colour a status's looping effect gives its unit: Berserk red, Marionette pink with the outline,
+/// Assumptio's outline, Kaite's copies, Aura Blade's weapon.
+pub fn status_body(effect: u32) -> Option<(u32, Option<[u8; 3]>)> {
+    match effect {
+        // Zangetsu's steady blue double glow (f = 20, alpha 160).
+        1003 => Some((GLOW_BLUE | 160 << PARAM_SHIFT, None)),
+        368 => Some((GLOW_ADDITIVE, Some([0xFF, 0x64, 0x64]))),
+        // Lord Knight's Concentration tints the body, drawn as it is.
+        369 => Some((0, Some([0xFF, 0xFF, 0xA0]))),
+        396 => Some((GLOW_ADDITIVE | GLOW_OUTLINE, Some([0xFF, 0x59, 0xB6]))),
+        375 => Some((GLOW_OUTLINE, None)),
+        419 => Some((GLOW_REFLECT, None)),
+        474 => Some((GLOW_WEAPON, None)),
+        382 => Some((GLOW_FLICKER, None)),
+        _ => None,
+    }
+}
+
+/// Which of a unit's parts an image is, for the body flags.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartGroup {
+    /// The body, head and headgears (and a monster's or an NPC's one sprite).
+    Body,
+    /// The weapon and its glow.
+    Weapon,
+    /// The shield and the garment.
+    Gear,
+}
+
+/// One copy drawn for a part under the body flags: added on or blended, the colour to multiply by (alpha included),
+/// and how many screen pixels it's grown by on every side.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GlowCopy {
+    pub additive: bool,
+    pub color: [f32; 4],
+    pub grow: f32,
+    /// How many screen pixels it is moved right and down.
+    pub offset: [f32; 2],
+    /// How much bigger it is about the feet (1 leaves it).
+    pub scale: f32,
+}
+
+/// How a part is drawn under the body flags `flags` and colour `tint`: its own copy (added on, or blended at its own
+/// alpha), and the copies around it. `breath` is Assumptio's angle in degrees (0–180), `spread` Kaite's 0–20, and
+/// `unit` the screen pixels one unit of growth takes (400 / the camera's distance).
+pub fn glow_copies(flags: u32, tint: Option<[u8; 3]>, group: PartGroup, breath: f32, spread: f32, unit: f32, player: bool) -> (GlowCopy, Vec<GlowCopy>) {
+    let color = tint.map_or([1.0; 4], |[red, green, blue]| [f32::from(red) / 255.0, f32::from(green) / 255.0, f32::from(blue) / 255.0, 1.0]);
+    let body = group == PartGroup::Body;
+    let additive = (body && flags & GLOW_ADDITIVE != 0) || (group == PartGroup::Weapon && flags & GLOW_WEAPON != 0);
+    let mut part = GlowCopy { additive, color, grow: 0.0, offset: [0.0; 2], scale: 1.0 };
+    let mut copies = Vec::new();
+    if body && flags & GLOW_OUTLINE != 0 {
+        let sin = breath.to_radians().sin();
+        if player {
+            copies.push(GlowCopy { additive: true, color: [1.0, 1.0, 1.0, 100.0 / 255.0], grow: (3.0 + sin) * unit, offset: [0.0; 2], scale: 1.0 });
+            copies.push(GlowCopy { additive: true, color: [1.0, 1.0, 1.0, 120.0 / 255.0], grow: (5.0 + 2.0 * sin) * unit, offset: [0.0; 2], scale: 1.0 });
+        } else {
+            // A monster or an NPC gets one copy in its own colour.
+            copies.push(GlowCopy { additive: true, color: [1.0; 4], grow: (1.5 * sin + 5.0) * unit, offset: [0.0; 2], scale: 1.0 });
+        }
+    }
+    if flags & GLOW_REFLECT != 0 && !part.additive {
+        for k in [5.0, 10.0, 15.0, 20.0] {
+            let s = (spread + k) % 20.0;
+            copies.push(GlowCopy { additive: false, color: [1.0, 1.0, 1.0, (100.0 - 5.0 * s) / 255.0], grow: s * unit, offset: [0.0; 2], scale: 1.0 });
+        }
+        part.color = [1.0, 1.0, 1.0, 150.0 / 255.0];
+    }
+    // Hovering and Sky Net Blow: two more copies of every part, added on in blue or red.
+    for (flag, color) in [(GLOW_BLUE, [5.0 / 255.0, 5.0 / 255.0, 1.0]), (GLOW_RED, [1.0, 5.0 / 255.0, 5.0 / 255.0])] {
+        if flags & flag != 0 {
+            let alpha = (flags >> PARAM_SHIFT) as f32 / 255.0;
+            for _ in 0..2 {
+                copies.push(GlowCopy { additive: true, color: [color[0], color[1], color[2], alpha], grow: 0.0, offset: [0.0; 2], scale: 1.0 });
+            }
+        }
+    }
+    // Soul Link: two blue copies of a player's parts, a hair bigger, unless the drop-in is on it.
+    if flags & GLOW_SOUL != 0 && player && flags & GLOW_DROP == 0 {
+        let alpha = (flags >> PARAM_SHIFT) as f32 / 255.0;
+        for i in 1..=2 {
+            copies.push(GlowCopy {
+                additive: true,
+                color: [55.0 / 255.0, 55.0 / 255.0, 1.0, alpha],
+                grow: 0.0,
+                offset: [0.0; 2],
+                scale: 1.0 + 0.01 * i as f32,
+            });
+        }
+    }
+    // Spirit Link: ten white outlines round a monster's or NPC's layers, each 3 pixels further out.
+    if flags & GLOW_STACK != 0 && !player {
+        let f = (flags >> PARAM_SHIFT) as i32;
+        for i in 1..=10 {
+            let alpha = if f <= 130 { f - (5 * i + 50) } else { 245 - 10 * i - f }.clamp(0, 200);
+            copies.push(GlowCopy { additive: true, color: [1.0, 1.0, 1.0, alpha as f32 / 255.0], grow: 3.0 * i as f32 * unit, offset: [0.0; 2], scale: 1.0 });
+        }
+    }
+    // Swhoo: one more copy of every part, added on in white.
+    if flags & GLOW_WHITE != 0 {
+        copies.push(GlowCopy { additive: true, color: [1.0, 1.0, 1.0, (flags >> PARAM_SHIFT) as f32 / 255.0], grow: 0.0, offset: [0.0; 2], scale: 1.0 });
+    }
+    // Four white copies of every part slide right, left, down and up, fainter as they go.
+    if flags & GLOW_SPREAD != 0 {
+        let n = (flags >> PARAM_SHIFT) as f32;
+        let alpha = 5.0 * (30.0 - n);
+        let away = 4.0 * n * unit;
+        if alpha > 0.0 {
+            for offset in [[away, 0.0], [-away, 0.0], [0.0, away], [0.0, -away]] {
+                copies.push(GlowCopy { additive: false, color: [1.0, 1.0, 1.0, alpha / 255.0], grow: 0.0, offset, scale: 1.0 });
+            }
+        }
+    }
+    (part, copies)
+}
+
+/// Cursed Circle's statuses, which darken the body to this.
+pub const CURSED_CIRCLE: [u16; 2] = [416, 417];
+pub const CURSED_TINT: [u8; 3] = [64, 64, 64];
+/// A copy is left on every 5th tick of the blur, and fades from 180 by 8 a tick: drawn 172, 164 … 4.
+const GHOST_EVERY: u32 = 5;
+const GHOST_FADE: f32 = 8.0;
+const GHOST_FIRST: f32 = 180.0;
+/// Snap's blur lasts this many ticks (ZC_FASTMOVE).
+const SNAP_TICKS: u32 = 100;
+/// The colour drifts back toward white by this much a channel a tick when the blur ends.
+const BLUR_DRIFT: u8 = 8;
+
+/// A copy of the unit left behind while it blurs: when, where its feet were, the frame it showed, and its colour.
+pub struct Ghost {
+    pub left: Instant,
+    pub feet: [f32; 3],
+    pub placed: Vec<Placed>,
+    pub tint: [u8; 3],
+    /// Which fade it has.
+    pub kind: GhostKind,
+    /// Escape's copy has started effect 793 on itself.
+    launched: bool,
+}
+
+/// What leaves a copy: Make Blur (172 less 8 a tick), Striking (239 less 16) or Escape (180, held, then 8 less every 4th tick).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GhostKind {
+    Blur,
+    Striking,
+    Escape,
+    /// Kagemusya's (100 less 16 a tick).
+    Shadow,
+}
+
+impl Ghost {
+    /// How see-through the copy is drawn `now`, out of 1.
+    pub fn alpha(&self, now: Instant) -> f32 {
+        let age = now.saturating_duration_since(self.left);
+        match self.kind {
+            GhostKind::Blur => ghost_alpha(age),
+            GhostKind::Striking => strike_alpha(age),
+            GhostKind::Shadow => shadow_alpha(age),
+            GhostKind::Escape => escape_alpha(1 + (age.as_millis() / 16) as u32) / 255.0,
+        }
+    }
+}
+
+/// One of Escape's copies at its age n: 180 while n is 107 or less, then 8 less at n = 108, 112 … 192 (4 there), gone from 193; out
+/// of 255.
+pub fn escape_alpha(n: u32) -> f32 {
+    match n {
+        0..=107 => 180.0,
+        108..=192 => (180 - 8 * ((n - 108) / 4 + 1)) as f32,
+        _ => 0.0,
+    }
+}
+
+/// Escape's tint and copies (#C8C800), its aim moving halfway to the unit each tick, and the tick it started effect 793 on a copy.
+const ESCAPE_TINT: [u8; 3] = [200, 200, 0];
+const ESCAPE_LAUNCH: u32 = 110;
+pub const ESCAPE_AFTER: u32 = 793;
+
+struct Escape {
+    e: u32,
+    aim: Option<[f32; 3]>,
+}
+
+/// How see-through one of Kagemusya's copies left `age` ago is drawn: 100 less 16 a tick, drawn from 84 and gone once it reaches 0; out
+/// of 255.
+pub fn shadow_alpha(age: Duration) -> f32 {
+    let ticks = (age.as_millis() / 16) as f32;
+    (100.0 - 16.0 * (ticks + 1.0)).max(0.0) / 255.0
+}
+
+/// How far a layer is turned at the counter n of the swing (466, 1224): one eased full turn, 180 − 180 cos(5n°).
+pub fn swing_spin(n: u32) -> f32 {
+    180.0 - 180.0 * (5.0 * n as f32).to_radians().cos()
+}
+
+/// How see-through one of Striking's copies left `age` ago is drawn: 255 less 16 a tick, drawn from 239 and gone at 0; out of 255.
+pub fn strike_alpha(age: Duration) -> f32 {
+    let ticks = (age.as_millis() / 16) as f32;
+    (255.0 - 16.0 * (ticks + 1.0)).max(0.0) / 255.0
+}
+
+/// How see-through a copy left `age` ago is drawn: 180 less 8 a tick, drawn from 172 and gone once it reaches 0; out of 255.
+pub fn ghost_alpha(age: Duration) -> f32 {
+    let ticks = (age.as_millis() / 16) as f32;
+    (GHOST_FIRST - GHOST_FADE * (ticks + 1.0)).max(0.0) / 255.0
+}
+
+/// The colour Make Blur multiplies a unit by while `status` is on: the quickens yellow, Overthrust pink, Energy Coat blue, else
+/// (Snap's) near white. Explosion Spirits' flickers (`step_blur`).
+pub fn blur_colour(status: u16) -> [u8; 3] {
+    match status {
+        WARG_DASH => [225, 225, 255],
+        2 | 161 | 68 => [200, 200, 0],
+        25 | 188 => [250, 150, 150],
+        31 => [180, 180, 250],
+        _ => [250, 250, 250],
+    }
+}
+
+/// Explosion Spirits' status: it flickers instead of leaving copies.
+const EXPLOSION_SPIRITS: u16 = 86;
+/// Warg Dash's status: a pale copy every 10 ticks, whatever the unit does.
+const WARG_DASH: u16 = 358;
+
+impl Actor {
+    pub fn new(name: String, sprites: Option<SpriteSet>, cell: [i32; 2], direction: u8, speed: u16) -> Self {
+        let now = Instant::now();
+        Self {
+            name,
+            kind: 0,
+            job: 0,
+            guild: 0,
+            level: 0,
+            look: None,
+            hidden: false,
+            sprites,
+            cell,
+            path: Vec::new(),
+            passed: Vec::new(),
+            at: world_point(cell.map(|value| value as f32), [0.0; 2]),
+            half: [0.0; 2],
+            last: crate::shown_ms(crate::control::now()),
+            walk_frames: 0,
+            step_ms: f32::from(speed.max(1)),
+            distance: 0.0,
+            chase: ChaseSteps::default(),
+            direction,
+            rot: rot_of(direction),
+            facing_from_server: true,
+            sliding: false,
+            head_direction: 0,
+            kept_head: 0,
+            animation_started: now,
+            shot: None,
+            swings: Vec::new(),
+            flurry_until: None,
+            ready: false,
+            sitting: false,
+            remove_at: None,
+            vanish: None,
+            fade: None,
+            fade_in: None,
+            dead: false,
+            casting: false,
+            cloaked: false,
+            hide_option: 0,
+            pick_size: [0, 0],
+            body_state: 0,
+            health_state: 0,
+            cart: None,
+            option: 0,
+            falcon: None,
+            warg: None,
+            heard: None,
+            held: None,
+            size_percent: None,
+            blurs: Vec::new(),
+            shadowing: false,
+            shadow_due: false,
+            blur_colour: [255; 3],
+            blur_clock: None,
+            blur_age: 0,
+            blur_due: false,
+            snap_left: 0,
+            striking: false,
+            strike_age: 0,
+            strike_due: false,
+            strike_tint: None,
+            escape: None,
+            escape_due: Vec::new(),
+            hallucination: false,
+            hallu_age: 0,
+            hallu_due: false,
+            clouds: Vec::new(),
+            loaded_at: None,
+            last_feet: None,
+            launches: Vec::new(),
+            glows: Vec::new(),
+            ghosts: Vec::new(),
+            last_hit: None,
+            cursed: false,
+            flicker: std::cell::Cell::new(false),
+        }
+    }
+
+    /// Notes a hit it dealt at `now`; a miss (no damage) isn't one.
+    pub fn note_hit(&mut self, act: &rustnarok_client::net::Act, now: Instant) {
+        if act.damage > 0 || act.left_damage > 0 {
+            self.last_hit = Some((act.target, now));
+        }
+    }
+
+    /// How long ago it last hit `target`, while that's under `HIT_SHOWN`.
+    pub fn hit_ms_ago(&self, target: u32, now: Instant) -> Option<u64> {
+        let (whom, at) = self.last_hit?;
+        let ago = now.saturating_duration_since(at);
+        (whom == target && ago < HIT_SHOWN).then_some(ago.as_millis() as u64)
+    }
+
+    /// The colour the body is drawn in: Cursed Circle's dark, else the body and health states' (see `status_tint`).
+    pub fn body_tint(&self) -> Option<[u8; 3]> {
+        if self.cursed {
+            return Some(CURSED_TINT);
+        }
+        // Make Blur multiplies whatever colour the unit has by its own.
+        let blur = (self.blur_colour != [255; 3]).then_some(self.blur_colour);
+        match (status_tint(self.body_state, self.health_state), blur) {
+            (Some(tint), Some(blur)) => Some(std::array::from_fn(|k| (u16::from(tint[k]) * u16::from(blur[k]) / 255) as u8)),
+            (tint, blur) => tint.or(blur),
+        }
+    }
+
+    /// A status comes on or goes off: what its looping effects do to how the parts are drawn.
+    pub fn glow(&mut self, status: u16, effects: &[u32], on: bool) {
+        self.glows.retain(|&(each, ..)| each != status);
+        if on {
+            self.glows.extend(effects.iter().filter_map(|&effect| status_body(effect)).map(|(flags, tint)| (status, flags, tint)));
+        }
+    }
+
+    /// The body flags of every status on, and the first colour.
+    pub fn glow_flags(&self) -> (u32, Option<[u8; 3]>) {
+        (self.glows.iter().fold(0, |flags, &(_, each, _)| flags | each), self.glows.iter().find_map(|&(.., tint)| tint))
+    }
+
+    /// A status that leaves copies behind it comes on or goes off.
+    pub fn blur(&mut self, status: u16, on: bool) {
+        self.blurs.retain(|&each| each != status);
+        if on {
+            self.blurs.push(status);
+        }
+    }
+
+    /// Whether it leaves Kagemusya's copies.
+    pub fn shadowing(&self) -> bool {
+        self.shadowing
+    }
+
+    /// Kagemusya (EFST 656) comes on or goes off: a grey copy every tick.
+    pub fn shadow(&mut self, on: bool) {
+        self.shadowing = on;
+        self.shadow_due = false;
+    }
+
+    /// Striking (445) comes on or goes off a player: a copy every 5th tick from its start, whatever the unit does.
+    pub fn strike(&mut self, on: bool) {
+        self.striking = on;
+        self.strike_age = 0;
+        self.strike_due = false;
+    }
+
+    /// The colour Striking draws the unit and its copies in, from the colour an effect overrides its body with (c = (o + 250) / 2 a
+    /// channel): none without an override or the status. It is set every tick.
+    pub fn strike_colour(&mut self, over: Option<[u8; 3]>) -> Option<[u8; 3]> {
+        self.strike_tint = over.filter(|_| self.striking).map(|over| over.map(|channel| ((u16::from(channel) + 250) / 2) as u8));
+        self.strike_tint
+    }
+
+    /// Hallucination Walk (EFST 334 and 869, effect 792): tints the unit #FAFAFA and leaves an Escape copy every 20 ticks.
+    /// A status packet removes the running effect if it has one and starts a new one; off only removes.
+    pub fn hallucination(&mut self, on: bool) {
+        self.hallucination = on;
+        self.hallu_age = 0;
+        self.hallu_due = false;
+    }
+
+    /// Cloud Kill's poison comes on or goes off: every on starts a copy beside the others (`replay`, the server's replay after a map
+    /// load, only when none runs) and every off ends one.
+    pub fn cloud_poison(&mut self, on: bool, replay: bool) {
+        if !on {
+            // ponytail: the oldest copy ends first.
+            if !self.clouds.is_empty() {
+                self.clouds.remove(0);
+            }
+        } else if !replay || self.clouds.is_empty() {
+            self.clouds.push(0);
+        }
+    }
+
+    /// Escape (5010) is used: the unit is tinted yellow for 20 ticks and a copy is left at the aim every 5th, the aim closing on the
+    /// unit. A second use while one runs does nothing.
+    pub fn escape(&mut self) {
+        if self.escape.is_none() {
+            self.escape = Some(Escape { e: 0, aim: self.last_feet });
+        }
+    }
+
+    /// The effects Escape's copies started since this was last asked: the effect and where.
+    pub fn take_launches(&mut self) -> Vec<(u32, [f32; 3])> {
+        std::mem::take(&mut self.launches)
+    }
+
+    /// Snap, Fallen Angel or All in the Sky slides the unit: it blurs for 100 ticks.
+    pub fn snap(&mut self) {
+        self.snap_left = SNAP_TICKS;
+    }
+
+    /// Whether a blurring unit leaves no copy: it stands, sits or waits ready.
+    // ponytail: sleeping and Auto Counter, which the game also leaves no copies in, aren't known here.
+    fn still(&self, now: Instant) -> bool {
+        self.sitting || matches!(self.animation(now).0, IDLE | SIT | READY)
+    }
+
+    /// Runs Make Blur's whole ticks up to `now`: while a status (or Snap) blurs the unit it takes the blur's colour (Explosion
+    /// Spirits' flickers, 250 on one tick in 14 else 200 on two channels, `flicker` telling) and, on every 5th tick of the blur,
+    /// is due a copy unless it stands still; after it, the colour drifts back toward white by 8 a channel a tick.
+    pub fn step_blur(&mut self, now: Instant, mut flicker: impl FnMut() -> bool) {
+        let clock = self.blur_clock.get_or_insert(now);
+        let whole = (now.saturating_duration_since(*clock).as_millis() / 16).min(200) as u32;
+        *clock += Duration::from_millis(u64::from(whole) * 16);
+        for _ in 0..whole {
+            self.shadow_due |= self.shadowing;
+            for cloud in &mut self.clouds {
+                *cloud += 1;
+            }
+            self.clouds.retain(|&ticks| ticks < CLOUD_TICKS);
+            if self.striking {
+                self.strike_due |= self.strike_age.is_multiple_of(5);
+                self.strike_age += 1;
+            }
+            if self.hallucination {
+                self.blur_colour = HALLU_TINT;
+                self.hallu_due |= self.hallu_age.is_multiple_of(20);
+                self.hallu_age += 1;
+            }
+            if let Some(run) = &mut self.escape {
+                self.blur_colour = ESCAPE_TINT;
+                run.aim = run.aim.or(self.last_feet);
+                if let Some(aim) = &mut run.aim {
+                    if run.e.is_multiple_of(5) {
+                        self.escape_due.push(*aim);
+                    }
+                    // The aim moves halfway to the unit; a unit that has not moved leaves it where it is.
+                    if let Some(feet) = self.last_feet {
+                        let toward = std::array::from_fn::<f32, 3, _>(|axis| feet[axis] - aim[axis]);
+                        if toward.iter().map(|value| value * value).sum::<f32>() > 0.0 {
+                            *aim = std::array::from_fn(|axis| aim[axis] + toward[axis] / 2.0);
+                        }
+                    }
+                }
+                run.e += 1;
+                if run.e >= 20 {
+                    self.escape = None;
+                }
+                continue;
+            }
+            if self.hallucination {
+                continue;
+            }
+            if self.blurs.is_empty() && self.snap_left == 0 {
+                self.blur_age = 0;
+                // Cloud Kill's poison holds its grey; after it the colour drifts back.
+                // ponytail: a blur's own colour wins over the poison's.
+                self.blur_colour = if self.clouds.is_empty() { self.blur_colour.map(|channel| channel.saturating_add(BLUR_DRIFT)) } else { CLOUD_TINT };
+                continue;
+            }
+            let status = self.blurs.last().copied().filter(|_| self.snap_left == 0);
+            let explosion = status == Some(EXPLOSION_SPIRITS);
+            self.blur_colour = match status {
+                Some(EXPLOSION_SPIRITS) => {
+                    let x = if flicker() { 250 } else { 200 };
+                    [250, x, x]
+                }
+                Some(status) => blur_colour(status),
+                None => blur_colour(0),
+            };
+            let dashing = status == Some(WARG_DASH);
+            let every = if dashing { 10 } else { GHOST_EVERY };
+            if self.blur_age.is_multiple_of(every) && !explosion && (dashing || !self.still(now)) {
+                self.blur_due = true;
+            }
+            self.blur_age += 1;
+            self.snap_left = self.snap_left.saturating_sub(1);
+        }
+    }
+
+    /// Leaves a copy of the frame drawn at `feet` when one is due (`step_blur`), tinted the blur's colour; old copies go.
+    pub fn leave_ghost(&mut self, now: Instant, feet: [f32; 3], placed: &[Placed]) {
+        self.last_feet = Some(feet);
+        self.ghosts.retain(|ghost| ghost.alpha(now) > 0.0);
+        if self.blur_due && !placed.is_empty() {
+            self.blur_due = false;
+            self.ghosts.push(Ghost { left: now, feet, placed: placed.to_vec(), tint: self.blur_colour, kind: GhostKind::Blur, launched: false });
+        }
+        if self.strike_due && !placed.is_empty() {
+            self.strike_due = false;
+            let tint = self.strike_tint.unwrap_or([255; 3]);
+            self.ghosts.push(Ghost { left: now, feet, placed: placed.to_vec(), tint, kind: GhostKind::Striking, launched: false });
+        }
+        if self.hallu_due && !placed.is_empty() {
+            self.hallu_due = false;
+            self.ghosts.push(Ghost { left: now, feet, placed: placed.to_vec(), tint: HALLU_TINT, kind: GhostKind::Escape, launched: false });
+        }
+        if self.shadow_due && !placed.is_empty() {
+            self.shadow_due = false;
+            // ponytail: the game's facing runs the other way round to the sprite direction: 0 is south (the copy stands north).
+            let facing = (360 - 45 * u32::from(self.direction % 8)) % 360;
+            let (sin, cos) = (facing as f32).to_radians().sin_cos();
+            let behind = [feet[0] - SHADOW_BEHIND * sin, feet[1], feet[2] + SHADOW_BEHIND * cos];
+            self.ghosts.push(Ghost { left: now, feet: behind, placed: placed.to_vec(), tint: SHADOW_TINT, kind: GhostKind::Shadow, launched: false });
+        }
+        for aim in std::mem::take(&mut self.escape_due) {
+            if !placed.is_empty() {
+                self.ghosts.push(Ghost { left: now, feet: aim, placed: placed.to_vec(), tint: ESCAPE_TINT, kind: GhostKind::Escape, launched: false });
+            }
+        }
+        for ghost in self.ghosts.iter_mut().filter(|ghost| ghost.kind == GhostKind::Escape && !ghost.launched) {
+            if 1 + (now.saturating_duration_since(ghost.left).as_millis() / 16) as u32 >= ESCAPE_LAUNCH {
+                ghost.launched = true;
+                self.launches.push((ESCAPE_AFTER, ghost.feet));
+            }
+        }
+    }
+
+    /// The sounds of the ACT frames the animation passed since it was last asked (`frames_passed`).
+    pub fn sounds_now(&mut self, now: Instant) -> Vec<String> {
+        let (action, timing) = self.animation(now);
+        let index = action * 8 + usize::from(self.direction % 8);
+        let Some((frame, _)) = self.sprites.as_ref().and_then(|sprites| sprites.body_frame(index, timing)) else { return Vec::new() };
+        let last = self.heard.replace((action, frame));
+        let Some(sprites) = &self.sprites else { return Vec::new() };
+        frames_passed(last, (action, frame), sprites.frames(index))
+            .into_iter()
+            .filter_map(|frame| sprites.frame_sound(index, frame))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Plays `action` once from `start` over `duration_ms` (attack, flinch), or holds its last frame (death).
+    /// Players stay in their battle stance after attacking or being hit.
+    pub fn stand_ready(&mut self) {
+        if self.look.is_some() {
+            self.ready = true;
+        }
+    }
+
+    /// Back on its feet: whatever it was holding (dead on the ground) ends.
+    pub fn revive(&mut self) {
+        self.shot = None;
+        self.dead = false;
+    }
+
+    pub fn play(&mut self, action: usize, start: Instant, duration_ms: f32, hold: bool) {
+        self.shot = Some(Shot { action, started: start, pace: Pace::Stretch(duration_ms.max(50.0)), hold });
+        self.head_direction = self.kept_head;
+    }
+
+    /// The head as an entry packet or our own turn gives it: shown, and gone back to after doing something else.
+    pub fn set_head(&mut self, head: u16) {
+        (self.head_direction, self.kept_head) = (head, head);
+    }
+
+    /// ZC_CHANGE_DIRECTION: the body turns; the head turn shows only on one standing or sitting as it comes, and isn't
+    /// kept (a turn heard while walking is dropped).
+    pub fn turn(&mut self, direction: u8, head: u16, now: Instant) {
+        self.set_direction(direction);
+        if !self.moving() && matches!(self.animation(now).0, IDLE | READY | SIT) {
+            self.head_direction = head;
+        }
+    }
+
+    /// The job the unit is drawn with: a player look's `sprite_job` (outfits, the wedding dress), else its job.
+    pub fn drawn_job(&self) -> u16 {
+        if self.look.is_some() { sprite_job(self.job, self.body_option()) } else { self.job }
+    }
+
+    /// The server's option word plus the all-jobs mount, which only the look holds.
+    pub fn body_option(&self) -> u32 {
+        self.option | self.look.as_ref().map_or(0, |look| look.option & ALL_RIDING_LOOK)
+    }
+
+    /// Plays `action` once at its ACT pace times `scale` (attack, flinch), or holds its last frame (death).
+    /// How opaque it's drawn: fading in after a spawn; 1 until a fade out starts, then down to 0 over the fade.
+    pub fn alpha(&self, now: Instant) -> f32 {
+        let out = self.fade.map_or(1.0, |(from, ms)| (1.0 - now.saturating_duration_since(from).as_secs_f32() * 1000.0 / ms).clamp(0.0, 1.0));
+        out.min(self.fade_in.map_or(1.0, |from| spawn_alpha(now.saturating_duration_since(from))))
+    }
+
+    /// Casts no shadow: fading out, or not yet opaque after a spawn.
+    pub fn shadowless(&self, now: Instant) -> bool {
+        self.fading(now) || self.fade_in.is_some_and(|from| spawn_alpha(now.saturating_duration_since(from)) < 1.0)
+    }
+
+    /// Fading now (a corpse, a unit out of sight): it casts no shadow.
+    pub fn fading(&self, now: Instant) -> bool {
+        self.fade.is_some_and(|(from, _)| now >= from)
+    }
+
+    /// Fades out from `from` over `ms`, then goes.
+    pub fn fade_out(&mut self, from: Instant, ms: f32) {
+        self.fade = Some((from, ms));
+        self.remove_at = Some(from + Duration::from_micros((f64::from(ms) * 1000.0).round() as u64));
+    }
+
+    /// Flinches (action `action`) from a hit with the target motion `motion` (rathena's dMotion); see `flinch_pace`.
+    pub fn flinch(&mut self, action: usize, start: Instant, motion: f32) {
+        let index = action * 8 + usize::from(self.direction % 8);
+        let delay = self.sprites.as_ref().and_then(|sprites| sprites.layers[0].act.delays.get(index).copied()).unwrap_or(4.0).max(1.0);
+        self.shot = Some(Shot { action, started: start, pace: flinch_pace(motion / 288.0, self.kind == 0, delay), hold: false });
+    }
+
+    /// Plays `action` once at its ACT pace, then holds its last frame until `ms` after `start` (a cast).
+    pub fn hold_for(&mut self, action: usize, start: Instant, ms: f32) {
+        let length = self.sprites.as_ref().and_then(|sprites| sprites.index_ms(action * 8 + usize::from(self.direction % 8))).unwrap_or(0.0);
+        self.shot = Some(Shot { action, started: start, pace: Pace::Hold((ms / length.max(1.0)).max(1.0)), hold: false });
+        self.head_direction = self.kept_head;
+    }
+
+    /// Its attack action: a player's swing for its weapon.
+    pub fn attack_motion(&self, tables: &LookTables) -> usize {
+        self.look.as_ref().map_or(combat_actions(self.kind).0, |look| {
+            let job = sprite_job(look.job, look.option);
+            let kind = if dual_wielder(job) && left_weapon(look, tables) { dual_type(job, look.weapon, look.left) } else { tables.weapon_type(look.weapon) };
+            attack_action(job, look.sex, kind)
+        })
+    }
+
+    /// A player holding a bow: its swings play at an uncapped pace and land with their arrow.
+    pub fn holds_bow(&self, tables: &LookTables) -> bool {
+        self.look.as_ref().is_some_and(|look| tables.weapon_type(look.weapon) == crate::BOW)
+    }
+
+    /// In `action` now, played once or held (a swing, a skill's motion, a cast), rather than standing or walking.
+    pub fn playing(&self, action: usize, now: Instant) -> bool {
+        matches!(self.animation(now), (playing, Timing::Once(..) | Timing::Span(_)) if playing == action)
+    }
+
+    /// `action` on its last frame from `now` until the next motion (Meteor Storm's caster).
+    pub fn hold_last(&mut self, action: usize, now: Instant) {
+        let length = self.sprites.as_ref().and_then(|sprites| sprites.index_ms(action * 8 + usize::from(self.direction % 8))).unwrap_or(0.0);
+        // ponytail: "until the next motion" is an hour here; walking or any other motion ends it sooner.
+        self.hold_for(action, now.checked_sub(Duration::from_secs_f32(length / 1000.0)).unwrap_or(now), length + 3_600_000.0);
+    }
+
+    /// Back to standing from a held `action` (a cast cut short).
+    pub fn stop_holding(&mut self, action: usize) {
+        if self.shot.as_ref().is_some_and(|shot| shot.action == action) {
+            self.shot = None;
+        }
+    }
+
+    /// In its own attack swing now.
+    pub fn swinging(&self, now: Instant) -> bool {
+        self.animation(now).0 == combat_actions(self.kind).0
+    }
+
+    /// In a motion a walk waits for: sitting, or a one-shot action playing (its attack swing, the pickup, a skill's
+    /// motion), but not a flinch, death or a held cast.
+    pub fn busy(&self, now: Instant) -> bool {
+        let (_, flinch, death) = combat_actions(self.kind);
+        let (action, timing) = self.animation(now);
+        let held_cast = self.shot.as_ref().is_some_and(|shot| matches!(shot.pace, Pace::Hold(_)));
+        let flurry = self.flurry_until.is_some_and(|until| now < until);
+        self.sitting || (!flurry && matches!(timing, Timing::Once(..) | Timing::Span(_)) && action != flinch && action != death && !held_cast)
+    }
+
+    /// Stops walking once the step under way is done (a slide goes on).
+    pub fn stop_after_step(&mut self) {
+        if !self.sliding {
+            self.path.truncate(1);
+        }
+    }
+
+    /// In a flurry of swings until `until`: a click to walk goes out at once rather than waiting for the swings.
+    pub fn flurry(&mut self, until: Instant) {
+        self.flurry_until = Some(until);
+    }
+
+    /// Plays `action` again from `start`, once it comes.
+    pub fn swing_later(&mut self, action: usize, start: Instant, scale: f32) {
+        self.swings.push((action, start, scale));
+    }
+
+    pub fn play_at_pace(&mut self, action: usize, start: Instant, scale: f32, hold: bool) {
+        self.shot = Some(Shot { action, started: start, pace: Pace::Act(scale.max(0.01)), hold });
+        self.head_direction = self.kept_head;
+    }
+
+    /// Where the unit is drawn, in cells (centres on the integers), as the last update left it, whatever `now`.
+    pub fn position(&self, _now: Instant) -> [f32; 2] {
+        [0, 1].map(|axis| (self.at[axis] - 2.5) / world::CELL + self.half[axis])
+    }
+
+    /// The cell and sub-cell under its drawn point, as the game works them out from the map-centred point: per axis
+    /// v = (W div 2) + x / 5, the cell floor(v) and the sub-cell the sixteenths past it. On an odd-sized map a unit on a
+    /// cell's centre gets sub 0.
+    pub fn cell_and_sub(&self) -> ([i32; 2], [u8; 2]) {
+        let v = [0, 1].map(|axis| ((self.half[axis] * 2.0) as i32 / 2) as f32 + self.at[axis] / world::CELL);
+        let cell = v.map(|value| value.floor() as i32);
+        let sub = [0, 1].map(|axis| (((v[axis] - cell[axis] as f32) * 16.0).floor() as i32).rem_euclid(16) as u8);
+        (cell, sub)
+    }
+
+    /// The map it's on, its GAT's width and height: the frame its drawn point is kept in. It stays where it's drawn.
+    pub fn set_map(&mut self, size: [usize; 2]) {
+        let drawn = self.position(Instant::now());
+        self.half = size.map(|cells| cells as f32 * 0.5);
+        self.at = world_point(drawn, self.half);
+    }
+
+    /// Turns to face a cell: the nearest of the eight directions, and its exact angle.
+    pub fn face(&mut self, toward: [i32; 2]) {
+        if toward != self.cell {
+            let step = [toward[0] - self.cell[0], toward[1] - self.cell[1]];
+            self.direction = world::direction(step);
+            self.rot = angle_of(step);
+            self.facing_from_server = false;
+        }
+    }
+
+    /// Faces one of the eight directions (the server's, or our own turn).
+    pub fn set_direction(&mut self, direction: u8) {
+        self.direction = direction;
+        self.rot = rot_of(direction);
+        self.facing_from_server = true;
+    }
+
+    /// Walks `path` as the server has it: from `from` and its sixteenths of a cell `sub` (8: the centre), beginning at
+    /// `begin`. A walk that would be over already plays from now at the speed·10/13 (whole ms). Only the path changes:
+    /// a unit already `known` on the map goes on from where it's drawn; a new one starts on `from`'s point, as of now.
+    pub fn walk_from(&mut self, from: [i32; 2], sub: [u8; 2], path: Vec<[i32; 2]>, begin: Instant, now: Instant, known: bool) {
+        self.start_walking(now);
+        self.cell = from;
+        let start = [0, 1].map(|axis| from[axis] as f32 + (f32::from(sub[axis]) - 8.0) / 16.0);
+        let now_ms = crate::shown_ms(now);
+        if !known {
+            (self.at, self.last) = (world_point(start, self.half), now_ms);
+        }
+        let mut steps = arrivals(start, crate::shown_ms(begin), &path, self.step_ms);
+        if steps.last().is_some_and(|&(_, arrives)| arrives <= now_ms) {
+            steps = arrivals(start, now_ms, &path, (self.step_ms as u64 * 10 / 13) as f32);
+        }
+        self.path = steps;
+        self.passed.clear();
+    }
+
+    /// Put on `cell` at once (a knockback): no slide, and what it was doing goes on.
+    pub fn place_at(&mut self, cell: [i32; 2]) {
+        self.cell = cell;
+        self.at = world_point(cell.map(|value| value as f32), self.half);
+        self.sliding = false;
+    }
+
+    fn start_walking(&mut self, now: Instant) {
+        // A walk's path replaces a slide's.
+        self.sliding = false;
+        self.ready = false;
+        self.sitting = false;
+        // Walking looks straight ahead again.
+        self.set_head(0);
+        self.swings.clear();
+        self.flurry_until = None;
+        // Walking interrupts an attack or flinch, not a death.
+        if self.shot.as_ref().is_some_and(|shot| !shot.hold) {
+            self.shot = None;
+        }
+        if self.path.is_empty() {
+            self.animation_started = now;
+        }
+    }
+
+    pub fn stop_at(&mut self, cell: [i32; 2]) {
+        self.cell = cell;
+        self.at = world_point(cell.map(|value| value as f32), self.half);
+        self.sliding = false;
+        if !self.path.is_empty() {
+            self.animation_started = Instant::now();
+        }
+        self.path.clear();
+        self.passed.clear();
+    }
+
+    /// ZC_STOPMOVE: `stop` becomes its cell and its walk ends. Drawn on the stop cell, or with no path from the drawn
+    /// cell to it (`path`), it stands where it's drawn; else it goes to the stop cell's centre at once, showing its walk
+    /// for that frame. It faces as it was either way.
+    pub fn stop_drawn(&mut self, stop: [i32; 2], path: bool, now: Instant) {
+        let (drawn, at) = (self.position(now), self.at);
+        let walking = !self.path.is_empty();
+        self.stop_at(stop);
+        if drawn_cell(drawn) == stop || !path {
+            self.at = at;
+        } else if walking {
+            self.walk_frames = 2;
+        }
+    }
+
+    /// The cell its walk ends on (the one it's on when it isn't walking).
+    pub fn destination(&self) -> [i32; 2] {
+        self.path.last().map_or(self.cell, |&(cell, _)| cell)
+    }
+
+    pub fn moving(&self) -> bool {
+        !self.path.is_empty()
+    }
+
+    /// Runs Chase Walk's footprint counter (option bit 0x4000) up to `now`, a whole tick at a time: it counts the ticks the option is
+    /// on and, at the 12th and 24th, the unit standing at `feet` leaves a print (326 left, 327 right) if it moved since the last
+    /// such check. Returns each print's effect, place and heading (the step's bearing + 135). Off, the counter and the place reset.
+    // ponytail: the first check only remembers the place, as there is no step to take a heading from.
+    pub fn step_chase(&mut self, now: Instant, feet: [f32; 3]) -> Vec<(u32, [f32; 3], f32)> {
+        let clock = self.chase.clock.get_or_insert(now);
+        let whole = (now.saturating_duration_since(*clock).as_millis() / 16).min(200) as u32;
+        *clock += Duration::from_millis(u64::from(whole) * 16);
+        let on = self.hide_option & OPTION_CHASEWALK != 0;
+        let mut prints = Vec::new();
+        for _ in 0..whole {
+            if !on {
+                self.chase.c = 0;
+                self.chase.last = None;
+                continue;
+            }
+            self.chase.c += 1;
+            let effect = match self.chase.c {
+                CHASE_LEFT_AT => EF_FOOT,
+                CHASE_RIGHT_AT => EF_FOOT2,
+                _ => continue,
+            };
+            if let Some(before) = self.chase.last.filter(|&before| before != feet) {
+                let heading = (crate::prims::tanji::bearing(feet[0] - before[0], feet[2] - before[2]) as f32 + 135.0).rem_euclid(360.0);
+                prints.push((effect, feet, heading));
+            }
+            self.chase.last = Some(feet);
+            if self.chase.c == CHASE_RIGHT_AT {
+                self.chase.c = 1;
+            }
+        }
+        prints
+    }
+
+    /// One frame: the cell follows the node times; the drawn point closes (now − last) / (end − last) of the way on
+    /// the end of the step under way (past it on a frame late for the last node), facing the way it moved and adding
+    /// it to the odometer; past the last node it stands on it. Returns where it's drawn, in cells.
+    pub fn update(&mut self, now: Instant) -> [f32; 2] {
+        let now_ms = crate::shown_ms(now);
+        self.walk_frames = self.walk_frames.saturating_sub(1);
+        // The latest swing that has come starts; the earlier ones are skipped, not played over each other.
+        if let Some(&(action, start, scale)) = self.swings.iter().filter(|(_, start, _)| *start <= now).max_by_key(|(_, start, _)| *start) {
+            self.swings.retain(|(_, later, _)| *later > now);
+            self.play_at_pace(action, start, scale, false);
+        }
+        // The shown clock stepped back: nodes it hasn't reached again come back ahead, for the glide. The cell stays
+        // where the walk got to.
+        while let Some(&node) = self.passed.last().filter(|&&(_, arrives)| arrives > now_ms) {
+            self.passed.pop();
+            self.path.insert(0, node);
+        }
+        let mut passed = None;
+        while let Some(&(next, arrives)) = self.path.first().filter(|&&(_, arrives)| arrives <= now_ms) {
+            self.cell = next;
+            self.path.remove(0);
+            self.passed.push((next, arrives));
+            passed = Some((next, arrives));
+        }
+        if let Some((to, end)) = self.path.first().copied().or(passed) {
+            let target = world_point(to.map(|value| value as f32), self.half);
+            let (whole, gone) = (end.saturating_sub(self.last), now_ms.saturating_sub(self.last));
+            let before = self.at;
+            if whole > 0 && gone > 0 {
+                let share = gone as f32 / whole as f32;
+                self.at = [0, 1].map(|axis| (target[axis] - self.at[axis]) * share + self.at[axis]);
+            }
+            let (dx, dz) = (self.at[0] - before[0], self.at[1] - before[1]);
+            if dx != 0.0 || dz != 0.0 {
+                // A slide doesn't turn the unit.
+                if !self.sliding {
+                    self.rot = step_rot(dx, dz);
+                    self.direction = view_direction(self.rot, 0.0, true);
+                    self.facing_from_server = false;
+                }
+                self.distance += (dx * dx + dz * dz).sqrt();
+            }
+            if self.path.is_empty() {
+                self.at = target;
+                self.animation_started = now;
+                self.sliding = false;
+                self.passed.clear();
+            }
+        }
+        // A player in its swing, sitting, dead, casting or in a skill's motion keeps the old time, so its first walking
+        // frame after one covers more of the step.
+        if !self.keeps_glide_clock(now) {
+            self.last = now_ms;
+        }
+        self.position(now)
+    }
+
+    /// Whether this frame leaves the glide's last update time as it was: a player (our own or another) in its swing,
+    /// sitting, dead, casting or in a skill's motion. Every other unit, and a player standing, walking, flinching or
+    /// picking up, sets it every frame.
+    // ponytail: every one-shot action but a flinch and the pickup counts as a swing or a skill's motion, the special
+    // motions some skills play among them.
+    fn keeps_glide_clock(&self, now: Instant) -> bool {
+        if self.kind != 0 {
+            return false;
+        }
+        let (action, timing) = self.animation(now);
+        let (_, flinch, _) = combat_actions(self.kind);
+        let motion = matches!(timing, Timing::Once(..) | Timing::Span(_)) && action != flinch && action != PICKUP;
+        self.dead || self.sitting || self.casting || motion
+    }
+
+    /// Slides straight to `cell` from where it is drawn, over 200 ms, facing as it was. A long way jumps.
+    pub fn slide_to(&mut self, cell: [i32; 2], now: Instant) {
+        let from = self.position(now);
+        if f32::hypot(cell[0] as f32 - from[0], cell[1] as f32 - from[1]) > SLIDE_REACH {
+            self.stop_at(cell);
+            return;
+        }
+        self.path = vec![(cell, crate::shown_ms(now) + SLIDE_MS)];
+        self.passed.clear();
+        self.sliding = true;
+    }
+
+    /// The cell a slide under way ends on.
+    pub fn sliding_to(&self) -> Option<[i32; 2]> {
+        self.path.last().map(|&(cell, _)| cell).filter(|_| self.sliding)
+    }
+
+    /// Current animation and how far into it: a one-shot action while it plays, else idle or walk.
+    pub fn animation(&self, now: Instant) -> (usize, Timing) {
+        // ponytail: a locked unit holding its frame is an estimate of how the official client shows it.
+        let now = self.held.map_or(now, |at| at.min(now));
+        if let Some(shot) = self.shot.as_ref().filter(|shot| shot.started <= now) {
+            let elapsed = now.saturating_duration_since(shot.started).as_secs_f32() * 1000.0;
+            match shot.pace {
+                Pace::Stretch(duration) if elapsed < duration || shot.hold => return (shot.action, Timing::Span((elapsed / duration).min(1.0))),
+                Pace::Act(scale) => {
+                    let length = self.sprites.as_ref().and_then(|sprites| sprites.index_ms(shot.action * 8 + usize::from(self.direction % 8))).unwrap_or(0.0);
+                    if elapsed < length * scale || shot.hold {
+                        return (shot.action, Timing::Once(elapsed, scale));
+                    }
+                }
+                Pace::Hold(factor) => {
+                    let length = self.sprites.as_ref().and_then(|sprites| sprites.index_ms(shot.action * 8 + usize::from(self.direction % 8))).unwrap_or(0.0);
+                    if elapsed < length * factor {
+                        return (shot.action, Timing::Once(elapsed, 1.0));
+                    }
+                }
+                Pace::Stretch(_) => {}
+            }
+        }
+        let action = if (self.moving() && !self.sliding) || self.walk_frames > 0 {
+            WALK
+        } else if self.sitting {
+            SIT
+        } else if self.ready {
+            READY
+        } else {
+            IDLE
+        };
+        if action == WALK {
+            return (action, Timing::Walk(self.distance));
+        }
+        (action, Timing::Loop(now.saturating_duration_since(self.animation_started).as_secs_f32() * 1000.0))
+    }
+
+    /// Shows or hides the falcon and the warg from the option word. A new one starts behind the player.
+    pub fn sync_companions(&mut self, option: u32, grf: &Grf) {
+        self.option = option;
+        // Monsters and NPCs carry no player look, so the bits aren't a falcon or a warg.
+        if self.look.is_none() {
+            self.falcon = None;
+            self.warg = None;
+            return;
+        }
+        let leader = world_xz(self.cell.map(|value| value as f32));
+        let job = self.look.as_ref().map_or(self.job, |look| look.job);
+        if falcon_out(option) && self.falcon.is_none() {
+            self.falcon = Some(Companion::spawn(grf, false, job, place_behind(leader, self.direction, FALCON_START), leader));
+        } else if !falcon_out(option) {
+            self.falcon = None;
+        }
+        if warg_out(option) && self.warg.is_none() {
+            self.warg = Some(Companion::spawn(grf, true, job, place_behind(leader, self.direction, WARG_START), leader));
+        } else if !warg_out(option) {
+            self.warg = None;
+        }
+    }
+
+    /// The cart's rope step, and the falcon's and warg's steps for the ticks since their last, turned toward the player.
+    /// The warg flinches when the player does and lies down when the player dies.
+    pub fn step_companions(&mut self, leader: [f32; 2], now: Instant) {
+        if let Some(cart) = &mut self.cart {
+            cart.step(leader, self.direction);
+        }
+        let owner_action = self.animation(now).0;
+        if let Some(falcon) = &mut self.falcon {
+            // In a dive it faces straight away from its owner and holds its walk action's first frame.
+            if falcon.run_ticks(now) {
+                (falcon.moving, falcon.stepped) = (true, now);
+                falcon.rot = (facing(falcon.at, leader, falcon.rot) + 180.0).rem_euclid(360.0);
+                falcon.play(WALK, now);
+                return self.step_warg(leader, now, owner_action);
+            }
+            let ticks = now.saturating_duration_since(falcon.stepped).as_secs_f32() / TICK;
+            let (at, arriving) = falcon_step(falcon.at, leader, falcon.arriving, ticks);
+            falcon.moving = f32::hypot(at[0] - falcon.at[0], at[1] - falcon.at[1]) > 1e-3;
+            (falcon.at, falcon.arriving, falcon.stepped) = (at, arriving, now);
+            falcon.play(if arriving { WALK } else { IDLE }, now);
+            falcon.rot = facing(at, leader, falcon.rot);
+        }
+        self.step_warg(leader, now, owner_action);
+    }
+
+    /// The warg's step, flinching when its owner does and lying down when they die.
+    fn step_warg(&mut self, leader: [f32; 2], now: Instant, owner_action: usize) {
+        if let Some(warg) = &mut self.warg {
+            let ticks = now.saturating_duration_since(warg.stepped).as_secs_f32() / TICK;
+            let (at, ran) = warg_step(warg.at, leader, ticks);
+            (warg.at, warg.moving, warg.stepped) = (at, ran, now);
+            warg.rot = facing(at, leader, warg.rot);
+            let action = match owner_action {
+                PLAYER_DEAD => WARG_DEAD,
+                PLAYER_FLINCH => WARG_HURT,
+                _ if ran => WALK,
+                _ => IDLE,
+            };
+            warg.play(action, now);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    #[test]
+    fn faces_a_cell_within_a_sixteenth_turn() {
+        let at = [10, 10];
+        // The eight neighbours: facing each one, and not the opposite one.
+        for step in [[0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1], [1, 0], [1, -1]] {
+            let to = [at[0] + step[0], at[1] + step[1]];
+            let rot = angle_of(step);
+            assert!(faces(rot, at, to), "{step:?}");
+            assert!(!faces((rot + 180.0) % 360.0, at, to), "{step:?}");
+            // The edges: 22.5° either way still faces it, a degree more doesn't.
+            assert!(faces((rot + 22.5) % 360.0, at, to) && faces((rot + 337.5) % 360.0, at, to), "{step:?}");
+            assert!(!faces((rot + 23.5) % 360.0, at, to) && !faces((rot + 336.5) % 360.0, at, to), "{step:?}");
+        }
+        // South (0°) to a cell straight south; 0° and 359° wrap.
+        assert!(faces(0.0, [5, 5], [5, 2]) && faces(359.0, [5, 5], [5, 2]));
+        // On the same cell it faces nobody.
+        assert!(!faces(0.0, at, at));
+    }
+
+    #[test]
+    fn notes_hits_on_the_player_for_three_seconds() {
+        let me = 2_000_001;
+        let act = |target, damage| rustnarok_client::net::Act {
+            source: 110_000,
+            target,
+            source_speed: 864,
+            target_speed: 576,
+            damage,
+            sp: false,
+            hits: 1,
+            kind: 0,
+            left_damage: 0,
+        };
+        let start = Instant::now();
+        let mut monster = Actor::new("Poring".into(), None, [11, 10], 0, 150);
+        // A miss isn't a hit.
+        monster.note_hit(&act(me, 0), start);
+        assert_eq!(monster.hit_ms_ago(me, start), None);
+        // A hit on the player.
+        monster.note_hit(&act(me, 12), start);
+        assert_eq!(monster.hit_ms_ago(me, start + Duration::from_millis(400)), Some(400));
+        // Gone after 3 s.
+        assert_eq!(monster.hit_ms_ago(me, start + Duration::from_millis(3000)), None);
+        // A hit on another unit: not on the player.
+        monster.note_hit(&act(110_001, 12), start);
+        assert_eq!(monster.hit_ms_ago(me, start), None);
+        assert_eq!(monster.hit_ms_ago(110_001, start), Some(0));
+    }
+
+    #[test]
+    fn some_bodies_draw_only_their_own_glow() {
+        let glow = |job: u16, sex: &str, style: u16, madogear: u8| body_glow(job, sex, style, madogear, job_sprites(job).as_ref());
+        let file = |name: &str| Some(Some(format!("data\\sprite\\인간족\\{name}")));
+        assert_eq!(glow(4047, "남", 0, 0), file("권성\\권성_남_발광"));
+        // GRF names ignore case: this is sky_emperor\sky_emperor_여_발광.
+        assert_eq!(glow(4302, "여", 0, 0), file("SKY_EMPEROR\\SKY_EMPEROR_여_발광"));
+        assert_eq!(glow(4046, "남", 4046, 0), file("태권소년\\태권소년_남_발광"));
+        assert_eq!(glow(4046, "남", 1, 0), Some(None));
+        assert_eq!(glow(4084, "여", 0, 0), file("레인져늑대\\레인져늑대_여_검광"));
+        assert_eq!(glow(4278, "남", 0, 0), file("windhawk\\wolf_windhawk_남_검광"));
+        assert_eq!(glow(4086, "남", 0, 0), file("마도기어\\마도기어_남_검광"));
+        assert_eq!(glow(4086, "남", 0, 2), file("마도기어\\마도아머_남_검광"));
+        assert_eq!(glow(4279, "여", 0, 2), file("meister_madogear\\meister_madogear2_여_검광"));
+        // A Knight still loads its weapon.
+        assert_eq!(glow(7, "남", 0, 0), None);
+    }
+
+    #[test]
+    fn weapons_fall_back_to_their_types_file() {
+        let tables = LookTables {
+            headgears: HashMap::new(),
+            weapons: [
+                (1, "_단검"),
+                (2, "_검"),
+                (3, "_양손검"),
+                (6, "_도끼"),
+                (8, "_클럽"),
+                (10, "_롯드"),
+                (11, "_활"),
+                (12, "_너클"),
+                (31, "_1207"),
+                (48, "_1116"),
+                (62, "_1504"),
+                (73, "_1710"),
+                (76, "_1718"),
+                (100, "_1617"),
+            ]
+            .into_iter()
+            .map(|(index, name)| (index, name.to_owned()))
+            .collect(),
+            weapon_types: HashMap::from([(31, 1), (48, 3), (62, 8), (73, 11), (76, 11), (100, 10)]),
+            robes: HashMap::new(),
+            item_views: HashMap::from([(1201, 31), (1116, 48), (1504, 62), (1701, 73), (1718, 76), (1617, 100), (1301, 6), (1801, 12), (1599, 4), (1550, 50)]),
+            layers: None,
+        };
+        let files = [
+            "인간족\\궁수\\궁수_여_1710",
+            "인간족\\궁수\\궁수_여_활",
+            "인간족\\도둑\\도둑_남_검",
+            "인간족\\로그\\로그_남_도끼",
+            "도람족\\summoner\\summoner_여_1617",
+            "도람족\\summoner\\summoner_여_롯드",
+            "인간족\\슈라\\슈라_남_클럽",
+            "인간족\\길로틴크로스\\길로틴크로스_남_단검",
+            "인간족\\기사\\기사_남_1116",
+            "인간족\\기사\\기사_남_양손검_검광",
+            "인간족\\프리스트\\프리스트_남_클럽",
+        ]
+        .map(|file| format!("data\\sprite\\{file}"));
+        let asked = std::cell::RefCell::new(Vec::new());
+        let pick = |item: u32, job: u16, sex: &str| {
+            let names = job_sprites(job).unwrap();
+            weapon_files(item, job, sex, is_doram(job), &names, &tables, |path| {
+                asked.borrow_mut().push(path.to_owned());
+                files.iter().any(|file| file == path)
+            })
+        };
+        let file = |name: &str| Some(format!("data\\sprite\\{name}"));
+        assert_eq!(pick(1701, 3, "여"), (file("인간족\\궁수\\궁수_여_1710"), None));
+        assert_eq!(pick(1718, 3, "여"), (file("인간족\\궁수\\궁수_여_활"), None));
+        assert_eq!(pick(1301, 6, "남"), (file("인간족\\도둑\\도둑_남_검"), None));
+        assert_eq!(pick(1301, 17, "남"), (file("인간족\\로그\\로그_남_도끼"), None));
+        // A Doram's own file is never found; its type's is.
+        assert_eq!(pick(1617, 4218, "여"), (file("도람족\\summoner\\summoner_여_롯드"), None));
+        assert_eq!(pick(1504, 4070, "남"), (file("인간족\\슈라\\슈라_남_클럽"), None));
+        assert_eq!(pick(1201, 4059, "남"), (file("인간족\\길로틴크로스\\길로틴크로스_남_단검"), None));
+        assert_eq!(pick(1116, 7, "남"), (file("인간족\\기사\\기사_남_1116"), file("인간족\\기사\\기사_남_양손검_검광")));
+        // Angra Manyu and a knuckle on a Priest don't fall back.
+        assert_eq!(pick(1599, 7, "남"), (None, None));
+        assert_eq!(pick(1801, 8, "남"), (None, None));
+        // A look with no name asks for no `_<number>` file.
+        asked.borrow_mut().clear();
+        assert_eq!(pick(1550, 7, "남"), (None, None));
+        assert!(asked.borrow().iter().all(|path| !path.contains("_50")), "{:?}", asked.borrow());
+    }
+
+    #[test]
+    fn players_swing_with_action_10_or_11() {
+        let (male, female) = (1, 0);
+        let (dagger, sword_2h, spear, rod, bow, katar, shotgun) = (1, 3, 4, 10, 11, 16, 20);
+        // Archer: a bow is 10, anything else 11; a Hunter's bow is 11.
+        assert_eq!(attack_action(3, male, bow), 10);
+        assert_eq!(attack_action(3, male, dagger), 11);
+        assert_eq!(attack_action(3, male, 0), 11);
+        assert_eq!(attack_action(11, male, bow), 11);
+        assert_eq!(attack_action(4257, male, bow), 11);
+        // The Assassin line: a katar 11, a dagger 10.
+        assert_eq!(attack_action(12, male, katar), 11);
+        assert_eq!(attack_action(12, male, dagger), 10);
+        assert_eq!(attack_action(4254, male, katar), 11);
+        assert_eq!(attack_action(7, male, 0), 10);
+        // Wizards and Novices differ by sex.
+        assert_eq!(attack_action(9, female, rod), 11);
+        assert_eq!(attack_action(9, male, rod), 10);
+        assert_eq!(attack_action(0, female, dagger), 11);
+        assert_eq!(attack_action(0, male, dagger), 10);
+        assert_eq!(attack_action(10, male, sword_2h), 10);
+        assert_eq!(attack_action(24, male, shotgun), 11);
+        // Jobs without a row: a Swordman on a Peco, a Summoner.
+        assert_eq!(attack_action(4116, male, spear), 10);
+        assert_eq!(attack_action(4218, female, 0), 10);
+        for job in (0..=30).chain(4001..=4320) {
+            for sex in [male, female] {
+                for kind in 0..=30 {
+                    assert_ne!(attack_action(job, sex, kind), 5);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn two_weapons_combine_into_one_type() {
+        assert_eq!(dual_wield_type(1201, 1201), 25);
+        assert_eq!(dual_wield_type(1101, 1201), 28);
+        assert_eq!(dual_wield_type(1201, 1101), 28);
+        assert_eq!(dual_wield_type(1101, 1301), 30);
+        assert_eq!(dual_wield_type(1301, 1101), 6);
+        assert_eq!(dual_wield_type(0, 1201), 1);
+        assert_eq!(dual_wield_type(1250, 0), 0);
+        assert!([2101, 2199, 28901, 460000].into_iter().all(shield_id) && !shield_id(1201));
+        assert_eq!(dual_type(12, 1501, 1201), 2);
+        assert_eq!(shield_part(1201), None);
+        assert_eq!(shield_part(2101), Some(2101));
+        assert_eq!(shield_part(0), Some(0));
+        // An Assassin with two daggers draws one `_단검_단검` sprite with its glow.
+        let tables = LookTables {
+            headgears: HashMap::new(),
+            weapons: HashMap::from([(1, "_단검".to_owned()), (25, "_단검_단검".to_owned())]),
+            weapon_types: HashMap::new(),
+            robes: HashMap::new(),
+            item_views: HashMap::from([(1201, 1), (2101, 1)]),
+            layers: None,
+        };
+        let assassin = Look { job: 12, weapon: 1201, left: 1201, ..Look::default() };
+        assert!(left_weapon(&assassin, &tables));
+        assert_eq!(dual_weapon(&assassin, 12, &tables), Some(("_단검_단검", true)));
+        assert!(!left_weapon(&Look { left: 2101, ..assassin.clone() }, &tables));
+        // A pair whose type has no name draws nothing.
+        assert_eq!(dual_weapon(&Look { weapon: 1101, left: 1101, ..assassin }, 12, &tables), None);
+        // Two daggers on an Assassin swing with action 11.
+        assert_eq!(attack_action(12, 1, dual_wield_type(1201, 1201)), 11);
+    }
+
+    #[test]
+    fn draws_parts_again_for_statuses() {
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        // Berserk: the body added on in #FF6464, the weapon blended in the same colour, nothing grown.
+        let (flags, tint) = status_body(368).unwrap();
+        let (body, copies) = glow_copies(flags, tint, PartGroup::Body, 0.0, 0.0, 1.0, true);
+        assert!(body.additive && copies.is_empty() && near(body.color[1], 100.0 / 255.0));
+        assert!(!glow_copies(flags, tint, PartGroup::Weapon, 0.0, 0.0, 1.0, true).0.additive);
+        // Assumptio: two added-on copies of the body, grown 3 + sin and 5 + 2·sin units (at 90°: 4 and 7), alpha 100 and
+        // 120; none for the weapon.
+        let (flags, tint) = status_body(375).unwrap();
+        let (body, copies) = glow_copies(flags, tint, PartGroup::Body, 90.0, 0.0, 400.0 / 300.0, true);
+        assert!(!body.additive);
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().all(|copy| copy.additive));
+        assert!(near(copies[0].grow, 4.0 * 400.0 / 300.0) && near(copies[1].grow, 7.0 * 400.0 / 300.0));
+        assert!(near(copies[0].color[3], 100.0 / 255.0) && near(copies[1].color[3], 120.0 / 255.0));
+        assert!(glow_copies(flags, tint, PartGroup::Weapon, 90.0, 0.0, 1.0, true).1.is_empty());
+        // Kaite: every part at alpha 150 with four growing copies 5 apart, fainter as they grow.
+        let (flags, tint) = status_body(419).unwrap();
+        let (part, copies) = glow_copies(flags, tint, PartGroup::Gear, 0.0, 2.0, 1.0, true);
+        assert!(near(part.color[3], 150.0 / 255.0));
+        assert_eq!(copies.iter().map(|copy| copy.grow).collect::<Vec<_>>(), [7.0, 12.0, 17.0, 2.0]);
+        assert!(near(copies[3].color[3], 90.0 / 255.0) && !copies[0].additive);
+        // Aura Blade: the weapon added on; Marionette pink with the outline.
+        assert!(glow_copies(status_body(474).unwrap().0, None, PartGroup::Weapon, 0.0, 0.0, 1.0, true).0.additive);
+        assert_eq!(status_body(396), Some((GLOW_ADDITIVE | GLOW_OUTLINE, Some([0xFF, 0x59, 0xB6]))));
+        assert_eq!(status_body(166), None);
+    }
+
+    #[test]
+    fn stops_where_drawn() {
+        assert_eq!([drawn_cell([13.5, 10.0]), drawn_cell([14.49, 10.0]), drawn_cell([13.49, 9.5])], [[14, 10], [14, 10], [13, 10]]);
+        // 150 ms a cell, walking east from (12, 10) to (16, 10); stopped at `at` ms with the stop cell (14, 10).
+        let start = ms(0);
+        let walker = |at_ms: u64| {
+            let mut unit = Actor::new("Poring".into(), None, [12, 10], 0, 150);
+            unit.step_ms = 150.0;
+            unit.walk_from([12, 10], [8, 8], vec![[13, 10], [14, 10], [15, 10], [16, 10]], start, start, false);
+            let now = start + Duration::from_millis(at_ms);
+            unit.update(now);
+            (unit, now)
+        };
+        let east = 6;
+        // Drawn at 14.33: stands there, on cell 14, facing east.
+        let (mut unit, now) = walker(350);
+        let drawn = unit.position(now);
+        assert!((drawn[0] - 14.333).abs() < 0.01);
+        unit.stop_drawn([14, 10], true, now);
+        assert_eq!((unit.position(now), unit.cell, unit.direction, unit.moving()), (drawn, [14, 10], east, false));
+        // Drawn at 13.5: counts as cell 14, stays.
+        let (mut unit, now) = walker(225);
+        unit.stop_drawn([14, 10], true, now);
+        assert!((unit.position(now)[0] - 13.5).abs() < 0.01);
+        // Drawn at 13.4 (cell 13) with a path: on (14, 10) at once, still facing east, the walk shown one frame.
+        let (mut unit, now) = walker(210);
+        unit.stop_drawn([14, 10], true, now);
+        assert_eq!((unit.position(now), unit.direction), ([14.0, 10.0], east));
+        unit.update(now);
+        assert_eq!(unit.animation(now).0, WALK);
+        unit.update(now);
+        assert_ne!(unit.animation(now).0, WALK);
+        // No path from the drawn cell: stays where drawn, its cell the stop cell.
+        let (mut unit, now) = walker(210);
+        let drawn = unit.position(now);
+        unit.stop_drawn([14, 10], false, now);
+        assert_eq!((unit.position(now), unit.cell), (drawn, [14, 10]));
+        // Standing, a stop on its own cell: nothing moves.
+        let mut standing = Actor::new("Poring".into(), None, [5, 5], 0, 150);
+        standing.stop_drawn([5, 5], false, start);
+        assert_eq!(standing.position(start), [5.0, 5.0]);
+        // Knocked onto the next cell of its path: no (0, 0) step, the facing stays.
+        let (mut unit, now) = walker(100);
+        unit.place_at([13, 10]);
+        unit.update(now);
+        assert_eq!(unit.direction, east);
+    }
+
+    #[test]
+    fn turns_images_for_flat_previews() {
+        let (red, blue) = (image::Rgba([255, 0, 0, 255]), image::Rgba([0, 0, 255, 255]));
+        let strip = RgbaImage::from_fn(2, 1, |x, _| if x == 0 { red } else { blue });
+        // A quarter turn clockwise stands the strip up, its left end on top; mirrored first, its right end.
+        let turned = turn_image(&strip, 90, false);
+        assert_eq!((turned.dimensions(), *turned.get_pixel(0, 0), *turned.get_pixel(0, 1)), ((1, 2), red, blue));
+        assert_eq!(*turn_image(&strip, 90, true).get_pixel(0, 0), blue);
+        // Upright stays as it was; a slight turn grows the canvas and leaves its corners clear.
+        assert_eq!(turn_image(&strip, 0, false), strip);
+        let square = RgbaImage::from_pixel(10, 10, red);
+        let tilted = turn_image(&square, 30, false);
+        assert_eq!(tilted.dimensions(), (14, 14));
+        assert_eq!(tilted.get_pixel(0, 0).0[3], 0);
+        assert_eq!(*tilted.get_pixel(7, 7), red);
+    }
+
+    #[test]
+    fn moves_hit_numbers_as_the_game_does() {
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        // Pops up 2.7 units over the feet, tops out 32.7 up at tick 30 (720 ms), back at 2.7 by tick 60, ends 20.7 below.
+        let [start, top, back, end] = [0.0, 30.0, 60.0, 70.0].map(|ticks| hit_number(ticks, false));
+        assert!(close(start.height, 2.67) && close(top.height, 32.67) && close(back.height, 2.67) && close(end.height, -20.67));
+        // Drifts 2.4 units at once, 21 by the end, on each axis.
+        assert!(close(start.drift, 2.4) && close(end.drift, 21.07));
+        // Five times its size, shrinking to 1.2 (a critical to 1.3) by about 380 ms, and fading out.
+        assert_eq!((start.scale, top.scale, hit_number(30.0, true).scale), (5.0, 1.2, 1.3));
+        assert!(close(start.alpha, 250.0 / 255.0) && close(end.alpha, 12.0 / 255.0));
+        assert_eq!(hit_number(80.0, false).alpha, 0.0);
+    }
+
+    #[test]
+    fn moves_misses_heals_totals_and_bursts() {
+        let close = |a: f32, b: f32| (a - b).abs() < 0.01;
+        // MISS rises 0.54 a tick from 12 units at its own size, gone after 80 ticks.
+        let miss = miss_number(40.0);
+        assert!(close(miss.height, 33.6) && miss.scale == 1.0 && close(miss.alpha, 130.0 / 255.0));
+        assert_eq!(miss_number(MISS_TICKS + 4.0).alpha, 0.0);
+        // A heal rises slowly from 12 units, 5 times its size down to 1.
+        let [heal_start, heal_late] = [0.0, 100.0].map(heal_number);
+        assert!(close(heal_start.height, 12.0) && heal_start.scale == 5.0 && heal_late.scale == 1.0 && close(heal_late.height, 30.0));
+        // A total pops from half its size to 3 times within a few ticks, holds, then fades after tick 90.
+        assert_eq!([0.0, 2.0, 5.0, 60.0].map(|ticks| total_number(ticks).scale), [0.5, 1.04, 3.0, 3.0]);
+        assert!(close(total_number(60.0).alpha, 250.0 / 255.0) && close(total_number(100.0).alpha, 170.0 / 255.0));
+        assert!(close(total_number(0.0).height, 27.0) && total_number(0.0).drift == 0.0);
+        // A critical's burst rides its number, shrinking from 3 times to 1.
+        let burst_now = burst(10.0);
+        assert_eq!((burst_now.height, burst_now.drift), (hit_number(10.0, true).height, hit_number(10.0, true).drift));
+        assert!(close(burst_now.scale, 1.56) && burst(20.0).scale == 1.0);
+    }
+
+    #[test]
+    fn drifts_hit_numbers_away_from_where_the_target_faces() {
+        // Turned by walking or toward a target: diagonally away from the facing.
+        let walked = |direction: u8| number_drift(angle_of(FACING[usize::from(direction)].map(|step| step as i32)), false);
+        assert_eq!(
+            (0..8).map(walked).collect::<Vec<_>>(),
+            [[-1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [-1.0, -1.0], [-1.0, -1.0], [-1.0, 1.0]]
+        );
+        // Facing as the server set it: north and north-west drift south-east, the rest north-east.
+        let set = |direction: u8| number_drift(rot_of(direction), true);
+        assert_eq!((0..8).map(set).collect::<Vec<_>>(), [[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]);
+    }
+
+    #[test]
+    fn spaces_digits_on_fixed_slots() {
+        assert_eq!(digit_slot(0, 1), 0.0);
+        assert_eq!([digit_slot(0, 2), digit_slot(1, 2)], [-DIGIT_STEP / 2.0, DIGIT_STEP / 2.0]);
+        assert_eq!([digit_slot(0, 3), digit_slot(2, 3)], [-DIGIT_STEP, DIGIT_STEP]);
+        assert!(is_monster_job(1002) && is_monster_job(20021) && !is_monster_job(4001) && is_npc_job(45) && !is_npc_job(1002));
+    }
+
+    #[test]
+    fn hides_by_option_bits() {
+        assert_eq!(seen(0, false, false), Seen::Whole);
+        for bit in [OPTION_HIDE, OPTION_CLOAK, OPTION_INVISIBLE, OPTION_CHASEWALK] {
+            assert_eq!(seen(bit, false, false), Seen::Nothing, "others with {bit:#x}");
+        }
+        assert_eq!(seen(OPTION_HIDE, true, false), Seen::Shadow);
+        assert_eq!(
+            (seen(OPTION_CLOAK, true, false), seen(OPTION_INVISIBLE, true, false), seen(OPTION_HIDE | OPTION_CLOAK, true, false)),
+            (Seen::Nothing, Seen::Nothing, Seen::Nothing)
+        );
+        assert_eq!(seen(0x8, true, false), Seen::Whole, "other option bits (a cart) don't hide");
+    }
+
+    #[test]
+    fn silhouettes_hidden_units_while_clairvoyance_is_on() {
+        // Status 184 draws others in Hiding, Cloaking or Chase Walk as black figures. GM hide stays invisible.
+        for bit in [OPTION_HIDE, OPTION_CLOAK, OPTION_CHASEWALK] {
+            assert_eq!(seen(bit, false, false), Seen::Nothing, "without 184, {bit:#x}");
+            assert_eq!(seen(bit, false, true), Seen::Silhouette, "with 184, {bit:#x}");
+        }
+        assert_eq!(seen(OPTION_INVISIBLE, false, true), Seen::Nothing);
+        assert_eq!(seen(OPTION_HIDE | OPTION_INVISIBLE, false, true), Seen::Nothing);
+        // Our own character is never a silhouette: Hiding stays a shadow, Cloaking and Chase Walk stay hidden.
+        assert_eq!(seen(OPTION_HIDE, true, true), Seen::Shadow);
+        assert_eq!(seen(OPTION_CLOAK, true, true), Seen::Nothing);
+        assert_eq!(seen(OPTION_CHASEWALK, true, true), Seen::Nothing);
+        assert_eq!(seen(OPTION_INVISIBLE, true, true), Seen::Nothing);
+        assert_eq!(seen(0, false, true), Seen::Whole);
+        assert_eq!(seen(0x8, false, true), Seen::Whole);
+        // The figure is the sprite's own colour multiplied by black, which keeps the alpha.
+        assert_eq!(layer_color([10, 20, 30, 128], Some([0, 0, 0])), [0, 0, 0, 128]);
+    }
+
+    #[test]
+    fn names_mercenary_glows_and_the_orcish_head() {
+        assert_eq!(mercenary_glow(6017), None);
+        assert_eq!(mercenary_glow(6026), None);
+        assert_eq!(mercenary_glow(6027), Some(r"인간족\용병\창용병_창_검광"));
+        assert_eq!(mercenary_glow(6036), Some(r"인간족\용병\창용병_창_검광"));
+        assert_eq!(mercenary_glow(6037), Some(r"인간족\용병\검용병_검_검광"));
+        assert_eq!(mercenary_glow(6046), Some(r"인간족\용병\검용병_검_검광"));
+        assert_eq!(mercenary_glow(6047), None);
+        assert_eq!(mercenary_glow(0), None);
+        assert_eq!(orcish_head(0, 0), None);
+        assert_eq!(orcish_head(4008, OPTION_ORCISH), Some(r"이팩트\orcface"));
+        assert_eq!(orcish_head(4218, 0), None);
+        assert_eq!(orcish_head(4218, OPTION_ORCISH), Some(r"이팩트\orcface_doram"));
+        assert_eq!(orcish_head(4308, OPTION_ORCISH | RIDING), Some(r"이팩트\orcface_doram"));
+        assert_ne!(BODY_OPTIONS & OPTION_ORCISH, 0);
+    }
+
+    #[test]
+    fn starts_a_multi_hits_later_swings_as_they_come() {
+        let mut actor = Actor::new("a".into(), None, [10, 10], 0, 100);
+        for hit in 1..=3 {
+            actor.swing_later(5, ms(200 * hit), 1.0);
+        }
+        actor.update(ms(100));
+        assert_eq!(actor.swings.len(), 3, "none yet");
+        actor.update(ms(250));
+        assert_eq!((actor.swings.len(), actor.shot.as_ref().map(|shot| shot.started)), (2, Some(ms(200))));
+        // A late frame starts the latest swing that has come and drops the one it skipped.
+        actor.update(ms(650));
+        assert_eq!((actor.swings.len(), actor.shot.as_ref().map(|shot| shot.started)), (0, Some(ms(600))));
+        actor.swing_later(5, ms(900), 1.0);
+        actor.flurry(ms(2000));
+        actor.start_walking(ms(700));
+        assert!(actor.swings.is_empty() && actor.flurry_until.is_none(), "walking off ends the flurry");
+    }
+
+    fn falcon_at(at: [f32; 2], count: u32) -> Companion {
+        let now = Instant::now();
+        Companion {
+            at,
+            lift: FALCON_HEIGHT,
+            count,
+            counted: now,
+            dive: None,
+            rot: 0.0,
+            moving: false,
+            arriving: false,
+            action: (WALK, now),
+            stepped: now,
+            shadow: 0.0,
+            sprites: None,
+        }
+    }
+
+    #[test]
+    fn a_falcon_dives_skims_swings_and_goes_home() {
+        // The follow counter runs 1…6 from 0 and starts over.
+        let mut falcon = falcon_at([20.0, 0.0], 0);
+        let counts: Vec<u32> = (0..8).map(|_| (falcon.tick(), falcon.count).1).collect();
+        assert_eq!(counts, [1, 2, 3, 4, 5, 6, 1, 2]);
+        // The target's feet at the origin, the falcon 20 east of them and 25 over: with c = 1, 10 ticks straight at the
+        // feet, 14 skimming on past at that height, 11 of a vertical swing, one still tick, then home.
+        let mut falcon = falcon_at([20.0, 0.0], 1);
+        falcon.dive([0.0; 3], 0.0);
+        assert!(falcon.dive.is_some());
+        for _ in 0..10 {
+            falcon.tick();
+        }
+        assert!(falcon.at[0].abs() < 1e-4 && falcon.lift.abs() < 1e-4, "{:?} {}", falcon.at, falcon.lift);
+        for _ in 0..14 {
+            falcon.tick();
+        }
+        assert!((falcon.at[0] + 28.0).abs() < 1e-3 && falcon.lift.abs() < 1e-4);
+        for _ in 0..11 {
+            falcon.tick();
+        }
+        // 50 west, ≈ 1005.09 under (vy · (1 − (−1.9)^11)/2.9 with vy = −2.5), the swing started.
+        assert!((falcon.at[0] + 50.0).abs() < 1e-2 && (falcon.lift + 1005.09).abs() < 0.2, "{:?} {}", falcon.at, falcon.lift);
+        assert!(falcon.dive.as_ref().is_some_and(|dive| dive.swing));
+        let before = (falcon.at, falcon.lift);
+        falcon.tick();
+        assert_eq!((falcon.at, falcon.lift, falcon.dive.is_none(), falcon.arriving), (before.0, before.1, true, true));
+        // From c = 0 it dives 11 ticks (1.1 of the way down) and covers 3.6 times the offset across; from 6, 5 ticks (half)
+        // and 3.0 times.
+        for (count, down, across) in [(0, 1.1, 3.6), (6, 0.5, 3.0)] {
+            let mut falcon = falcon_at([20.0, 0.0], count);
+            falcon.dive([0.0; 3], 0.0);
+            let mut moved = 0;
+            while falcon.dive.is_some() {
+                let was = falcon.at[0];
+                falcon.tick();
+                moved += u32::from(falcon.at[0] != was);
+                if moved == 36 - count {
+                    break;
+                }
+            }
+            assert!((20.0 - falcon.at[0] - 20.0 * across).abs() < 1e-2, "from {count}: {:?}", falcon.at);
+            let straight = 11 - count;
+            let mut down_by = falcon_at([20.0, 0.0], count);
+            down_by.dive([0.0; 3], 0.0);
+            (0..straight).for_each(|_| down_by.tick());
+            assert!((FALCON_HEIGHT - down_by.lift - 25.0 * down).abs() < 1e-3, "from {count}: {}", down_by.lift);
+        }
+        // A second packet in a dive turns it to the new target; its counter stays. It settles back to 25 by a 25th a tick.
+        let mut falcon = falcon_at([20.0, 0.0], 1);
+        falcon.dive([0.0; 3], 0.0);
+        falcon.tick();
+        falcon.dive([100.0, 0.0, 0.0], 0.0);
+        assert_eq!(falcon.count, 2);
+        falcon.dive = None;
+        falcon.lift = 0.0;
+        falcon.tick();
+        assert!((falcon.lift - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_chase_walk_leaves_a_print_every_12_ticks_while_it_moves() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        let mut actor = Actor::new("a".into(), None, [10, 10], 0, 100);
+        // Nothing without the option: the counter stays at 0.
+        assert!(actor.step_chase(tick(30), [0.0; 3]).is_empty() && actor.chase.c == 0);
+        actor.hide_option = OPTION_CHASEWALK;
+        // No print before c = 12; at 12 the first check only remembers the place; a unit that has not moved leaves none at 24.
+        let mut run = |ticks: u64, feet: [f32; 3]| actor.step_chase(tick(30 + ticks), feet);
+        assert!(run(0, [0.0; 3]).is_empty());
+        assert!(run(11, [0.0; 3]).is_empty());
+        assert!(run(12, [0.0; 3]).is_empty());
+        assert!(run(24, [0.0; 3]).is_empty(), "standing still");
+        // The counter went back to 1 after the check at 24: the left print is due 11 ticks on (c = 12), the right 12 after it. The unit
+        // having moved +x each time, 326 then 327 at heading 0 + 135.
+        assert!(run(34, [5.0, 0.0, 0.0]).is_empty());
+        assert_eq!(run(35, [5.0, 0.0, 0.0]), [(EF_FOOT, [5.0, 0.0, 0.0], 135.0)]);
+        assert_eq!(run(47, [10.0, 0.0, 0.0]), [(EF_FOOT2, [10.0, 0.0, 0.0], 135.0)]);
+        // The counter goes back to 1 again; moving +z, the heading is that step's bearing + 135.
+        let turned = crate::prims::tanji::bearing(0.0, 5.0) as f32 + 135.0;
+        assert_eq!(run(58, [10.0, 0.0, 5.0]), [(EF_FOOT, [10.0, 0.0, 5.0], turned)]);
+        // The option going off resets the counter and the place.
+        actor.hide_option = 0;
+        actor.step_chase(tick(30 + 59), [10.0, 0.0, 5.0]);
+        assert_eq!((actor.chase.c, actor.chase.last), (0, None));
+    }
+
+    #[test]
+    fn looks_for_sprites_by_kind() {
+        assert_eq!(SpriteSet::folders(5), ["몬스터", "npc"]);
+        assert_eq!(SpriteSet::folders(8), ["homun", "몬스터", "npc"]);
+        assert_eq!(SpriteSet::folders(6), ["npc", "몬스터"]);
+    }
+
+    #[test]
+    fn plays_frames_at_the_games_pace() {
+        // 24 ms units: a delay of 4 shows a frame for 96 ms; looping wraps, once holds the last.
+        assert_eq!([0.0, 95.0, 96.0, 400.0].map(|ms| loop_frame(ms, 4.0, 4)), [0, 0, 1, 0]);
+        assert_eq!([95.0, 96.0, 10_000.0].map(|ms| once_frame(ms, 4.0, 4)), [0, 1, 3]);
+        // Walking: frames by distance (a cell is 5 units), the same whatever the speed.
+        assert_eq!([0.0, 2.7, 2.71, 5.0, 10.8].map(|distance| walk_frame(distance, 1.0, 8)), [0, 3, 4, 7, 7]);
+        assert_eq!(walk_frame(30.0, 4.0, 8), 3);
+        // The attack's pace: attackMT over 432, capped there unless a bow; 0 is the ACT's own.
+        assert_eq!(
+            [attack_scale(200, false), attack_scale(432, false), attack_scale(800, false), attack_scale(800, true), attack_scale(0, true)],
+            [200.0 / 432.0, 1.0, 1.0, 800.0 / 432.0, 1.0]
+        );
+        // A bow's swing lands 192 ms after its hit frame.
+        assert_eq!([bow_flight(300.0, true), bow_flight(300.0, false)], [492.0, 300.0]);
+    }
+
+    #[test]
+    fn faces_exact_angles_and_shows_them_to_the_camera() {
+        assert_eq!([[0, -1], [1, 0], [0, 1], [-1, 0]].map(angle_of), [0.0, 90.0, 180.0, 270.0]);
+        assert!((angle_of([2, -1]) - 63.435).abs() < 0.01);
+        // The eight directions' angles agree with their steps.
+        for step in [[0, -1], [-1, -1], [-1, 0], [-1, 1], [0, 1], [1, 1], [1, 0], [1, -1]] {
+            assert!((rot_of(world::direction(step)) - angle_of(step)).abs() < 1e-3, "{step:?}");
+        }
+        // (rot, camera yaw) -> (rounded, floored): facing south, the camera turned 10 and 30 degrees either way. A
+        // floored unit switches as soon as the camera turns one way, a rounded one only past 22.5 degrees.
+        let table = [
+            ((0.0, 0.0), (0, 0)),
+            ((0.0, 10.0), (0, 7)),
+            ((0.0, -10.0), (0, 0)),
+            ((0.0, 30.0), (7, 7)),
+            ((0.0, -30.0), (1, 0)),
+            ((0.0, -22.5), (1, 0)),
+            ((0.0, 22.5), (0, 7)),
+            ((180.0, 0.0), (4, 4)),
+            ((90.0, 45.0), (5, 5)),
+            ((angle_of([2, -1]), 0.0), (7, 6)),
+        ];
+        for ((rot, yaw), (round, floor)) in table {
+            assert_eq!((view_direction(rot, yaw, true), view_direction(rot, yaw, false)), (round, floor), "rot {rot} yaw {yaw}");
+        }
+    }
+
+    /// Needs the official data.grf, at `RUSTNAROK_CLIENT_GRF` or `./data.grf`.
+    #[test]
+    fn standing_players_hold_their_head_still() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let tables = rustnarok_client::lua::look_tables(&grf).unwrap();
+        let novice = SpriteSet::player(&grf, &Look { hair: 1, ..Default::default() }, &tables).unwrap();
+        for action in [IDLE, SIT] {
+            let at = |ms: f32, head_direction: u16| novice.place(action * 8, head_direction, Timing::Loop(ms));
+            assert!([100.0, 250.0, 1000.0].iter().all(|&ms| at(ms, 0) == at(0.0, 0)), "action {action} moves while standing still");
+            assert_ne!(at(0.0, 1), at(0.0, 0), "action {action} ignores the head direction");
+        }
+    }
+
+    /// Needs the official data.grf, at `RUSTNAROK_CLIENT_GRF` or `./data.grf`.
+    #[test]
+    fn dresses_a_player() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let tables = rustnarok_client::lua::look_tables(&grf).unwrap();
+        let look = Look { hair: 1, weapon: 1, shield: 1, head_top: 16, head_mid: 12, head_bottom: 52, robe: 3, ..Default::default() };
+        let novice = SpriteSet::player(&grf, &look, &tables).unwrap();
+        let parts: Vec<Part> = novice.layers.iter().map(|layer| layer.part).collect();
+        assert_eq!(parts, [Part::Body, Part::Head, Part::HeadBottom, Part::HeadMid, Part::HeadTop, Part::Weapon, Part::WeaponGlow, Part::Shield, Part::Robe]);
+        // Facing the camera the garment goes first, behind the body.
+        let layers = |index: usize| -> Vec<usize> { novice.place(index, 0, Timing::Loop(0.0)).iter().map(|((layer, ..), ..)| *layer).collect() };
+        assert_eq!(layers(0), [8, 0, 1, 3, 4, 2]);
+        // Facing away it goes over the body, under the head and the hats. The dagger and guard only show in the battle
+        // stance (and the dagger in its attack motion), under the hats.
+        assert_eq!(layers(4), [0, 8, 1, 3, 4, 2]);
+        let ready = layers(READY * 8);
+        assert_eq!(ready[ready.len() - 3..], [3, 4, 2], "{ready:?}");
+        assert!(ready.contains(&5) && ready.contains(&7), "{ready:?}");
+        assert!(layers(attack_action(0, 0, 1) * 8).contains(&5));
+        // A garment drawn once for every job (its picture shared, its motion per job) shows.
+        let ribbon = SpriteSet::player(&grf, &Look { hair: 1, robe: 42, ..Default::default() }, &tables).unwrap();
+        assert!(ribbon.layers.iter().any(|layer| layer.part == Part::Robe));
+        // An animated wing flaps while its wearer stands still.
+        let winged = SpriteSet::player(&grf, &Look { hair: 1, robe: 61, ..Default::default() }, &tables).unwrap();
+        assert_ne!(winged.place(0, 0, Timing::Loop(0.0)), winged.place(0, 0, Timing::Loop(100.0)));
+    }
+
+    #[test]
+    fn picks_each_layers_frame() {
+        // Standing with the head turned (base and group 1): a 3-frame hat shows frame 1 whatever its clock says; a
+        // 24-frame balloon plays frames 8 to 15, and a 24-frame wing (group 0) frames 0 to 7.
+        assert_eq!(layer_frame(3, 3, 1, 1, |_| 2), Some(1));
+        assert_eq!(layer_frame(24, 3, 1, 1, |n| n - 1), Some(15));
+        assert_eq!(layer_frame(24, 3, 0, 1, |_| 3), Some(3));
+        // Walking: in step with the body; a layer short of the body's frame doesn't show.
+        assert_eq!(layer_frame(8, 8, 5, 5, |_| 0), Some(5));
+        assert_eq!(layer_frame(4, 8, 5, 5, |_| 0), None);
+        assert_eq!(layer_frame(16, 8, 5, 5, |n| n - 1), Some(11));
+    }
+
+    #[test]
+    fn names_each_jobs_sprites() {
+        let table = parse_job_sprites("# job\tbody\timf\tpalette\tweapon\n4014\t로드페코\t기사\t로드페코\t페코페코_기사\nbad line\n");
+        assert_eq!(table.len(), 1);
+        assert_eq!(table[&4014], JobSprites { body: "로드페코", imf: "기사", palette: "로드페코", weapon: Some(("페코페코_기사", "페코페코_기사")) });
+        // The table in the repository: rebirth jobs keep the first class's weapon folder, third jobs their own, the
+        // newer mounts the unmounted class's.
+        let weapon = |job| job_sprites(job).and_then(|names| names.weapon);
+        assert_eq!(job_sprites(4013).map(|names| (names.weapon, names.imf)), Some((Some(("어세신", "어세신")), "어세신크로스")));
+        assert_eq!(weapon(4059), Some(("길로틴크로스", "길로틴크로스")));
+        assert_eq!(job_sprites(4056).map(|names| (names.weapon, names.imf)), Some((Some(("레인져", "레인져")), "헌터")));
+        assert_eq!(weapon(4116), Some(("검사", "검사")));
+        assert_eq!(weapon(4219), Some(("summoner", "cart_summoner")));
+        assert_eq!(weapon(4216), None);
+        assert!(include_str!("job_sprites.txt").lines().filter(|line| !line.starts_with('#')).all(|line| line.split('\t').count() == 5));
+        assert_eq!(job_sprites(4013).unwrap().weapon_path("인간족", "남", "_카타르_카타르").unwrap(), "data\\sprite\\인간족\\어세신\\어세신_남_카타르_카타르");
+        assert_eq!(job_sprites(4008).unwrap().imf_path("여"), "data\\imf\\기사_여.imf");
+        assert_eq!(job_sprites(4218).map(|names| names.palette), Some("묘족"));
+        assert!(job_sprites(4023).is_some() && job_sprites(4080).is_some() && job_sprites(31).is_none());
+    }
+
+    #[test]
+    fn dyes_mounted_jobs_and_the_second_outfit() {
+        assert_eq!(job_sprites(14).map(|names| names.palette), Some("크루"));
+        assert_eq!(job_sprites(4159).map(|names| names.palette), Some("페코검사"));
+        assert_eq!(job_sprites(4110).map(|names| names.palette), Some("그리폰가드"));
+        assert_eq!(job_sprites(4171).map(|names| names.body), Some("dancer_b_riding"));
+        assert_eq!(job_sprites(4171).map(|names| names.palette), Some("dancer_b_riding"));
+        for job in [4170, 4231, 4237] {
+            let names = job_sprites(job).unwrap();
+            assert_eq!(names.palette, names.body, "{job}");
+        }
+        // A mounted Rune Knight and a Ranger on her wolf, in the 2nd outfit and out of it.
+        let knight = body_files(4080, true, 1, 1).unwrap();
+        assert_eq!(knight.sprite, r"data\sprite\인간족\몸통\남\costume_1\룬나이트쁘띠_남_1");
+        assert_eq!(knight.dye, r"data\palette\몸\costume_1\룬드래곤_남_1_1.pal");
+        let wolf = body_files(4084, false, 2, 4332).unwrap();
+        assert_eq!(wolf.sprite, r"data\sprite\인간족\몸통\여\costume_1\레인져늑대_여_1");
+        assert_eq!(wolf.dye, r"data\palette\몸\costume_1\울프레인저_여_2_1.pal");
+        let plain = body_files(4080, true, 1, 0).unwrap();
+        assert_eq!(plain.sprite, r"data\sprite\인간족\몸통\남\룬나이트쁘띠_남");
+        assert_eq!(plain.dye, r"data\palette\몸\룬드래곤_남_1.pal");
+        assert!(plain.fallback.is_none());
+        assert_eq!(knight.fallback.as_ref().map(|(sprite, dye)| (sprite.as_str(), dye.as_str())), Some((plain.sprite.as_str(), plain.dye.as_str())));
+        // A Doram's 2nd outfit lives under 도람족.
+        let doram = body_files(4218, true, 3, 4349).unwrap();
+        assert_eq!(doram.sprite, r"data\sprite\도람족\몸통\남\costume_1\summoner_남_1");
+        assert_eq!(doram.dye, r"data\palette\도람족\body\costume_1\묘족_남_3_1.pal");
+        // Missing costume files fall back to the normal body. The class id itself is the normal body.
+        assert_eq!(chosen_body(1, "costume", "normal", false), "normal");
+        assert_eq!(chosen_body(4332, "costume", "normal", true), "costume");
+        assert_eq!(chosen_body(0, "costume", "normal", true), "normal");
+        assert_eq!(chosen_body(4054, "costume", "normal", true), "normal");
+    }
+
+    #[test]
+    fn the_all_jobs_mount_rides_on_the_class_body() {
+        assert_eq!([sprite_job(0, ALL_RIDING_LOOK), sprite_job(7, ALL_RIDING_LOOK), sprite_job(4061, ALL_RIDING_LOOK)], [4124, 4199, 4133]);
+        // A class mount or an outfit comes first, and neither body is in the table: the Peco knight and the wedding dress stay.
+        assert_eq!([sprite_job(7, RIDING | ALL_RIDING_LOOK), sprite_job(7, WEDDING | ALL_RIDING_LOOK)], [13, 22]);
+        assert_eq!([sprite_job(4252, ALL_RIDING_LOOK), sprite_job(4316, ALL_RIDING_LOOK), sprite_job(4351, ALL_RIDING_LOOK)], [4265, 4309, 4351]);
+        // Every mount body has names to load, and the server's option word can't carry the bit.
+        assert!(ALL_RIDING_BODIES.iter().all(|&(_, to)| job_sprites(to).is_some()));
+        assert_eq!(BODY_OPTIONS & ALL_RIDING_LOOK, 0);
+    }
+
+    #[test]
+    fn mounts_and_outfits_change_the_body() {
+        assert_eq!(sprite_job(7, 0), 7);
+        assert_eq!(sprite_job(7, RIDING), 13);
+        assert_eq!(sprite_job(4008, RIDING), 4014);
+        assert_eq!(sprite_job(4066, RIDING), 4082);
+        // Riding means nothing to a job without a mount.
+        assert_eq!(sprite_job(4054, RIDING), 4054);
+        assert_eq!(sprite_job(4054, DRAGONS[0]), 4080);
+        assert_eq!(sprite_job(4060, DRAGONS[3]), 4093);
+        assert_eq!(sprite_job(4056, WOLF_RIDING), 4084);
+        assert_eq!(sprite_job(4058, MADOGEAR), 4086);
+        assert_eq!(sprite_job(4047, UNION), 4048);
+        // Outfits come first: a wedding over everything, holidays unless in the union.
+        assert_eq!(sprite_job(7, WEDDING | RIDING), 22);
+        assert_eq!(sprite_job(7, XMAS | RIDING), 26);
+        assert_eq!(sprite_job(4047, XMAS | UNION), 4048);
+        assert!(outfit(sprite_job(1, HANBOK)) && !outfit(sprite_job(1, 0)));
+        // Hiding, carts and the like don't change the body.
+        assert_eq!(BODY_OPTIONS & (0x2 | 0x8 | 0x40), 0);
+    }
+
+    #[test]
+    fn babies_are_smaller() {
+        assert_eq!(body_scale(4008), 1.0);
+        assert_eq!(body_scale(4023), 0.75);
+        assert_eq!(body_scale(4030), 0.82);
+        assert_eq!(body_scale(4036), 0.82);
+        assert_eq!(body_scale(4220), 0.8);
+        assert_eq!(body_scale(4218), 1.0);
+    }
+
+    #[test]
+    fn leaves_off_garments_and_shields_where_the_game_does() {
+        let dressing = |madogear: bool, female: bool| Dressing {
+            head_first: Vec::new(),
+            robe_over_body: Vec::new(),
+            robe_over_headgear: false,
+            headgear: Vec::new(),
+            head_hidden: false,
+            outfit: false,
+            madogear,
+            female,
+        };
+        let has = |dressing: &Dressing, index: usize, part: Part| dressing.order(index, 0).contains(&part);
+        let knight = dressing(false, false);
+        // Standing with a garment; lying dead without it.
+        assert!(has(&knight, 0, Part::Robe) && !has(&knight, 64, Part::Robe) && !has(&knight, 71, Part::Robe));
+        // A shield in an attack, but never on a Madogear; a woman on one has no garment, a man does.
+        assert!(has(&knight, 80, Part::Shield) && !has(&dressing(true, false), 80, Part::Shield));
+        assert!(!has(&dressing(true, true), 0, Part::Robe) && has(&dressing(true, false), 0, Part::Robe));
+    }
+
+    #[test]
+    fn stacks_layers_back_to_front() {
+        use Part::*;
+        let hats = [(HeadMid, 100), (HeadTop, 200), (HeadBottom, 300)];
+        // Facing the camera with a cape behind: the cape, body, head, then headgear over all of it.
+        assert_eq!(stack(0, false, false, RobeAt::Behind, &hats), [Robe, Body, Head, HeadMid, HeadTop, HeadBottom]);
+        // In the battle stance the weapon, its glow and a shield turned this way go between the head and the headgear.
+        assert_eq!(stack(0, true, false, RobeAt::Behind, &hats), [Robe, Body, Head, Weapon, WeaponGlow, Shield, HeadMid, HeadTop, HeadBottom]);
+        // Turned away: the shield first, the garment over the body under the head.
+        assert_eq!(stack(4, true, false, RobeAt::OverBody, &hats), [Shield, Body, Robe, Head, Weapon, WeaponGlow, HeadMid, HeadTop, HeadBottom]);
+        // The head behind the body, a bag over the headgear, and a headgear placed behind everything.
+        assert_eq!(stack(3, false, true, RobeAt::OverHeadgear, &[(HeadTop, 200), (HeadBottom, -100)]), [HeadBottom, Head, Body, HeadTop, Robe]);
+    }
+
+    /// The shown clock at `ms` whole milliseconds.
+    fn ms(ms: u64) -> Instant {
+        *crate::START + Duration::from_millis(ms)
+    }
+
+    /// A unit on a 20 × 20 map at 150 ms a cell, made at `made` from a move entry: from `from` and its sub-cell `sub`
+    /// along `path`, the walk starting at `t0`.
+    fn walker(from: [i32; 2], sub: [u8; 2], path: &[[i32; 2]], t0: u64, made: u64) -> Actor {
+        let mut unit = Actor::new("Poring".into(), None, from, 0, 150);
+        unit.set_map([20, 20]);
+        unit.walk_from(from, sub, path.to_vec(), ms(t0), ms(made), false);
+        unit
+    }
+
+    fn assert_close(a: f32, b: f32) {
+        assert!((a - b).abs() < 1e-3, "{a} != {b}");
+    }
+
+    /// How far a unit of `kind`, standing on (10, 10) and updated every 16 ms from 1000, moves on its first walking
+    /// frame at `start`: east, node 1 at (11, 10) 222 ms after that frame. `busy` sets it up at 1000 (a swing, a sit…).
+    /// A start of 1000 + 16k is 16 ms after the last frame.
+    fn first_walking_frame(kind: u8, start: u64, busy: impl Fn(&mut Actor)) -> f32 {
+        let mut unit = Actor::new("a".into(), None, [10, 10], 0, 150);
+        unit.kind = kind;
+        unit.set_map([20, 20]);
+        unit.update(ms(1000));
+        busy(&mut unit);
+        let mut at = 1016;
+        while at < start {
+            unit.update(ms(at));
+            at += 16;
+        }
+        unit.walk_from([10, 10], [8, 8], vec![[11, 10]], ms(start + 72), ms(start), true);
+        unit.update(ms(start))[0] - 10.0
+    }
+
+    #[test]
+    fn players_walk_out_of_a_motion_with_a_stale_frame_time() {
+        let swing = |unit: &mut Actor| unit.play(5, ms(1000), 2000.0, false);
+        // A player standing (16 ms since the last frame), and one walking out of a swing 200, 500 and 1000 ms old.
+        assert_close(first_walking_frame(0, 1016, |_| {}), 16.0 / 238.0);
+        assert_close(first_walking_frame(0, 1200, swing), 200.0 / 422.0);
+        assert_close(first_walking_frame(0, 1500, swing), 500.0 / 722.0);
+        assert_close(first_walking_frame(0, 2000, swing), 1000.0 / 1222.0);
+        // Sitting for a second, standing and walking in the same frame.
+        assert_close(first_walking_frame(0, 2000, |unit: &mut Actor| unit.sitting = true), 0.818);
+        // Casting too.
+        assert_close(first_walking_frame(0, 1200, |unit: &mut Actor| unit.casting = true), 200.0 / 422.0);
+        // A monster in its swing keeps a fresh time: 16 ms.
+        assert_close(first_walking_frame(5, 1208, |unit: &mut Actor| unit.play(2, ms(1000), 2000.0, false)), 16.0 / 238.0);
+        // A player being hit (flinching) or picking up keeps a fresh time too.
+        assert_close(first_walking_frame(0, 1208, |unit: &mut Actor| unit.play(6, ms(1000), 2000.0, false)), 16.0 / 238.0);
+        assert_close(first_walking_frame(0, 1208, |unit: &mut Actor| unit.play(PICKUP, ms(1000), 2000.0, false)), 16.0 / 238.0);
+    }
+
+    /// A unit walking east from (10, 10) at 150 ms a cell from shown tick 0, updated every 16 ms through `until`; then
+    /// the shown clock moves by `step` and the next `frames` frames' x come back.
+    fn after_a_clock_change(kind: u8, until: u64, step: i64, frames: usize) -> (f32, Vec<f32>) {
+        crate::SHOWN_OFFSET.set(0);
+        let mut unit = Actor::new("a".into(), None, [10, 10], 0, 150);
+        unit.kind = kind;
+        unit.set_map([40, 40]);
+        let east: Vec<[i32; 2]> = (11..20).map(|x| [x, 10]).collect();
+        unit.walk_from([10, 10], [8, 8], east, ms(0), ms(0), false);
+        let mut at = 0;
+        let mut x = 0.0;
+        while at <= until {
+            x = unit.update(ms(at))[0];
+            at += 16;
+        }
+        crate::SHOWN_OFFSET.set(step);
+        let after = (0..frames).map(|frame| unit.update(ms(at + 16 * frame as u64))[0]).collect();
+        crate::SHOWN_OFFSET.set(0);
+        (x, after)
+    }
+
+    #[test]
+    fn walks_follow_the_server_clock_as_it_changes() {
+        let close = |got: &[f32], want: &[f32]| got.iter().zip(want).all(|(a, b)| (a - b).abs() < 2e-3) && got.len() == want.len();
+        // Stepped back 144 ms after shown 992: held a frame, back toward (16, 10) it passed at 900, then on.
+        let (x, after) = after_a_clock_change(5, 992, -144, 5);
+        assert_close(x, 16.613);
+        assert!(close(&after, &[16.613, 16.341, 16.068, 16.165, 16.262]), "{after:?}");
+        // The same after shown 1072: held at 944, six frames back toward (17, 10), then on.
+        let (x, after) = after_a_clock_change(5, 1072, -144, 8);
+        assert_close(x, 17.147);
+        assert!(close(&after, &[17.147, 17.125, 17.102, 17.080, 17.058, 17.036, 17.014, 17.112]), "{after:?}");
+        // A packet 100 ms ahead after shown 992: every walk is 100 ms further along at once.
+        let (_, after) = after_a_clock_change(5, 992, 100, 3);
+        assert!(close(&after, &[17.387, 17.493, 17.600]), "{after:?}");
+        // Our own walk the same.
+        let (_, after) = after_a_clock_change(0, 992, -144, 5);
+        assert!(close(&after, &[16.613, 16.341, 16.068, 16.165, 16.262]), "{after:?}");
+    }
+
+    #[test]
+    fn replays_a_walk_over_by_the_shown_clock() {
+        // The shown clock is 1000 behind the local one: a walk begun at shown 0, three cells east, heard at shown 500.
+        crate::SHOWN_OFFSET.set(-1000);
+        let mut unit = Actor::new("a".into(), None, [10, 10], 0, 150);
+        unit.set_map([40, 40]);
+        unit.walk_from([10, 10], [8, 8], vec![[11, 10], [12, 10], [13, 10]], ms(1000), ms(1500), false);
+        assert_eq!(unit.path.iter().map(|&(_, at)| at).collect::<Vec<_>>(), [615, 730, 845]);
+        crate::SHOWN_OFFSET.set(0);
+    }
+
+    #[test]
+    fn replays_a_late_walk_at_ten_thirteenths_of_a_whole_speed() {
+        let times = |speed: u16, path: &[[i32; 2]], begin: u64, now: u64| {
+            let mut unit = Actor::new("a".into(), None, [10, 10], 0, speed);
+            unit.set_map([40, 40]);
+            unit.walk_from([10, 10], [8, 8], path.to_vec(), ms(begin), ms(now), false);
+            unit.path.iter().map(|&(_, at)| at - begin.max(now)).collect::<Vec<_>>()
+        };
+        let path = [[11, 10], [12, 10], [13, 11], [14, 11], [15, 11], [16, 12], [17, 12]];
+        // On time: from t0 at full speed.
+        assert_eq!(times(150, &path, 5000, 5000), [150, 300, 512, 662, 812, 1024, 1174]);
+        // Heard after its end: from now at 150·10/13 = 115 a cell, 162 a diagonal.
+        assert_eq!(times(150, &path, 1000, 5000), [115, 230, 392, 507, 622, 784, 899]);
+        let east: Vec<[i32; 2]> = (11..16).map(|x| [x, 10]).collect();
+        assert_eq!(times(75, &east, 1000, 5000), [57, 114, 171, 228, 285]);
+    }
+
+    #[test]
+    fn a_new_unit_with_no_path_stands_on_its_sub_cell() {
+        let mut unit = Actor::new("a".into(), None, [10, 10], 0, 150);
+        unit.set_map([40, 40]);
+        unit.walk_from([10, 10], [2, 14], Vec::new(), ms(1000), ms(1000), false);
+        assert_near(unit.position(ms(1000)), [9.625, 10.375]);
+        assert_close(unit.rot, 0.0);
+    }
+
+    #[test]
+    fn finds_the_cell_and_sub_cell_under_the_drawn_point() {
+        let under = |size: usize, p: [f32; 2]| {
+            let mut unit = Actor::new("a".into(), None, [10, 10], 0, 150);
+            unit.set_map([size, size]);
+            unit.at = world_point(p, unit.half);
+            unit.cell_and_sub()
+        };
+        // Even: v = p + 0.5.
+        assert_eq!(under(40, [10.3, 10.3]), ([10, 10], [12, 12]));
+        assert_eq!(under(40, [9.97, 9.97]), ([10, 10], [7, 7]));
+        assert_eq!(under(40, [10.0, 10.0]), ([10, 10], [8, 8]));
+        // Odd: v = p, so a cell's centre is sub 0.
+        assert_eq!(under(41, [10.0, 10.0]), ([10, 10], [0, 0]));
+        // Our own walk whose source is its destination, drawn on that cell: there's no path, so nothing changes.
+        let gat = rustnarok_client::map::Gat { width: 40, height: 40, cells: vec![([0.0; 4], 0); 1600] };
+        assert_eq!(world::find_unit_path(&gat, [10, 10], [10, 10], 0), None);
+    }
+
+    #[test]
+    fn closes_on_the_steps_end_each_frame() {
+        // Straight, frames every 50 ms: today's linear motion, then standing on the last cell, two cells walked.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5], [7, 5]], 1000, 1000);
+        for (at, x) in [(1050, 5.3333), (1100, 5.6667), (1150, 6.0), (1200, 6.3333), (1250, 6.6667)] {
+            assert_near(unit.update(ms(at)), [x, 5.0]);
+        }
+        assert_eq!((unit.update(ms(1300)), unit.moving()), ([7.0, 5.0], false));
+        assert_close(unit.distance, 10.0);
+        // A corner: the frame that crosses (6, 5) aims straight at (6, 6) from where the unit is.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5], [6, 6]], 1000, 1000);
+        let frames = [1000, 1100, 1200, 1300].map(|at| (unit.update(ms(at)), unit.rot, unit.distance));
+        for ((at, rot, distance), (want, want_distance)) in
+            frames.iter().zip([([5.0, 5.0], 0.0), ([5.6667, 5.0], 3.3333), ([5.8333, 5.5], 5.9686), ([6.0, 6.0], 8.6038)])
+        {
+            assert_near(*at, want);
+            assert_close(*distance, want_distance);
+            if want[1] > 5.0 {
+                assert_close(*rot, 161.565);
+            }
+        }
+        assert!(!unit.moving());
+        // A unit new to the client moves from its first frame, before t0, toward node 1.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5]], 1072, 1000);
+        assert_close(unit.update(ms(1016))[0], 5.0721);
+        assert_close(unit.update(ms(1072))[0], 5.3243);
+        assert_eq!((unit.update(ms(1222)), unit.moving()), ([6.0, 5.0], false));
+        // A late packet: no jump, it catches up within what's left of the step under way.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5], [7, 5], [8, 5]], 1000, 1300);
+        assert_close(unit.update(ms(1316))[0], 5.32);
+        assert_close(unit.update(ms(1332))[0], 5.64);
+        assert_eq!((unit.update(ms(1450)), unit.moving()), ([8.0, 5.0], false));
+    }
+
+    #[test]
+    fn a_move_packet_only_replaces_the_path() {
+        // Walking east from 1000; at 1100 the server turns it north from (5, 5) a third of a cell east, from 1060.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5], [7, 5], [8, 5]], 1000, 1000);
+        unit.update(ms(1050));
+        let drawn = unit.position(ms(1100));
+        unit.walk_from([5, 5], [14, 8], vec![[5, 6], [5, 7]], ms(1060), ms(1100), true);
+        assert_eq!(unit.position(ms(1100)), drawn);
+        assert_near(unit.update(ms(1100)), [5.2353, 5.2941]);
+        assert_close(unit.rot, 198.435);
+        for at in (1150..=1350).step_by(50) {
+            unit.update(ms(at));
+        }
+        assert_eq!((unit.update(ms(1400)), unit.moving()), ([5.0, 7.0], false));
+        assert_close(unit.distance, 12.8955);
+        // A re-path heard after its first node's time (a held walk over a slow link): no frame jumps.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5], [7, 5], [8, 5], [9, 5]], 1000, 1000);
+        let mut drawn = unit.update(ms(1000));
+        for at in (1016..=1700).step_by(16) {
+            if at == 1400 {
+                unit.walk_from([7, 5], [8, 8], vec![[8, 6], [9, 6]], ms(1150), ms(at), true);
+            }
+            let now = unit.update(ms(at));
+            assert!(f32::hypot(now[0] - drawn[0], now[1] - drawn[1]) < 0.3, "{drawn:?} -> {now:?} at {at}");
+            drawn = now;
+        }
+        assert_eq!(drawn, [9.0, 6.0]);
+        // A frame late for the last node overshoots it, counted, then stands on it, still facing east.
+        let mut unit = walker([5, 5], [8, 8], &[[6, 5]], 1000, 1000);
+        unit.update(ms(1000));
+        assert_close(unit.update(ms(1140))[0], 5.9333);
+        assert_eq!((unit.update(ms(1160)), unit.moving()), ([6.0, 5.0], false));
+        assert_close(unit.distance, 5.3333);
+        assert_eq!(unit.rot, 90.000_02);
+    }
+
+    #[test]
+    fn faces_each_frames_step_as_the_game_works_it_out() {
+        let rot = |to: [i32; 2]| {
+            let mut unit = walker([5, 5], [8, 8], &[to], 1000, 1000);
+            unit.update(ms(1050));
+            (unit.rot, unit.direction)
+        };
+        // North, east, west, south: 3.141592 makes the angles a little too big (180.0000458, 90.0000229, 269.99997).
+        let steps = [[5, 6], [6, 5], [4, 5], [5, 4]].map(rot);
+        assert_eq!(steps.map(|(rot, _)| rot), [180.000_05, 90.000_02, 269.999_97, 0.0]);
+        assert_eq!(steps.map(|(_, direction)| direction), [4, 6, 2, 0]);
+        // Floored, at the outdoor camera (0) and an indoor one (45).
+        assert_eq!(steps.map(|(rot, _)| view_direction(rot, 0.0, false)), [3, 5, 2, 0]);
+        assert_eq!(steps.map(|(rot, _)| view_direction(rot, 45.0, false)), [2, 4, 1, 7]);
+        // A diagonal step with dx = dz.
+        let (diagonal, _) = rot([6, 6]);
+        assert_eq!(diagonal, 135.000_03);
+        assert_eq!([0.0, 45.0].map(|yaw| view_direction(diagonal, yaw, false)), [4, 3]);
+    }
+
+    #[test]
+    fn counts_the_clock_in_whole_ms() {
+        assert_eq!(crate::whole_ms(*crate::START + Duration::from_micros(1_000_900)), 1000);
+    }
+
+    #[test]
+    fn keeps_the_server_clock() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut clock = ServerClock::default();
+        clock.set(10_000, start);
+        assert_eq!(clock.tick(at(500)), Some(10_500));
+        // A packet ahead sets it at once.
+        clock.heard(10_600, at(500));
+        assert_eq!(clock.tick(at(500)), Some(10_600));
+        // Three late ones don't move it; one in time starts the count again.
+        for _ in 0..3 {
+            clock.heard(10_400, at(500));
+        }
+        clock.heard(10_550, at(500));
+        for _ in 0..3 {
+            clock.heard(10_400, at(500));
+        }
+        assert_eq!(clock.tick(at(500)), Some(10_600));
+        // The fourth late one in a row steps it back 144 ms.
+        clock.heard(10_400, at(500));
+        assert_eq!(clock.tick(at(500)), Some(10_456));
+        assert_eq!(clock.local(10_456), Some(at(500)));
+    }
+
+    #[test]
+    fn pulls_the_cart_on_a_one_cell_rope() {
+        let sprites = SpriteSet {
+            layers: Vec::new(),
+            player: false,
+            dressing: None,
+            scale: 1.0,
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted: None,
+            delay: Default::default(),
+        };
+        // A new cart stands on its leader's spot, facing its way (south, 0).
+        let mut cart = Cart::new(sprites, [50.0, 50.0], 0);
+        assert_near(cart.at, [50.0, 50.0]);
+        assert_eq!(cart.rot, 0.0);
+        // Closer than the rope: it stays, turning to face the leader (east of it: 90).
+        cart.step([53.0, 50.0], 6);
+        assert_near(cart.at, [50.0, 50.0]);
+        assert!((cart.rot - 90.0).abs() < 1e-3, "{}", cart.rot);
+        assert_eq!(cart.rolled, 0.0);
+        // Farther: pulled straight in to exactly a rope's length, rolling as far as it moved.
+        cart.step([58.0, 50.0], 6);
+        assert_near(cart.at, [53.0, 50.0]);
+        assert!((cart.rolled - 3.0).abs() < 1e-4);
+        // The wheels turn 0.92 frames a world unit over the ACT's delay (4 when the ACT has none): 0.23, looping.
+        assert_eq!(cart.frame(6), 0);
+        cart.rolled = 5.0;
+        assert_eq!(cart.frame(6), 1);
+        cart.rolled = 30.0;
+        assert_eq!(cart.frame(6), 0);
+        // A jump (a warp) starts it over on the leader's spot.
+        cart.step([200.0, 200.0], 4);
+        assert_near(cart.at, [200.0, 200.0]);
+    }
+
+    #[test]
+    fn names_each_cart_type() {
+        let path = |kind: i32, job: u16| {
+            let (sprite, act) = cart_path(kind, job);
+            (sprite.trim_start_matches("data\\sprite\\이팩트\\").to_string(), act.trim_start_matches("data\\sprite\\이팩트\\").to_string())
+        };
+        let same = |name: &str| (name.to_string(), format!("{name}.act"));
+        assert_eq!(path(1, 5), same("손수레"));
+        for kind in 2..=9 {
+            assert_eq!(path(kind, 10), same(&format!("손수레{}", kind - 1)));
+        }
+        // From 10 on, the named carts.
+        assert_eq!(path(10, 5), same("선물상자카트"));
+        assert_eq!(path(11, 10), same("포링싣은카트"));
+        assert_eq!(path(12, 18), same("포링카트"));
+        assert_eq!(path(13, 4058), same("마도카트"));
+        // The Super Novice's own, whatever the type, and the Hyper Novice's too.
+        assert_eq!(path(3, 23), same("슈노손수레"));
+        assert_eq!(path(13, 23), same("슈노손수레"));
+        assert_eq!(path(2, 4307), same("슈노손수레"));
+        assert_eq!(path(1, 4045), ("슈노손수레".to_string(), "베이비슈노손수레.act".to_string()));
+        // Babies: a baby ACT on the grown-up sprite, a baby sprite of its own from type 6, a mini cart from 10.
+        assert_eq!(path(1, 4028), ("손수레".to_string(), "베이비손수레.act".to_string()));
+        assert_eq!(path(5, 4036), ("손수레4".to_string(), "베이비손수레4.act".to_string()));
+        assert_eq!(path(6, 4107), same("손수레5베이비"));
+        assert_eq!(path(10, 4028), same("선물상자카트_미니"));
+        assert_eq!(path(13, 4107), same("마도카트_미니"));
+    }
+
+    #[test]
+    fn sounds_every_frame_passed() {
+        assert_eq!(frames_passed(Some((5, 2)), (5, 2), 8), Vec::<usize>::new());
+        assert_eq!(frames_passed(Some((5, 2)), (5, 5), 8), [3, 4, 5]);
+        assert_eq!(frames_passed(Some((1, 6)), (1, 1), 8), [7, 0, 1], "round a loop");
+        assert_eq!(frames_passed(Some((0, 3)), (5, 2), 8), [1, 2], "a new action: not frame 0");
+        assert_eq!(frames_passed(None, (5, 0), 8), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn flinches_by_who_and_for_how_long() {
+        // A Poring's 480: held to 1.67 times the action; a player's 288 or less: frames shortened; 0: as it is.
+        assert_eq!(flinch_pace(480.0 / 288.0, false, 3.0), Pace::Hold(480.0 / 288.0));
+        assert_eq!(flinch_pace(0.5, true, 3.0), Pace::Act(0.5));
+        assert_eq!(flinch_pace(0.5, false, 4.0), Pace::Act(0.125), "d x 24 ms a frame");
+        assert_eq!(flinch_pace(0.0, false, 4.0), Pace::Act(1.0));
+        // A player mid-swing doesn't flinch; a monster mid-attack does, but not in a special idle.
+        assert!(!flinches(0, 5));
+        assert!(flinches(0, WALK));
+        assert!(flinches(5, 2));
+        assert!(!flinches(5, 6));
+    }
+
+    #[test]
+    fn walks_in_step_with_the_server() {
+        let start = ms(0);
+        // From a quarter cell east of the centre: the first cell after 0.75 cells, then a diagonal, then a straight.
+        let path = [[11, 10], [12, 11], [13, 11]];
+        let times: Vec<u64> = arrivals([10.25, 10.0], 0, &path, 150.0).into_iter().map(|(_, at)| at).collect();
+        assert_eq!(times, [112, 324, 474]);
+        let mut actor = Actor::new("a".into(), None, [10, 10], 0, 150);
+        actor.walk_from([10, 10], [12, 8], path.to_vec(), start, start, false);
+        assert_near(actor.update(start), [10.25, 10.0]);
+        assert_near(actor.update(start + Duration::from_millis(56)), [10.625, 10.0]);
+        // Heard of after it ended: replayed from now at 150·10/13 = 115 ms a cell, so the first cell after 86 ms.
+        let now = ms(10_000);
+        actor.walk_from([10, 10], [12, 8], path.to_vec(), start, now, false);
+        assert_near(actor.update(now), [10.25, 10.0]);
+        assert_near(actor.update(ms(10_043)), [10.625, 10.0]);
+        assert!(actor.moving());
+        // The server's ticks placed on our clock, across the counter wrapping too.
+        assert_eq!(local_time((1000, start), 1500), start + Duration::from_millis(500));
+        assert_eq!(local_time((1000, now), 900), now - Duration::from_millis(100));
+        assert_eq!(local_time((u32::MAX - 10, start), 5), start + Duration::from_millis(16));
+    }
+
+    #[test]
+    fn slides_back_over_a_fifth_of_a_second() {
+        let start = ms(0);
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut actor = Actor::new("a".into(), None, [10, 10], 4, 150);
+        actor.slide_to([10, 13], start);
+        // Straight there in 200 ms, still facing the way it did, and not walking.
+        assert_near(actor.update(at(0)), [10.0, 10.0]);
+        assert_near(actor.update(at(100)), [10.0, 11.5]);
+        assert_eq!((actor.direction, actor.sliding_to()), (4, Some([10, 13])));
+        assert_eq!(actor.animation(at(100)).0, IDLE);
+        assert_near(actor.update(at(200)), [10.0, 13.0]);
+        assert_eq!((actor.cell, actor.sliding_to(), actor.moving()), ([10, 13], None, false));
+        // Farther than five cells: a jump.
+        actor.slide_to([10, 20], at(300));
+        assert_eq!((actor.cell, actor.moving()), ([10, 20], false));
+    }
+
+    fn assert_near(a: [f32; 2], b: [f32; 2]) {
+        assert!((a[0] - b[0]).abs() < 1e-3 && (a[1] - b[1]).abs() < 1e-3, "{a:?} != {b:?}");
+    }
+
+    #[test]
+    fn casts_shadows_by_sprite_job() {
+        let factors = HashMap::from([(14, 1.5), (4048, 1.0), (1002, 0.5), (45, 0.0)]);
+        // By the sprite job: a Crusader (14) is listed here; riding, its sprite job is 21, which isn't.
+        assert_eq!(shadow_factor(&factors, true, 14, 0, false, false), 1.5);
+        assert_eq!(shadow_factor(&factors, true, 14, RIDING, false, false), 1.0);
+        // Sitting or dead players: none, but for the floating union forms.
+        assert_eq!(shadow_factor(&factors, true, 0, 0, true, false), 0.0);
+        assert_eq!(shadow_factor(&factors, true, 0, 0, false, true), 0.0);
+        assert_eq!(shadow_factor(&factors, true, 4047, UNION, true, false), 1.0);
+        // Monsters and NPCs by their job, sitting or not; warps none.
+        assert_eq!(shadow_factor(&factors, false, 1002, 0, false, false), 0.5);
+        assert_eq!(shadow_factor(&factors, false, 45, 0, false, false), 0.0);
+        assert_eq!(shadow_factor(&factors, false, 1031, 0, false, false), 1.0);
+    }
+
+    #[test]
+    fn companion_bits_match_rathena() {
+        // status.hpp: OPTION_FALCON 0x10, OPTION_WUG 0x100000, OPTION_WUGRIDER 0x200000.
+        assert_eq!(OPTION_FALCON, 0x10);
+        assert_eq!(OPTION_WUG, 0x10_0000);
+        assert_eq!(OPTION_WUGRIDER, 0x20_0000);
+        assert_eq!(BODY_OPTIONS & (OPTION_FALCON | OPTION_WUG), 0);
+        assert_ne!(BODY_OPTIONS & OPTION_WUGRIDER, 0);
+        assert!(falcon_out(OPTION_FALCON) && !falcon_out(0));
+        assert!(warg_out(OPTION_WUG));
+        assert!(!warg_out(OPTION_WUG | OPTION_WUGRIDER), "riding hides the warg");
+        assert!(!warg_out(OPTION_WUGRIDER) && !warg_out(0));
+        assert_eq!(FALCON_HEIGHT, 25.0);
+        assert_eq!(WARG_SHADOW, 2.0);
+    }
+
+    #[test]
+    fn falcon_arrives_then_hovers_at_its_hunter() {
+        let owner = [0.0, 0.0];
+        let at = |distance: f32| [distance, 0.0];
+        // Arriving from 30: a 25th of the way a tick, still arriving; at 60 fps a frame is one tick.
+        assert_eq!(falcon_step(at(30.0), owner, true, 1.0), (at(30.0 - 30.0 / 25.0), true));
+        // Within 25 it has arrived; at 20 it flies 1 a tick, scaled by the time (2.5 ticks).
+        let (step, arriving) = falcon_step(at(20.0), owner, true, 2.5);
+        assert!(!arriving);
+        assert_near(step, at(17.5));
+        // At 8 it closes a 20th of the way a tick; over two ticks 1 − (19/20)².
+        assert_near(falcon_step(at(8.0), owner, false, 2.0).0, at(8.0 * (19.0f32 / 20.0).powi(2)));
+        // At 2 it stays; and 1 a tick never takes it past its hunter.
+        assert_eq!(falcon_step(at(2.0), owner, false, 1.0), (at(2.0), false));
+        assert_near(falcon_step(at(13.0), owner, false, 30.0).0, owner);
+    }
+
+    #[test]
+    fn warg_waits_then_runs_after_its_ranger() {
+        let owner = [0.0, 0.0];
+        // At 20: runs 0.7 a tick.
+        let (at, ran) = warg_step([20.0, 0.0], owner, 2.0);
+        assert!(ran);
+        assert_near(at, [18.6, 0.0]);
+        // At 15.5, a tick takes it within 15.7: put at 14.9.
+        let (at, ran) = warg_step([15.5, 0.0], owner, 1.0);
+        assert!(ran);
+        assert_near(at, [14.9, 0.0]);
+        // At 10 it waits.
+        assert_eq!(warg_step([10.0, 0.0], owner, 5.0), ([10.0, 0.0], false));
+    }
+
+    #[test]
+    fn companions_face_their_owner() {
+        // South of its owner it faces north (180); east of it, west (270); right on it, it keeps its way.
+        assert!((facing([0.0, -10.0], [0.0, 0.0], 0.0) - 180.0).abs() < 1e-3);
+        assert!((facing([10.0, 0.0], [0.0, 0.0], 0.0) - 270.0).abs() < 1e-3);
+        assert_eq!(facing([1.0, 1.0], [1.0, 1.0], 45.0), 45.0);
+        // The camera turned 10° doesn't change the way it shows; 30° does.
+        assert_eq!(view_direction(180.0, 0.0, true), view_direction(180.0, 10.0, true));
+        assert_ne!(view_direction(180.0, 0.0, true), view_direction(180.0, 30.0, true));
+    }
+
+    #[test]
+    fn picks_the_companions_sprite_by_job() {
+        let first = |warg, job| companion_sprites(warg, job).0[0].1.clone();
+        assert_eq!(first(false, 11), "data\\sprite\\이팩트\\매.act");
+        assert_eq!(first(false, 4034), "data\\sprite\\이팩트\\베이비매.act");
+        assert_eq!(companion_sprites(false, 4034).0[0].0, "data\\sprite\\이팩트\\매", "the grown-up falcon's picture");
+        assert_eq!(first(false, 4056), "data\\sprite\\이팩트\\owl.act");
+        assert_eq!(first(false, 4098), "data\\sprite\\이팩트\\owl.act", "a Baby Ranger's falcon is the owl too");
+        assert_eq!(first(false, 4012), "data\\sprite\\이팩트\\매2.act");
+        assert_eq!(first(false, 4062), "data\\sprite\\이팩트\\owl.act");
+        assert_eq!(first(false, 4050), "data\\sprite\\몬스터\\demon_pungus.act");
+        assert_eq!([first(false, 4051), first(false, 4052)], ["data\\sprite\\몬스터\\explosion.act", "data\\sprite\\몬스터\\lude.act"]);
+        assert_eq!(first(false, 7), "data\\sprite\\이팩트\\매.act");
+        assert_eq!(first(false, 4111), "data\\sprite\\이팩트\\매.act", "a Baby Windhawk keeps the plain falcon, not the baby one");
+        assert_eq!(first(false, 4257), "data\\sprite\\이팩트\\windhawk_hawk.act");
+        assert_eq!(first(true, 4068), "data\\sprite\\이팩트\\워그.act");
+        assert_eq!(first(true, 4098), "data\\sprite\\몬스터\\베이비워그.act");
+        assert_eq!(first(true, 4278), "data\\sprite\\이팩트\\windhawk_wolf.act");
+        // A baby's falls back to the grown-up's; shadows: the warg's 2, a baby's 1, the falcon none.
+        assert!(companion_sprites(true, 4098).0.iter().any(|(path, _)| path == "data\\sprite\\몬스터\\워그"));
+        assert_eq!([companion_sprites(true, 4068).1, companion_sprites(true, 4111).1, companion_sprites(false, 11).1], [2.0, 1.0, 0.0]);
+        assert!([4056, 4012, 4050, 4051, 4052].iter().all(|&job| companion_sprites(false, job).1 == 0.0), "the new birds cast no shadow");
+    }
+
+    #[test]
+    fn colours_a_unit_by_its_state() {
+        assert_eq!(status_tint(OPT1_STONE, 0), Some([64, 64, 64]));
+        assert_eq!(status_tint(OPT1_STONEWAIT, 0), Some([128, 128, 128]));
+        assert_eq!(status_tint(OPT1_FREEZE, 0), Some([0, 128, 255]));
+        assert_eq!(status_tint(0, OPT2_POISON), Some([255, 128, 255]));
+        assert_eq!(status_tint(0, OPT2_DPOISON), Some([255, 50, 255]));
+        assert_eq!(status_tint(0, OPT2_CURSE), Some([200, 50, 50]));
+        // A body state wins when a health state is set too.
+        assert_eq!(status_tint(OPT1_FREEZE, OPT2_POISON), Some([0, 128, 255]));
+        assert_eq!(status_tint(OPT1_STONE, OPT2_CURSE | OPT2_POISON), Some([64, 64, 64]));
+        assert_eq!(status_tint(OPT1_STONEWAIT, OPT2_DPOISON), Some([128, 128, 128]));
+        // Two health bits at once: deadly poison, then curse over poison.
+        assert_eq!(status_tint(0, OPT2_POISON | OPT2_DPOISON), Some([255, 50, 255]));
+        assert_eq!(status_tint(0, OPT2_POISON | OPT2_CURSE), Some([200, 50, 50]));
+        // Stone and freeze stop the animation; the others don't.
+        assert!(stilled(OPT1_STONE) && stilled(OPT1_FREEZE) && !stilled(OPT1_STONEWAIT) && !stilled(0));
+        // Stun, silence and a state that has ended leave the sprite alone.
+        assert_eq!(status_tint(3, 0x0010), None);
+        assert_eq!(status_tint(0, 0), None);
+    }
+
+    #[test]
+    fn multiplies_every_layer_by_the_tint() {
+        let tint = status_tint(OPT1_FREEZE, OPT2_POISON);
+        let layers = [[255, 255, 255, 255], [128, 64, 32, 128], [0, 255, 0, 255]];
+        assert_eq!(layers.map(|color| layer_color(color, tint)), [[0, 128, 255, 255], [0, 32, 32, 128], [0, 128, 0, 255]]);
+        // Ending the state restores each layer's own colour.
+        assert_eq!(layers.map(|color| layer_color(color, status_tint(0, 0))), layers);
+    }
+
+    /// A sprite of one blank 4×4 image (SPR 1.0).
+    fn blank_spr() -> Spr {
+        let mut bytes = b"SP\x00\x01".to_vec();
+        bytes.extend([1u16, 4, 4].iter().flat_map(|value| value.to_le_bytes()));
+        bytes.extend([0u8; 16]);
+        Spr::parse(&bytes).unwrap()
+    }
+
+    /// A frame of `layers` layers (`empty` ones first) and an anchor.
+    fn test_frame(layers: usize, empty: usize, anchor: Option<[i32; 3]>) -> sprite::Frame {
+        let layer =
+            |image| sprite::Layer { offset: [0, 0], image, mirror: false, color: [255; 4], scale: [1.0; 2], angle: 0, kind: 0, size: None, top_left: false };
+        sprite::Frame { layers: (0..layers).map(|index| layer(if index < empty { -1 } else { 0 })).collect(), event: -1, anchors: anchor.into_iter().collect() }
+    }
+
+    /// An ACT whose 104 actions each have `frames` copies of `frame`.
+    fn test_act(frame: sprite::Frame, frames: usize) -> Act {
+        Act { actions: vec![vec![frame; frames]; 104], delays: vec![4.0; 104], events: Vec::new() }
+    }
+
+    /// A monster's body: 13 actions of 8 directions, `frames` frames each but 3 facing direction 2, at `delays`.
+    fn test_monster(delays: Vec<f32>, frames: usize) -> SpriteSet {
+        let mut act = test_act(test_frame(1, 0, None), frames);
+        for action in 0..13 {
+            act.actions[action * 8 + 2].truncate(3);
+        }
+        act.delays = delays;
+        SpriteSet {
+            layers: vec![Layer { spr: blank_spr(), act, palette: None, part: Part::Body }],
+            player: false,
+            dressing: None,
+            scale: 1.0,
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted: None,
+            delay: Default::default(),
+        }
+    }
+
+    #[test]
+    fn plays_an_action_at_its_direction_0_delay_every_way() {
+        // A walk whose ACT gives its directions [2, 1, 1, 1, 1, 1, 1, 1]: 2 every way.
+        let mut delays = vec![4.0; 104];
+        delays[8..16].copy_from_slice(&[2.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]);
+        let ghoul = test_monster(delays.clone(), 8);
+        assert_eq!(ghoul.action_delay(WALK), 2.0);
+        let frames: Vec<usize> = [0, 1, 4, 7].iter().map(|&direction| ghoul.body_frame(8 + direction, Timing::Loop(130.0)).unwrap().0).collect();
+        assert_eq!(frames, [2, 2, 2, 2], "130 ms at 2 × 25 ms a frame");
+        // The frame count is the drawn direction's: 3 facing direction 2.
+        assert_eq!(ghoul.body_frame(8 + 2, Timing::Loop(130.0)).unwrap().0, 2);
+        assert_eq!(ghoul.body_frame(8 + 2, Timing::Loop(180.0)).unwrap().0, 0);
+        // No delay at direction 0: 4. Under 1: 1.
+        assert_eq!(test_monster(vec![4.0; 8], 8).action_delay(WALK), 4.0);
+        delays[8] = 0.5;
+        assert_eq!(test_monster(delays.clone(), 8).action_delay(WALK), 1.0);
+        // 0 keeps the previous action's delay.
+        delays[0] = 3.0;
+        delays[8] = 0.0;
+        let kept = test_monster(delays, 8);
+        assert_eq!((kept.action_delay(IDLE), kept.action_delay(WALK)), (3.0, 3.0));
+    }
+
+    #[test]
+    fn head_turns_show_only_standing_or_sitting_and_are_not_kept() {
+        let mut player = Actor::new("a".into(), None, [10, 10], 0, 150);
+        player.set_map([40, 40]);
+        player.set_head(1);
+        // Standing: a turn's head shows.
+        player.turn(2, 2, ms(1000));
+        assert_eq!((player.direction, player.head_direction), (2, 2));
+        // Walking: it's dropped; after the walk the head is straight.
+        player.walk_from([10, 10], [8, 8], vec![[11, 10], [12, 10]], ms(1000), ms(1000), true);
+        player.turn(4, 1, ms(1010));
+        assert_eq!(player.head_direction, 0);
+        player.update(ms(1400));
+        assert!(!player.moving());
+        assert_eq!(player.head_direction, 0);
+        // Standing again after a swing: the head goes back to the one the last entry packet or own turn gave.
+        player.set_head(1);
+        player.turn(0, 2, ms(1500));
+        assert_eq!(player.head_direction, 2);
+        player.play(5, ms(1500), 300.0, false);
+        assert_eq!(player.head_direction, 1);
+        // Sitting: it shows.
+        let mut sitting = Actor::new("b".into(), None, [10, 10], 0, 150);
+        sitting.sitting = true;
+        sitting.turn(0, 2, ms(1000));
+        assert_eq!(sitting.head_direction, 2);
+    }
+
+    /// A player: a two-layer body (anchor at y −80), a head in layer 1, a headgear and a weapon with one frame an action.
+    fn test_player(ignores_riding: bool, unmounted: Option<Act>) -> SpriteSet {
+        let layer = |act, part| Layer { spr: blank_spr(), act, palette: None, part };
+        let worn = Worn { part: Part::HeadTop, places: [Some(200); 8], offsets: [[0, 0]; 8], layer: 0, ignores_riding };
+        let dressing = Dressing {
+            head_first: Vec::new(),
+            robe_over_body: Vec::new(),
+            robe_over_headgear: false,
+            headgear: vec![worn],
+            head_hidden: false,
+            outfit: false,
+            madogear: false,
+            female: false,
+        };
+        SpriteSet {
+            layers: vec![
+                layer(test_act(test_frame(2, 0, Some([0, -80, 0])), 2), Part::Body),
+                layer(test_act(test_frame(2, 1, Some([0, -10, 0])), 2), Part::Head),
+                layer(test_act(test_frame(1, 0, Some([0, -12, 0])), 2), Part::HeadTop),
+                layer(test_act(test_frame(1, 0, None), 1), Part::Weapon),
+            ],
+            player: true,
+            dressing: Some(dressing),
+            scale: 1.0,
+            tint: None,
+            mygene_yellow_fabre: false,
+            mygene_red_thief_bug: false,
+            mygene_blue_chonchon: false,
+            mygene_slayer_color: None,
+            textures: HashMap::new(),
+            unmounted,
+            delay: Default::default(),
+        }
+    }
+
+    #[test]
+    fn knows_the_action_it_plays() {
+        let start = Instant::now();
+        let mut actor = Actor::new("Me".into(), None, [10, 10], 0, 150);
+        actor.sprites = Some(test_player(false, None));
+        // A swing (2 frames of 96 ms) plays till 192 ms; a walk ends it.
+        actor.play_at_pace(5, start, 1.0, false);
+        assert!(actor.playing(5, start + Duration::from_millis(100)) && !actor.playing(5, start + Duration::from_millis(200)));
+        actor.walk_from([10, 10], [8, 8], vec![[11, 10]], start, start, true);
+        assert!(!actor.playing(5, start));
+    }
+
+    #[test]
+    fn draws_one_layer_a_part_and_nothing_for_a_missing_frame() {
+        let sprites = test_player(false, None);
+        let parts = |index, progress| sprites.place(index, 0, Timing::Span(progress)).iter().map(|((number, ..), ..)| *number).collect::<Vec<_>>();
+        // In the battle stance: the body's layer 0 only, the head's layer 1, the headgear, the weapon.
+        let mut drawn = parts(32, 0.0);
+        drawn.sort_unstable();
+        assert_eq!(drawn, [0, 1, 2, 3]);
+        // The weapon has no second frame: it isn't drawn then.
+        assert!(!parts(32, 0.9).contains(&3));
+    }
+
+    #[test]
+    fn sits_riding_headgear_by_the_unmounted_body() {
+        let unmounted = || test_act(test_frame(1, 0, Some([0, -60, 0])), 2);
+        let top = |sprites: &SpriteSet, index| sprites.place(index, 0, Timing::Span(0.0)).iter().find(|((number, ..), ..)| *number == 2).unwrap().1[1];
+        // On the head: (−80 − −10) + (−10 − −12) = −68, the 4×4 image's top 2 above that.
+        let plain = test_player(false, Some(unmounted()));
+        assert_eq!(top(&plain, 0), -70.0);
+        // Flagged, standing: by the unmounted body's anchor, 20 lower; in an attack, by the mounted one.
+        let riding = test_player(true, Some(unmounted()));
+        assert_eq!((top(&riding, 0), top(&riding, 8), top(&riding, 64), top(&riding, 88)), (-50.0, -50.0, -50.0, -70.0));
+    }
+
+    #[test]
+    fn the_swing_turns_every_layer_once_round() {
+        // The layer angle at g = 0, 12, 18, 24, 35: 0, 90, 180, 270, 359.3.
+        let angles = [0, 12, 18, 24, 35].map(swing_spin);
+        let want = [0.0, 90.0, 180.0, 270.0, 359.3];
+        assert!(angles.iter().zip(want).all(|(got, want)| (got - want).abs() < 0.1), "{angles:?}");
+    }
+
+    #[test]
+    fn zangetsu_glows_steady_blue_and_kagemusya_leaves_a_grey_copy_every_tick() {
+        // Zangetsu: the blue copies at f = 20, alpha 160, #0505FF, two a part, added on, the same on every tick.
+        let (flags, tint) = status_body(1003).unwrap();
+        assert_eq!((flags & 0xFFFFFF, flags >> PARAM_SHIFT, tint), (GLOW_BLUE, 160, None));
+        let (_, copies) = glow_copies(flags, None, PartGroup::Body, 0.0, 0.0, 1.0, true);
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().all(|copy| copy.additive && copy.color == [5.0 / 255.0, 5.0 / 255.0, 1.0, 160.0 / 255.0]));
+        // A second status packet makes no second copy.
+        let mut zangetsu = Actor::new("Ninja".into(), None, [0, 0], 0, 150);
+        zangetsu.glow(657, &[1003], true);
+        zangetsu.glow(657, &[1003], true);
+        assert_eq!(zangetsu.glow_flags().0, flags);
+        // Kagemusya: alpha on its ticks 1 to 7 is 84, 68, 52, 36, 20, 4, gone.
+        let alpha = |ticks: u64| shadow_alpha(Duration::from_millis(16 * ticks + 8)) * 255.0;
+        assert_eq!([0, 1, 2, 3, 4, 5, 6].map(alpha), [84.0, 68.0, 52.0, 36.0, 20.0, 4.0, 0.0]);
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        let mut actor = Actor::new("Ninja".into(), None, [0, 0], 0, 150);
+        actor.shadow(true);
+        actor.step_blur(tick(0), || false);
+        for n in 1..=10 {
+            actor.step_blur(tick(n), || false);
+            actor.leave_ghost(tick(n), [10.0, 0.0, 20.0], &placed);
+        }
+        // One copy a tick, grey #C0C0C0, at most six alive; the unit standing still leaves them too.
+        assert!(actor.ghosts.iter().all(|ghost| ghost.kind == GhostKind::Shadow && ghost.tint == [192; 3]));
+        assert_eq!(actor.ghosts.len(), 6);
+        // 5 units straight behind: facing south (0) the copy is north (0, +5); facing east (6) it is west (−5, 0).
+        assert_eq!(actor.ghosts[0].feet, [10.0, 0.0, 25.0]);
+        let mut east = Actor::new("Ninja".into(), None, [0, 0], 6, 150);
+        east.shadow(true);
+        east.step_blur(tick(0), || false);
+        east.step_blur(tick(1), || false);
+        east.leave_ghost(tick(1), [10.0, 0.0, 20.0], &placed);
+        assert!((east.ghosts[0].feet[0] - 5.0).abs() < 1e-4 && (east.ghosts[0].feet[2] - 20.0).abs() < 1e-4);
+        // Off: no more copies.
+        actor.shadow(false);
+        actor.step_blur(tick(11), || false);
+        assert!(!actor.shadow_due);
+    }
+
+    #[test]
+    fn blurs_tint_the_unit_and_copy_it_while_it_moves() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        // A copy is drawn 172, 164 … 4 (22 draws) and gone on the 23rd.
+        let alpha = |ticks: u64| ghost_alpha(Duration::from_millis(16 * ticks + 8)) * 255.0;
+        assert_eq!([alpha(0), alpha(1), alpha(21), alpha(22)], [172.0, 164.0, 4.0, 0.0]);
+        // The colours by status.
+        assert_eq!(
+            [2, 161, 68, 25, 188, 31, 7].map(blur_colour),
+            [[200, 200, 0], [200, 200, 0], [200, 200, 0], [250, 150, 150], [250, 150, 150], [180, 180, 250], [250, 250, 250]]
+        );
+        let mut actor = Actor::new("Knight".into(), None, [0, 0], 0, 150);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        // No status: white, no copies.
+        actor.step_blur(tick(0), || false);
+        actor.step_blur(tick(10), || false);
+        actor.leave_ghost(tick(10), [0.0; 3], &placed);
+        assert!(actor.ghosts.is_empty() && actor.body_tint().is_none());
+        // Two-Hand Quicken on and walking: yellow, a copy on its first tick (age 0), none to the 5th, then another.
+        actor.blur(2, true);
+        actor.walk_frames = 200;
+        actor.step_blur(tick(11), || false);
+        assert_eq!(actor.body_tint(), Some([200, 200, 0]));
+        actor.leave_ghost(tick(11), [1.0; 3], &placed);
+        actor.step_blur(tick(15), || false);
+        actor.leave_ghost(tick(15), [2.0; 3], &placed);
+        actor.step_blur(tick(16), || false);
+        actor.leave_ghost(tick(16), [3.0; 3], &placed);
+        assert_eq!(actor.ghosts.iter().map(|ghost| ghost.feet[0]).collect::<Vec<_>>(), [1.0, 3.0]);
+        assert_eq!(actor.ghosts[0].tint, [200, 200, 0]);
+        // Standing: the tick that is due leaves nothing.
+        actor.walk_frames = 0;
+        actor.step_blur(tick(21), || false);
+        actor.leave_ghost(tick(21), [4.0; 3], &placed);
+        assert_eq!(actor.ghosts.len(), 2);
+        // Off: the colour drifts back 8 a channel a tick (the blue needs 32).
+        actor.blur(2, false);
+        actor.step_blur(tick(22), || false);
+        assert_eq!(actor.body_tint(), Some([208, 208, 8]));
+        actor.step_blur(tick(22 + 31), || false);
+        assert_eq!(actor.body_tint(), None);
+        // Explosion Spirits flickers 250 / 200 and leaves no copies; Snap blurs for 100 ticks.
+        actor.blur(86, true);
+        actor.walk_frames = 200;
+        actor.step_blur(tick(54), || true);
+        assert_eq!(actor.body_tint(), Some([250, 250, 250]));
+        actor.blur_due = false;
+        actor.step_blur(tick(55), || false);
+        assert_eq!((actor.body_tint(), actor.blur_due), (Some([250, 200, 200]), false), "no copies");
+        let mut quiet = Actor::new("Priest".into(), None, [0, 0], 0, 150);
+        quiet.walk_frames = 200;
+        quiet.step_blur(tick(0), || false);
+        quiet.snap();
+        quiet.step_blur(tick(1), || false);
+        assert_eq!(quiet.blur_colour, [250, 250, 250]);
+        assert!(quiet.blur_due);
+        quiet.step_blur(tick(101), || false);
+        assert_eq!(quiet.snap_left, 0);
+        quiet.step_blur(tick(102), || false);
+        assert_eq!(quiet.blur_colour, [255, 255, 255]);
+        // Cursed Circle darkens the body over any other state.
+        actor.cursed = true;
+        assert_eq!(actor.body_tint(), Some(CURSED_TINT));
+    }
+
+    #[test]
+    fn glints_sit_higher_on_riders_and_lower_on_babies_and_dorams() {
+        // A Peco Knight 6, a mounted dragon rider 6, the few at 4; a baby 4 riding and −1 on foot; a Doram −3 riding and −2 on foot.
+        assert_eq!([13, 21, 4014, 4085, 4278].map(|job| glint_rise(true, job, 0)), [6.0; 5]);
+        assert_eq!([4036, 4044, 4109, 4112].map(|job| glint_rise(true, job, 0)), [4.0; 4]);
+        assert_eq!((glint_rise(true, 4023, RIDING), glint_rise(true, 4023, 0)), (4.0, -1.0));
+        assert_eq!((glint_rise(true, 4218, RIDING), glint_rise(true, 4218, 0)), (-3.0, -2.0));
+        // Any other player: 6 riding, 0 on foot; monsters and NPCs 0.
+        assert_eq!((glint_rise(true, 7, RIDING), glint_rise(true, 7, 0), glint_rise(true, 1, 0)), (6.0, 0.0, 0.0));
+        assert_eq!((glint_rise(false, 13, RIDING), glint_rise(false, 4023, 0)), (0.0, 0.0));
+    }
+
+    #[test]
+    fn assumptio_gives_a_monster_one_copy_and_magic_power_only_flickers() {
+        // The player's two copies, a monster's one grown 6.5 · (400/D) at breath angle 90.
+        let (_, player) = glow_copies(GLOW_OUTLINE, None, PartGroup::Body, 90.0, 0.0, 2.0, true);
+        assert_eq!(player.len(), 2);
+        let (_, monster) = glow_copies(GLOW_OUTLINE, None, PartGroup::Body, 90.0, 0.0, 2.0, false);
+        assert_eq!(monster.len(), 1);
+        assert!(monster[0].additive && monster[0].color == [1.0; 4] && (monster[0].grow - 6.5 * 2.0).abs() < 1e-4);
+        // Magic Power has the flicker flag alone and no colour.
+        assert_eq!(status_body(382), Some((GLOW_FLICKER, None)));
+        assert_eq!(GLOW_FLICKER, 0x4);
+        let (part, copies) = glow_copies(GLOW_FLICKER, None, PartGroup::Weapon, 0.0, 0.0, 1.0, true);
+        assert!(!part.additive && copies.is_empty());
+        // The toggle starts off and a copy shows when it was off: copy, none, copy.
+        let toggle = Cell::new(false);
+        let drawn = || {
+            let was = toggle.get();
+            toggle.set(!was);
+            !was
+        };
+        assert_eq!([drawn(), drawn(), drawn()], [true, false, true]);
+    }
+
+    #[test]
+    fn the_swing_runs_the_head_and_gear_round_circles_and_hovering_glows_blue() {
+        let head = |n: u32| swing_offset(n, 40.0, [0.0; 2]);
+        let gear = |n: u32| swing_offset(n, 10.0, [0.0; 2]);
+        let ages = [0, 6, 9, 12, 15, 18, 21, 24, 27, 30, 35];
+        assert_eq!(
+            ages.map(head),
+            [
+                [0.0, 0.0],
+                [16.0, 3.0],
+                [31.0, 15.0],
+                [40.0, 40.0],
+                [29.0, 67.0],
+                [0.0, 80.0],
+                [-28.0, 67.0],
+                [-40.0, 40.0],
+                [-31.0, 15.0],
+                [-16.0, 3.0],
+                [0.0, 0.0]
+            ]
+        );
+        assert_eq!(
+            ages.map(gear),
+            [[0.0, 0.0], [4.0, 0.0], [7.0, 3.0], [10.0, 10.0], [7.0, 16.0], [0.0, 20.0], [-7.0, 16.0], [-10.0, 10.0], [-7.0, 3.0], [-4.0, 0.0], [0.0, 0.0]]
+        );
+        // With another anchor the sum is cut: 5.5 + 16.27 is 21.
+        assert_eq!(swing_offset(6, 40.0, [5.5, 2.5])[0], 21.0);
+        // The blue copies' alpha at t = 0, 5, 10, 11, 20, 21, 25, 26, 150, 151, 154, 155, 164, 165, 175, 176, 200.
+        let ticks = [0, 5, 10, 11, 20, 21, 25, 26, 150, 151, 154, 155, 164, 165, 175, 176, 200];
+        assert_eq!(ticks.map(blue_alpha), [0.0, 75.0, 150.0, 160.0, 160.0, 150.0, 130.0, 130.0, 130.0, 135.0, 150.0, 160.0, 160.0, 150.0, 0.0, 0.0, 0.0]);
+        // Two added-on copies of every part, in #0505FF, at the alpha in the flags' upper half.
+        let (_, copies) = glow_copies(GLOW_BLUE | 160 << 24, None, PartGroup::Gear, 0.0, 0.0, 1.0, true);
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().all(|copy| copy.additive && copy.color == [5.0 / 255.0, 5.0 / 255.0, 1.0, 160.0 / 255.0] && copy.grow == 0.0));
+    }
+
+    #[test]
+    fn warg_dash_tints_and_leaves_a_copy_every_10_ticks_even_standing() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        assert_eq!(blur_colour(358), [225, 225, 255]);
+        let mut actor = Actor::new("Ranger".into(), None, [0, 0], 0, 150);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        actor.step_blur(tick(0), || false);
+        actor.blur(358, true);
+        // Standing still: a copy on ages 0, 10 and 20 only, in #E1E1FF.
+        for age in 1..=22u64 {
+            actor.step_blur(tick(age), || false);
+            actor.leave_ghost(tick(age), [age as f32; 3], &placed);
+        }
+        let feet: Vec<f32> = actor.ghosts.iter().map(|ghost| ghost.feet[0]).collect();
+        assert_eq!(feet, [1.0, 11.0, 21.0]);
+        assert!(actor.ghosts.iter().all(|ghost| ghost.tint == [225, 225, 255]));
+        assert_eq!(actor.body_tint(), Some([225, 225, 255]));
+        // Off: the colour goes back to white by 8 a channel a tick.
+        actor.blur(358, false);
+        actor.step_blur(tick(23), || false);
+        assert_eq!(actor.body_tint(), Some([233, 233, 255]));
+    }
+
+    #[test]
+    fn striking_leaves_a_white_copy_every_five_ticks_whatever_the_player_does() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        // Alpha 239, 223 … 15 on ticks 0, 1 … 14, gone on the 15th.
+        let alpha = |ticks: u64| strike_alpha(Duration::from_millis(16 * ticks + 8)) * 255.0;
+        assert_eq!([alpha(0), alpha(1), alpha(14), alpha(15)], [239.0, 223.0, 15.0, 0.0]);
+        let mut actor = Actor::new("Sorcerer".into(), None, [0, 0], 0, 150);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        actor.step_blur(tick(0), || false);
+        // Standing still: a copy at ages 0, 5, 10.
+        actor.strike(true);
+        for (at, due) in [(1, true), (2, false), (5, false), (6, true), (11, true)] {
+            actor.step_blur(tick(at), || false);
+            assert_eq!(actor.strike_due, due, "tick {at}");
+            actor.leave_ghost(tick(at), [at as f32; 3], &placed);
+        }
+        assert_eq!(actor.ghosts.iter().map(|ghost| ghost.feet[0]).collect::<Vec<_>>(), [1.0, 6.0, 11.0]);
+        assert!(actor.ghosts.iter().all(|ghost| ghost.kind == GhostKind::Striking && ghost.tint == [255; 3]));
+        // The status coming on again starts over: one effect, age 0, a copy due.
+        actor.strike(true);
+        actor.strike(true);
+        actor.step_blur(tick(12), || false);
+        assert!(actor.strike_due && actor.strike_age == 1);
+        // The copies fade out: 239 at once, gone on the 15th tick.
+        assert!((actor.ghosts[0].alpha(tick(1)) * 255.0 - 239.0).abs() < 0.01);
+        actor.leave_ghost(tick(11 + 15), [9.0; 3], &placed);
+        assert!(actor.ghosts.iter().all(|ghost| ghost.feet[0] != 1.0), "the oldest is gone");
+        // Off: no more copies, and the colour goes.
+        actor.strike(false);
+        actor.step_blur(tick(40), || false);
+        assert!(!actor.strike_due && actor.strike_colour(Some([100, 0, 50])).is_none());
+        // An override gives the unit and its copies c = (o + 250) / 2 a channel; none without one.
+        actor.strike(true);
+        assert_eq!(actor.strike_colour(Some([100, 0, 50])), Some([175, 125, 150]));
+        assert_eq!(actor.strike_colour(None), None);
+        actor.strike_colour(Some([100, 0, 50]));
+        actor.step_blur(tick(41), || false);
+        actor.leave_ghost(tick(41), [5.0; 3], &placed);
+        assert_eq!(actor.ghosts.last().unwrap().tint, [175, 125, 150]);
+        // Make Blur's own copies keep their numbers.
+        assert!(!Ghost { left: start, feet: [0.0; 3], placed: Vec::new(), tint: [255; 3], kind: GhostKind::Blur, launched: false }.alpha(tick(0)).is_nan());
+        assert_eq!(STRIKING, 925);
+    }
+
+    #[test]
+    fn escape_tints_the_unit_and_leaves_four_copies_closing_on_it() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        // A copy's alpha at n = 107, 108, 111, 112, 192, 193: 180, 172, 172, 164, 4, gone.
+        assert_eq!([107, 108, 111, 112, 192, 193].map(escape_alpha), [180.0, 172.0, 172.0, 164.0, 4.0, 0.0]);
+        let mut actor = Actor::new("Shadow Chaser".into(), None, [0, 0], 0, 150);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        actor.step_blur(tick(0), || false);
+        actor.leave_ghost(tick(0), [16.0, 0.0, 0.0], &placed);
+        actor.escape();
+        actor.escape();
+        // The source stands at 16 from the aim (the first copy is at the use's place); the aim halves the distance each tick.
+        let mut copies = Vec::new();
+        for t in 1..=24 {
+            actor.last_feet = Some([0.0; 3]);
+            actor.step_blur(tick(t), || false);
+            let before = actor.ghosts.len();
+            actor.leave_ghost(tick(t), [0.0; 3], &placed);
+            if actor.ghosts.len() > before {
+                copies.push(t);
+            }
+            if t == 1 {
+                assert_eq!(actor.body_tint(), Some([200, 200, 0]));
+            }
+        }
+        // Copies on e = 0, 5, 10, 15 only (one escape, though used twice).
+        assert_eq!(copies, [1, 6, 11, 16]);
+        let at: Vec<f32> = actor.ghosts.iter().map(|ghost| ghost.feet[0]).collect();
+        assert_eq!(at[0], 16.0, "the first is at the aim's start");
+        assert!((at[1] - 16.0 / 32.0).abs() < 1e-3, "after five halvings: 0.5, then 0.0156 …");
+        assert!(at.iter().all(|value| value.is_finite()));
+        assert!(actor.ghosts.iter().all(|ghost| ghost.kind == GhostKind::Escape && ghost.tint == [200, 200, 0]));
+        // The tint stays through e = 19 and climbs back 8 a channel a tick, the blue from 0: white 32 ticks on.
+        actor.step_blur(tick(26), || false);
+        assert!(actor.body_tint().is_some());
+        actor.step_blur(tick(26 + 31), || false);
+        assert_eq!(actor.body_tint(), None);
+        // Effect 793 starts on a copy at its n = 110.
+        let mut late = Actor::new("Shadow Chaser".into(), None, [0, 0], 0, 150);
+        late.step_blur(tick(0), || false);
+        late.leave_ghost(tick(0), [5.0; 3], &placed);
+        late.escape();
+        late.step_blur(tick(1), || false);
+        late.leave_ghost(tick(1), [5.0; 3], &placed);
+        assert!(late.ghosts.len() == 1 && late.take_launches().is_empty());
+        late.leave_ghost(tick(1 + 108), [5.0; 3], &placed);
+        assert!(late.take_launches().is_empty(), "n = 109");
+        late.leave_ghost(tick(1 + 109), [5.0; 3], &placed);
+        assert_eq!(late.take_launches(), [(ESCAPE_AFTER, [5.0; 3])]);
+        late.leave_ghost(tick(1 + 120), [5.0; 3], &placed);
+        assert!(late.take_launches().is_empty(), "only once");
+        // Gone from n = 193.
+        late.leave_ghost(tick(1 + 192), [5.0; 3], &placed);
+        assert!(late.ghosts.is_empty());
+    }
+
+    #[test]
+    fn a_white_flash_adds_one_white_copy_of_every_part() {
+        let (_, copies) = glow_copies(GLOW_WHITE | 250 << PARAM_SHIFT, None, PartGroup::Body, 0.0, 0.0, 1.0, true);
+        assert_eq!(copies.len(), 1);
+        assert!(copies[0].additive && copies[0].color == [1.0, 1.0, 1.0, 250.0 / 255.0] && copies[0].grow == 0.0);
+        let (_, none) = glow_copies(0, None, PartGroup::Gear, 0.0, 0.0, 1.0, true);
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn soul_link_and_spirit_link_add_copies_to_players_and_monsters() {
+        // Soul Link: two blue copies of a player's part, scaled 1.01 and 1.02, alpha from the flags; none on a monster, none while landing.
+        let flags = GLOW_SOUL | 120 << PARAM_SHIFT;
+        let (_, copies) = glow_copies(flags, None, PartGroup::Body, 0.0, 0.0, 1.0, true);
+        assert_eq!(copies.len(), 2);
+        assert!(copies.iter().all(|copy| copy.additive && copy.color == [55.0 / 255.0, 55.0 / 255.0, 1.0, 120.0 / 255.0]));
+        assert_eq!((copies[0].scale, copies[1].scale), (1.01, 1.02));
+        assert!(glow_copies(flags, None, PartGroup::Body, 0.0, 0.0, 1.0, false).1.is_empty());
+        assert!(glow_copies(flags | GLOW_DROP, None, PartGroup::Body, 0.0, 0.0, 1.0, true).1.is_empty());
+        // Spirit Link: ten white copies grown 3i px; ring 1's alpha at e = 5, 80, 81, 149 is 0, 75, 104, 36; rings 1 to 5 at 149: 36, 26, 16, 6, 0.
+        let stack = |f: u32| glow_copies(GLOW_STACK | f << PARAM_SHIFT, None, PartGroup::Body, 0.0, 0.0, 2.0, false).1;
+        assert_eq!(stack(100).len(), 10);
+        assert_eq!(stack(100)[2].grow, 3.0 * 3.0 * 2.0);
+        let alpha = |copies: &[GlowCopy], ring: usize| (copies[ring].color[3] * 255.0).round();
+        assert_eq!([55, 130, 131, 199].map(|f| alpha(&stack(f), 0)), [0.0, 75.0, 104.0, 36.0]);
+        assert_eq!([0, 1, 2, 3, 4].map(|ring| alpha(&stack(199), ring)), [36.0, 26.0, 16.0, 6.0, 0.0]);
+        assert!(glow_copies(GLOW_STACK | 100 << PARAM_SHIFT, None, PartGroup::Body, 0.0, 0.0, 1.0, true).1.is_empty());
+    }
+
+    #[test]
+    fn cloud_kills_poison_greys_the_unit_while_a_copy_runs() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        let mut actor = Actor::new("Royal Guard".into(), None, [0, 0], 0, 150);
+        actor.step_blur(tick(0), || false);
+        // One copy: #696969, no body flags.
+        actor.cloud_poison(true, false);
+        actor.step_blur(tick(1), || false);
+        assert_eq!((actor.body_tint(), actor.glow_flags().0), (Some([105; 3]), 0));
+        // Two on packets, one off: still grey; the second off ends it.
+        actor.cloud_poison(true, false);
+        actor.cloud_poison(false, false);
+        actor.step_blur(tick(2), || false);
+        assert_eq!(actor.body_tint(), Some([105; 3]));
+        actor.cloud_poison(false, false);
+        // Back to white by 8 a channel a tick: 113, 249, 255 at 1, 18 and 19 ticks.
+        let mut after = Vec::new();
+        for t in 1..=19 {
+            actor.step_blur(tick(2 + t), || false);
+            after.push(actor.body_tint().map_or(255, |tint| tint[0]));
+        }
+        assert_eq!([after[0], after[17], after[18]], [113, 249, 255]);
+        // An off with no copy does nothing.
+        actor.cloud_poison(false, false);
+        assert!(actor.clouds.is_empty());
+        // The replay after a map load starts none while one runs, one when none does.
+        actor.cloud_poison(true, true);
+        actor.cloud_poison(true, true);
+        assert_eq!(actor.clouds.len(), 1);
+        // A copy runs out after 99 999 ticks.
+        actor.step_blur(tick(30), || false);
+        actor.clouds[0] = CLOUD_TICKS - 1;
+        actor.step_blur(tick(31), || false);
+        assert!(actor.clouds.is_empty());
+    }
+
+    #[test]
+    fn hallucination_walk_tints_near_white_and_leaves_copies_every_20_ticks() {
+        let start = Instant::now();
+        let tick = |ticks: u64| start + Duration::from_millis(16 * ticks);
+        let mut actor = Actor::new("Guillotine Cross".into(), None, [0, 0], 0, 150);
+        let placed: Vec<Placed> = vec![((0, 0, 0, [255; 4], 0), [0.0; 2], [1.0; 2], 0.0)];
+        actor.step_blur(tick(0), || false);
+        actor.hallucination(true);
+        // Copies on e = 0, 20, 40 and none on 1 … 19.
+        let mut copies = Vec::new();
+        for t in 1..=45 {
+            actor.step_blur(tick(t), || false);
+            let before = actor.ghosts.len();
+            actor.leave_ghost(tick(t), [0.0; 3], &placed);
+            if actor.ghosts.len() > before {
+                copies.push(t - 1);
+            }
+            assert_eq!(actor.body_tint(), Some(HALLU_TINT), "tick {t}");
+        }
+        assert_eq!(copies, [0, 20, 40]);
+        // The copy's alpha at n = 107, 108, 111, 112, 192, 193 (180, 172, 172, 164, 4, gone).
+        assert_eq!([107, 108, 111, 112, 192, 193].map(escape_alpha), [180.0, 172.0, 172.0, 164.0, 4.0, 0.0]);
+        // 793 started at n = 110.
+        let mut walker = Actor::new("Guillotine Cross".into(), None, [0, 0], 0, 150);
+        walker.step_blur(tick(0), || false);
+        walker.hallucination(true);
+        walker.step_blur(tick(1), || false);
+        walker.leave_ghost(tick(1), [5.0; 3], &placed);
+        assert_eq!(walker.ghosts.len(), 1);
+        walker.leave_ghost(tick(1 + 108), [5.0; 3], &placed);
+        assert!(walker.take_launches().is_empty(), "n = 109");
+        walker.leave_ghost(tick(1 + 109), [5.0; 3], &placed);
+        assert_eq!(walker.take_launches(), [(793, [5.0; 3])]);
+        // Status off removes it; copies outlive the effect.
+        walker.hallucination(false);
+        assert_eq!(walker.ghosts.len(), 1);
+        // Drifting back to white by 8 per channel a tick after it is removed.
+        walker.step_blur(tick(1 + 110), || false);
+        assert_eq!(walker.body_tint(), None);
+        // A second status packet starts one 792 only.
+        let mut second = Actor::new("Guillotine Cross".into(), None, [0, 0], 0, 150);
+        second.step_blur(tick(0), || false);
+        second.hallucination(true);
+        second.hallucination(true);
+        second.step_blur(tick(1), || false);
+        assert!(second.hallu_due && second.hallu_age == 1);
+    }
+
+    #[test]
+    fn damage_numbers_shorten_as_the_games_extended_ones() {
+        let glyphs = |number, extended| number_glyphs(number, extended);
+        assert_eq!(glyphs(999_999, true), [9, 9, 9, 9, 9, 9]);
+        // A million and up: thousands then K (glyph 10); a hundred million and up: millions then M (11).
+        assert_eq!(glyphs(1_234_567, true), [1, 2, 3, 4, 10]);
+        assert_eq!(glyphs(99_999_999, true), [9, 9, 9, 9, 9, 10]);
+        assert_eq!(glyphs(123_456_789, true), [1, 2, 3, 11]);
+        // Without them, numbers stop at 999,999.
+        assert_eq!(glyphs(1_234_567, false), [9, 9, 9, 9, 9, 9]);
+        assert_eq!(glyphs(42, false), [4, 2]);
+    }
+}

@@ -1,0 +1,81 @@
+// MYgene Slayer encounter: Orange Rideword
+-	script	MYgene_Orange_Rideword	-1,{
+OnInit:
+    .MapCount = 0;
+    end;
+
+OnNPCKillEvent:
+    if (killedrid == 31054) {
+        callsub S_Rewards;
+        end;
+    }
+    if (killedrid != 1195 && killedrid != 1698)
+        end;
+    .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        end;
+
+    .@slot = -1;
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .@slot = .@i;
+            break;
+        }
+    }
+    if (.@slot < 0) {
+        .@slot = .MapCount;
+        .MapCount++;
+        .MapName$[.@slot] = .@map$;
+        .KillCount[.@slot] = 0;
+        .EncounterActive[.@slot] = 0;
+    }
+    if (.EncounterActive[.@slot]) {
+        if (mobcount(.@map$,"MYgene_Orange_Rideword::OnEncounterDead") > 0)
+            end;
+        .EncounterActive[.@slot] = 0;
+        .KillCount[.@slot] = 0;
+    }
+    .KillCount[.@slot]++;
+    if (.KillCount[.@slot] < 30)
+        end;
+
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@mob_data;
+        .@death_map$ = mapid2name(.@mob_data[UMOB_MAPID]);
+        if (.@death_map$ == .@map$ && .@mob_data[UMOB_X] > 0 && .@mob_data[UMOB_Y] > 0) {
+            .@x = .@mob_data[UMOB_X];
+            .@y = .@mob_data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        end;
+
+    .KillCount[.@slot] = 0;
+    .EncounterActive[.@slot] = 1;
+    monster .@map$,.@x,.@y,"Orange Rideword",31054,1,"MYgene_Orange_Rideword::OnEncounterDead";
+    if (mobcount(.@map$,"MYgene_Orange_Rideword::OnEncounterDead") < 1) {
+        .EncounterActive[.@slot] = 0;
+        .KillCount[.@slot] = 29;
+        end;
+    }
+    mapannounce .@map$,"A Orange Rideword has appeared!",bc_map,0xFF8800;
+    end;
+
+OnEncounterDead:
+    .@map$ = strcharinfo(3);
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .EncounterActive[.@i] = 0;
+            .KillCount[.@i] = 1; // Encounter kill credits the next cycle once.
+            break;
+        }
+    }
+    callsub S_Rewards;
+    end;
+
+S_Rewards:
+    callfunc "F_MYgeneExclusiveRoll",60016,60017;
+    return;
+}

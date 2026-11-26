@@ -1,0 +1,378 @@
+// MYGENE_PUBLIC_RC1
+// Public Novice Tower onboarding.
+
+function	script	MYgene_NT_PublicInside	{
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0 ||
+        .@id != @MYGENE_NT_TIME_INSTANCE)
+        return 0;
+
+    if (strcharinfo(3) != instance_mapname("1@tower",.@id))
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_NT_PublicEligible	{
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        getcharid(1) != 0 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED < 0 ||
+        MYGENE_NT_DEV_CLEARED >= 5 ||
+        MYGENE_NT_DEV_GRAD_DONE)
+        return 0;
+
+    return 1;
+}
+
+// Preserve Zeny protection for previously
+// rewarded floors on this character.
+
+function	script	MYgene_NT_AccountSync	{
+
+    if (MYGENE_NT_F1_REWARDED)
+        #MYGENE_NT_ZENY_F1 = 1;
+
+    if (MYGENE_NT_F2_REWARDED)
+        #MYGENE_NT_ZENY_F2 = 1;
+
+    if (MYGENE_NT_F3_REWARDED)
+        #MYGENE_NT_ZENY_F3 = 1;
+
+    if (MYGENE_NT_F4_REWARDED)
+        #MYGENE_NT_ZENY_F4 = 1;
+
+    return;
+}
+
+function	script	MYgene_NT_QueueEntry	{
+
+    if (!callfunc("MYgene_NT_PublicEligible")) {
+        dispbottom "Tower entry unavailable. You must be a living solo Novice.";
+        return;
+    }
+
+    if (callfunc("MYgene_NT_PublicInside"))
+        return;
+
+    deltimer "MYgene_NT_PublicEntry::OnEnter";
+
+    @MYGENE_NT_ENTRY_TRIES = 0;
+
+    if (instance_id(IM_CHAR) <= 0) {
+
+        .@id = instance_create("MYgene Novice Tower",IM_CHAR);
+
+        if (.@id <= 0) {
+            dispbottom "Could not create your Tower. Speak to the Herald to retry.";
+            return;
+        }
+    }
+
+    dispbottom "Preparing your private Novice Tower...";
+
+    addtimer 1000,"MYgene_NT_PublicEntry::OnEnter";
+
+    return;
+}
+
+function	script	MYgene_NT_Welcome	{
+
+    if (Class != Job_Novice ||
+        #MYGENE_NT_INTRODUCED ||
+        MYGENE_NT_DEV_ROUTE != 0)
+        return;
+
+    mes "[MYgene Guide]";
+    mes "Welcome, young adventurer!";
+    mes "Choose the beginning of your adventure.";
+    next;
+
+    mes "[Tower Path]";
+    mes "Recommended for beginners.";
+    mes "Learn through five training floors.";
+    mes "Meet six first-job mentors.";
+    mes "Choose your job and graduate.";
+    next;
+
+    mes "[Vanilla Path]";
+    mes "Enjoy classic Ragnarok progression.";
+    mes "Explore the world at your own pace.";
+    next;
+
+    .@choice = select(
+        "Tower Path - Recommended:Vanilla Path:Decide later"
+    );
+
+    if (.@choice == 3)
+        close;
+
+    if (.@choice == 2) {
+
+        MYGENE_NT_DEV_ROUTE = 1;
+        #MYGENE_NT_INTRODUCED = 1;
+
+        mes "[MYgene Guide]";
+        mes "Your classic adventure begins!";
+        mes "Optional training is available";
+        mes "at the Novice Tower Herald.";
+
+        close;
+    }
+
+    MYGENE_NT_DEV_ROUTE = 2;
+    #MYGENE_NT_INTRODUCED = 1;
+
+    mes "[MYgene Guide]";
+    mes "Your private Tower awaits.";
+    mes "You can leave and resume later.";
+    mes "Completed floors are saved.";
+
+    close2;
+
+    callfunc "MYgene_NT_QueueEntry";
+
+    end;
+}
+
+prontera,158,176,5	script	Novice Tower Herald	4_M_01,{
+
+    callfunc "MYgene_NT_AccountSync";
+
+    if (Class != Job_Novice) {
+
+        if (MYGENE_NT_DEV_GRAD_PENDING > 0)
+            callfunc "MYgene_NT_Grad_Finalize";
+
+        mes "[Novice Tower Herald]";
+
+        if (MYGENE_NT_DEV_GRAD_DONE) {
+            callfunc "MYgene_NT_AwardTitle";
+            mes "Welcome back, Conqueror!";
+            mes "Your graduation is complete.";
+        } else {
+            mes "The Tower is designed for Novices.";
+        }
+
+        close;
+    }
+
+    mes "[Novice Tower Herald]";
+    mes "Welcome to the Novice Tower.";
+
+    if (MYGENE_NT_DEV_ROUTE == 2) {
+
+        mes "Floors cleared: "+MYGENE_NT_DEV_CLEARED+"/5.";
+
+        if (MYGENE_NT_DEV_CLEARED >= 5)
+            close;
+    }
+
+    mes "Your completed training is saved.";
+    next;
+
+    if (getgmlevel() >= 99) {
+        .@choice = select(
+            "Enter or resume Tower:Free stat reset:Close:GM testing"
+        );
+    } else {
+        .@choice = select(
+            "Enter or resume Tower:Free stat reset:Close"
+        );
+    }
+
+    if (.@choice == 3)
+        close;
+
+    if (.@choice == 4 && getgmlevel() >= 99)
+        goto L_GM;
+
+    if (.@choice == 2) {
+
+        if (!MYGENE_NT_F1_REWARDED ||
+            MYGENE_NT_DEV_CLEARED < 1 ||
+            MYGENE_NT_F1_RESET_USED) {
+
+            mes "Your free reset is unavailable.";
+            close;
+        }
+
+        mes "Reset your Novice attributes?";
+        mes "This reward can only be used once.";
+        next;
+
+        if (select("Reset attributes:Cancel") != 1)
+            close;
+
+        if (Class != Job_Novice ||
+            MYGENE_NT_F1_RESET_USED)
+            close;
+
+        resetstatus;
+
+        MYGENE_NT_F1_RESET_USED = 1;
+
+        mes "Your attributes have been reset.";
+        close;
+    }
+
+    if (getcharid(1) != 0) {
+
+        mes "The Tower is a solo adventure.";
+        mes "Please leave your party first.";
+        close;
+    }
+
+    if (MYGENE_NT_DEV_ROUTE != 2) {
+
+        mes "Begin the Tower Path?";
+        next;
+
+        if (select("Enter Tower:Cancel") != 1)
+            close;
+
+        MYGENE_NT_DEV_ROUTE = 2;
+    }
+
+    #MYGENE_NT_INTRODUCED = 1;
+
+    close2;
+
+    callfunc "MYgene_NT_QueueEntry";
+
+    end;
+
+L_GM:
+
+    if (getgmlevel() < 99)
+        close;
+
+    mes "[GM Development]";
+    mes "Testing shortcuts.";
+    next;
+
+    .@gm = select(
+        "Simulate next checkpoint:Reset test progress:Close"
+    );
+
+    if (.@gm == 1 &&
+        MYGENE_NT_DEV_CLEARED < 5) {
+
+        MYGENE_NT_DEV_ROUTE = 2;
+        MYGENE_NT_DEV_CLEARED++;
+
+        mes "Test checkpoint updated.";
+    }
+
+    if (.@gm == 2) {
+
+        MYGENE_NT_DEV_ROUTE = 0;
+        MYGENE_NT_DEV_CLEARED = 0;
+        MYGENE_NT_F1_PASSED = 0;
+
+        mes "Test checkpoint reset.";
+        mes "Existing reward flags are preserved.";
+    }
+
+    close;
+}
+
+-	script	MYgene_NT_PublicEntry	-1,{
+
+OnInit:
+
+    bindatcmd "towerleave",
+        "MYgene_NT_PublicEntry::OnLeave",0,99;
+
+    end;
+
+OnPCLoginEvent:
+
+    callfunc "MYgene_NT_AccountSync";
+
+    if (Class != Job_Novice ||
+        MYGENE_NT_DEV_ROUTE != 0) {
+
+        #MYGENE_NT_INTRODUCED = 1;
+        end;
+    }
+
+    if (#MYGENE_NT_INTRODUCED) {
+
+        MYGENE_NT_DEV_ROUTE = 1;
+        end;
+    }
+
+    addtimer 2500,"MYgene_NT_PublicEntry::OnWelcome";
+
+    end;
+
+OnWelcome:
+
+    if (!playerattached() ||
+        Class != Job_Novice ||
+        #MYGENE_NT_INTRODUCED ||
+        MYGENE_NT_DEV_ROUTE != 0)
+        end;
+
+    callfunc "MYgene_NT_Welcome";
+
+    end;
+
+OnEnter:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_PublicEligible"))
+        end;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0) {
+        dispbottom "Tower unavailable. Return to the Herald.";
+        end;
+    }
+
+    .@map$ = instance_mapname("1@tower",.@id);
+
+    if (.@map$ == "" || .@map$ == "1@tower") {
+
+        @MYGENE_NT_ENTRY_TRIES++;
+
+        if (@MYGENE_NT_ENTRY_TRIES >= 30) {
+            dispbottom "Tower is not ready. Speak to the Herald again.";
+            end;
+        }
+
+        addtimer 1000,"MYgene_NT_PublicEntry::OnEnter";
+        end;
+    }
+
+    callfunc "MYgene_Tower_Private";
+
+    end;
+
+OnLeave:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_TimeValid"))
+        end;
+
+    if (@MYGENE_NT_TIME_PHASE != 0) {
+        dispbottom "Respond to the Guardian of Time first.";
+        end;
+    }
+
+    callfunc "MYgene_NT_TimePause";
+
+    mygenetimevanish;
+
+    dispbottom "Your completed Tower floors are saved.";
+
+    warp "prontera",158,176;
+
+    end;
+}

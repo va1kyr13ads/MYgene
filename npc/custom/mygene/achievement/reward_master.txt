@@ -1,0 +1,125 @@
+prontera,170,176,4	script	MYgene Achievement Master	4_M_01,{
+
+    mes "[MYgene Achievement Master]";
+    mes "Welcome, adventurer!";
+    mes "Your MAT balance: " + #MYG_ACH_MAT;
+    next;
+
+    switch(select("Claim Achievement Rewards:Achievement Reward Shop:About MAT:Leave")) {
+
+    case 1:
+
+        mes "[Achievement Rewards]";
+
+        if (!achievementexists(900001)) {
+            mes "Complete the Novice Tower first.";
+            close;
+        }
+
+        if (#MYG_ACH_TOWER) {
+            mes "Your account has already claimed this reward.";
+            close;
+        }
+
+        mes "Novice Tower Conqueror";
+        mes "10,000 Zeny";
+        mes "50 Red Potions";
+        mes "20 Fly Wings";
+        mes "5 Achievement Tokens";
+        next;
+
+        if (select("Claim Reward:Cancel") == 2)
+            close;
+
+        setarray .@items[0],501,601;
+        setarray .@amounts[0],50,20;
+
+        if (!checkweight2(.@items,.@amounts)) {
+            mes "Please free some inventory space.";
+            close;
+        }
+
+        if (Zeny > 999990000) {
+            mes "Please reduce your Zeny balance first.";
+            close;
+        }
+
+        if (#MYG_ACH_TOWER)
+            close;
+
+        #MYG_ACH_TOWER = 1;
+
+        Zeny += 10000;
+        getitem 501,50;
+        getitem 601,20;
+        #MYG_ACH_MAT += 5;
+
+        mes "[Achievement Rewards]";
+        mes "Reward claimed successfully!";
+        mes "MAT balance: " + #MYG_ACH_MAT;
+        close;
+
+    case 2:
+
+        mes "[Achievement Reward Shop]";
+        mes "Available MAT: " + #MYG_ACH_MAT;
+        next;
+
+        .@choice = select(
+            "50 White Potions - 5 MAT",
+            "50 Fly Wings - 5 MAT",
+            "5 Butterfly Wings - 5 MAT",
+            "Old Blue Box - 15 MAT",
+            "Old Purple Box - 30 MAT",
+            "Cancel"
+        ) - 1;
+
+        if (.@choice == 5)
+            close;
+
+        setarray .@ids[0],504,601,602,603,617;
+        setarray .@qty[0],50,50,5,1,1;
+        setarray .@cost[0],5,5,5,15,30;
+
+        .@id = .@ids[.@choice];
+        .@amount = .@qty[.@choice];
+        .@price = .@cost[.@choice];
+
+        mes "[Achievement Reward Shop]";
+        mes "Exchange " + .@price + " MAT?";
+        mes getitemname(.@id) + " x " + .@amount;
+        next;
+
+        if (select("Confirm Exchange:Cancel") == 2)
+            close;
+
+        if (#MYG_ACH_MAT < .@price) {
+            mes "Not enough Achievement Tokens.";
+            close;
+        }
+
+        if (!checkweight(.@id,.@amount)) {
+            mes "Please free some inventory space.";
+            close;
+        }
+
+        #MYG_ACH_MAT -= .@price;
+        getitem .@id,.@amount;
+
+        mes "Exchange successful!";
+        mes "Remaining MAT: " + #MYG_ACH_MAT;
+        close;
+
+    case 3:
+
+        mes "[Achievement Tokens]";
+        mes "Earn MAT by completing MYgene achievements.";
+        mes "MAT belongs to your account.";
+        mes "It cannot be traded, dropped or sold.";
+        mes "Achievement rewards are claimable once per account.";
+        close;
+
+    default:
+        close;
+    }
+}

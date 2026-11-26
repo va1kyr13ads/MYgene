@@ -1,0 +1,5572 @@
+# Which effect files the client plays for effect, skill and item IDs:
+# str <effect id> <file under data\texture\effect\ without .str> <texture folder or -> <follows the unit 1/0> [random from to] [once]
+#   (once: plays once on a skill's ground unit or for a status, where the rest of the effect starts again until the unit or the status goes;
+#   hold: after the file's last key its last frame stays drawn until the effect's length, which may be longer than the file)
+# misc <ZC_NOTIFY_EFFECT type> <effect id>; skill <skill id> <when> <effect id>; item <item id> <effect id>
+# part <effect id> <2D|3D> <name=value;...>: a texture (or a sprite) moving from a start to an end over its duration
+# ring <effect id> <name=value;...>: a textured cylinder growing, turning and fading
+# spr <effect id> <sprite under data\sprite\이팩트\ without .spr> <follows the unit 1/0> <name=value;... or ->: a sprite's animation
+#   (delay=<ms>: starts that long after the effect does; drawn=<n>: shows for n ticks at most, though its frames go on; frameTicks=<n>;frameTicksRan=<m>: n + a random number below m ticks a frame, drawn at each start; sideAction=<action>: action 0, or this one on a draw of two; restart=true: starts again with its ground unit's effect)
+# func <effect id> quake <delay ms> <duration ms>: what the client does in code for the effect; quake shakes the camera
+# length <effect id> <ticks>: how long an effect lasts (16 ms ticks): an STR plays that long when shorter than its keys (a `hold` one, longer); on a ground unit it starts again 8 ticks before that (Quagmire's 95: 20)
+# unit <skill unit type> <effect id> [once]: what a skill's unit on the ground (ZC_SKILL_ENTRY, rathena's UNT_) shows while it's there (once: played once and kept, not started again)
+# unitw <skill unit type> <world id>: the STR world effect (world_str.txt) such a unit also starts once as it comes into sight, owned by the unit (it follows the unit's cell and ends with it)
+# wdelay <world id> <ms>: every launch of that STR world effect (world_str.txt) waits that long before its first step
+# unitr <skill unit type> <world id> <draw>: every tick such a unit stands in sight, one random whole number below 100 is drawn; when it equals draw, the unit starts that STR world effect, owned by the unit (it follows the cell and ends with its STR)
+# area <skill unit type> <effect id> <lift>: the effect plays on a grid of points round each such unit's cell (one point at range 0, 6 units apart), now and every length less 20 ticks while it stands; lift is how far below the ground its anchor goes
+# every <skill unit type> <effect id> <ticks>: launches the effect at such a unit's cell (no owner) as the unit comes into sight and again every that many ticks while it stands; the copies launched play out, and a unit that goes launches no more
+# keep <skill unit type> <effect id>: while such a unit is in sight, every tick the effect is launched on it (owned by the unit, at its cell, unique): a running copy is kept, otherwise a new one starts; the unit going takes its copies with it
+# rsm <skill unit type> <model under data\model\ without .rsm, or an .rsm2 with its extension>: the model standing on such a unit's cell (traps)
+# wav <effect id> <file under data\wav\ without .wav> <delay ms> [random from to]: a sound the effect plays
+# hit <skill> <hit effect 1> <hit effect 2>: what a damaging skill shows on its target at each hit (-1 none); skills not listed fall back to the skill lines
+# caster <skill> <effect>: what a damaging skill shows on its caster as the packet comes (-1 none); skills not listed show 16
+# cast <skill> <effect>: the aura a cast with a cast time glows in under its caster (12 by the cast's element, -1 none); skills not listed show 16 (Bash's burst)
+# struck <skill> <caster|target> <effect>: what else a damaging skill shows as the packet comes
+# used <skill> <caster|target> <effect>: what a skill without damage (ZC_USE_SKILL) shows
+# ground <skill> <ground|caster> <effect>: what a ground skill (ZC_NOTIFY_GROUNDSKILL) shows at its cell or on its caster
+# trap <skill unit type> <effect>: what a trap shows at its cell when it goes off (its look turning into 0x8c)
+# status <EFST id> <effect id>: what a status (ZC_MSG_STATE_CHANGE*) plays again and again on its unit while it's on
+# minid <effect id> <effect id under /mineffect>: with /mineffect on, starting the first starts the second instead (- : starts nothing)
+str	10	maemor	-	1
+str	13	safetywall	-	0
+str	23	stonecurse	-	1
+str	25	firewall%d	-	0	1	2
+str	29	lightning	-	1
+str	30	thunderstorm	-	0
+str	40	cross	-	1
+str	41	angelus	-	1
+str	49	firehit%d	-	1	1	3
+str	52	windhit%d	-	1	1	3
+str	64	arrowshot	-	1
+str	65	invenom	-	1
+str	66	cure	-	1
+str	67	provoke	-	1
+str	68	mvp	-	1
+str	69	skidtrap	-	0
+str	70	brandish	-	0
+str	75	gloria	-	1
+str	76	magnificat	-	1
+str	77	resurrection	-	1
+str	78	recovery	-	1
+str	83	sanctuary	-	1
+str	84	impositio	-	1
+str	85	lexaeterna	-	1
+str	86	aspersio	-	1
+str	87	lexdivina	-	1	once
+str	88	suffragium	-	1
+str	89	stormgust	-	1
+str	90	lord	-	1
+str	91	benedictio	-	1
+str	92	meteor%d	-	1	1	3
+str	95	quagmire	-	0
+str	96	firepillar	-	0
+str	97	firepillarbomb	-	0
+str	101	repairweapon	-	1
+str	102	crashearth	-	0
+str	103	weaponperfection	-	1
+str	104	maximizepower	-	1
+str	106	blastmine	-	0
+str	107	claymore	-	0
+str	108	freezing	-	0
+str	109	bubble%d	-	0	1	4
+str	110	gaspush	-	0
+str	111	spring	-	0
+str	112	kyrie	-	1
+str	113	magnus	-	0
+str	124	venomdust	-	0
+str	126	poisonreact_1st	-	1
+str	127	poisonreact	-	1
+str	129	venomsplasher	-	1
+str	130	twohand	-	1
+str	131	autocounter	-	1
+str	133	freeze	-	1
+str	134	freezed	-	1
+str	135	icecrash	-	1
+str	136	slowp	-	0
+str	139	sandman	-	0
+str	141	pneuma%d	-	0	1	3
+str	143	sonicblow	-	1
+str	144	brandish2	-	1
+str	145	shockwave	-	0
+str	146	shockwavehit	-	1
+str	147	earthhit	-	1
+str	148	pierce	-	1
+str	149	bowling	-	1
+str	150	spearstab	-	1
+str	151	spearboomerang	-	1
+str	152	holyhit	-	1
+str	153	concentration	-	1
+str	154	bs_refinesuccess	-	1
+str	155	bs_refinefailed	-	1
+str	158	joblvup	-	1
+str	169	energycoat	-	1
+str	170	cartrevolution	-	1
+str	181	mentalbreak	-	1
+str	182	magical	-	1
+str	183	sui_explosion	-	1
+str	185	suicide	-	1
+str	186	yunta_1	-	1
+str	187	yunta_2	-	1
+str	188	yunta_3	-	1
+str	189	yunta_4	-	1
+str	190	yunta_5	-	1
+str	191	homing	-	1
+str	192	poison	-	1
+str	193	silence	-	1
+str	194	stun	-	1
+str	195	stonecurse	-	1
+str	197	sleep	-	1
+str	199	pong%d	-	0	1	3
+str	204	빨간포션	-	1
+str	205	주홍포션	-	1
+str	206	노란포션	-	1
+str	207	하얀포션	-	1
+str	208	파란포션	-	1
+str	209	초록포션	-	1
+str	210	fruit	-	1
+str	211	fruit_	-	1
+str	213	deffender	-	1
+str	214	keeping	-	1
+str	218	집중	-	1
+str	219	각성	-	1
+str	220	버서크	-	1
+str	234	spell	-	1
+str	235	디스펠	-	1
+str	244	매직로드	-	1
+str	245	holy_cross	-	1
+str	246	shield_charge	-	1
+str	248	providence	-	1
+str	250	twohand	-	1
+str	251	devotion	-	1
+str	255	enc_fire	-	1
+str	256	enc_ice	-	1
+str	257	enc_wind	-	1
+str	258	enc_earth	-	1
+str	268	steal_coin	-	1
+str	269	strip_weapon	-	1
+str	270	strip_shield	-	1
+str	271	strip_armor	-	1
+str	272	strip_helm	-	1
+str	273	연환	-	1
+str	305	p_success	-	1
+str	306	p_failed	-	1
+str	311	loud	-	1
+str	315	safetywall	-	1	once
+str	337	joblvup	-	1
+str	369	twohand	-	1	once
+str	371	angel	-	1
+str	372	devil	-	1
+str	390	melt	-	1
+str	391	cart	-	1
+str	392	sword	-	1
+str	406	소울번	-	1
+str	407	사람효과	-	1
+str	440	asum	-	1
+str	491	찹쌀떡	-	1
+str	492	ramadan	-	1
+str	507	mapae	-	1
+str	508	itempokjuk	-	1
+str	565	moonlight_1	-	1
+str	566	moonlight_2	-	1
+str	567	moonlight_3	-	1
+str	568	h_levelup	-	1
+str	569	defense	-	1
+str	593	food_str	-	1
+str	594	food_int	-	1
+str	595	food_vit	-	1
+str	596	food_agi	-	1
+str	597	food_dex	-	1
+str	598	food_luk	-	1
+str	603	firehit%d	-	1	1	3
+str	608	cook_suc	-	1
+str	609	cook_fail	-	1
+str	612	itempokjuk	-	1
+str	635	fire dragon	-	1
+str	636	icy	-	1
+str	646	트랙킹	-	1
+str	649	불스아이	-	1
+str	668	dfear	-	1	hold
+str	669	wideb	-	1	hold
+str	670	dfear	-	1
+str	677	cwound	-	1	hold
+str	682	itempokjuk	-	1
+str	683	itempokjuk	-	1
+str	684	itempokjuk	-	1
+str	685	itempokjuk	-	1
+str	686	itempokjuk	-	1
+str	699	flower_leaf	-	1
+str	704	mobile_ef02	-	1
+str	705	mobile_ef01	-	1
+str	706	mobile_ef03	-	1
+str	708	storm_min	-	1
+str	709	pokjuk_jap	-	0
+str	717	angelus	-	1
+str	721	ado	-	1
+str	722	이그니션브레이크	-	1
+str	727	crimson_r	-	1
+str	728	hell_in	-	1
+str	731	dragon_h	-	1
+str	734	chainlight	-	1
+str	745	aimed	-	1
+str	746	arrowstorm	-	1
+str	747	laulamus	-	1
+str	748	lauagnus	-	1
+str	749	mil_shield	-	1
+str	750	concentration	-	1
+str	756	버서크	-	1
+str	795	powerswing	-	1
+str	813	enervation	-	1
+str	814	groomy	-	1
+str	815	ignorance	-	1
+str	816	laziness	-	1
+str	817	unlucky	-	1
+str	818	weakness	-	1
+str	920	firewall_per	-	1
+str	926	hunter_shockwave_blue	-	1
+str	959	poison_mist	-	0
+str	960	eraser_cutter	-	1
+str	964	lava_slide	-	0
+str	965	sonic_claw	-	1
+str	966	tinder	-	1
+str	967	mid_frenzy	-	1
+str	975	vash00	-	0
+str	987	rwc2011	-	1
+str	988	rwc2011_2	-	1
+str	1015	rune_success	-	1
+str	1016	rune_fail	-	1
+str	1017	changematerial_su	-	1
+str	1018	changematerial_fa	-	1
+str	1019	guardian	-	1
+str	1020	bubble%d_1	-	0	1	4
+str	1021	dust	-	1
+str	1029	dancingblade	-	1
+str	1031	invincibleoff2	-	1
+str	1033	devil	-	1
+str	1040	gc_darkcrow	-	1
+str	1042	all_full_throttle	-	1
+str	1043	sr_flashcombo	-	1
+str	1044	rk_luxanima	-	1
+str	1046	so_elemental_shield	-	1
+str	1047	ab_offertorium	-	1
+str	1048	wl_telekinesis_intense	-	1
+str	1049	gn_illusiondoping	-	1
+str	1050	nc_magma_eruption	-	1
+str	1055	chill	-	1
+str	1057	ab_offertorium_ring	-	1
+str	1094	ach_complete/ppring3	ach_complete/	1
+str	1186	new_dropitem/dropitem_pink/dropitem_pink/dropitem_pink	new_dropitem/dropitem_pink/dropitem_pink/	0
+str	1186	new_dropitem/dropitem_pink/dropitem_pink_bottom/dropitem_pink_bottom	new_dropitem/dropitem_pink/dropitem_pink_bottom/	0
+str	1189	new_dropitem/dropitem_yellow/dropitem_yellow/dropitem_yellow	new_dropitem/dropitem_yellow/dropitem_yellow/	0
+str	1189	new_dropitem/dropitem_yellow/dropitem_yellow_bottom/dropitem_yellow_bottom	new_dropitem/dropitem_yellow/dropitem_yellow_bottom/	0
+str	1190	new_dropitem/dropitem_purple/dropitem_purple/dropitem_purple	new_dropitem/dropitem_purple/dropitem_purple/	0
+str	1190	new_dropitem/dropitem_purple/dropitem_purple_bottom/dropitem_purple_bottom	new_dropitem/dropitem_purple/dropitem_purple_bottom/	0
+str	1869	new_dropitem/dropitem_blue/dropitem_blue/dropitem_blue	new_dropitem/dropitem_blue/dropitem_blue/	0
+str	1869	new_dropitem/dropitem_blue/dropitem_blue_bottom/dropitem_blue_bottom	new_dropitem/dropitem_blue/dropitem_blue_bottom/	0
+str	1870	new_dropitem/dropitem_green/dropitem_green/dropitem_green	new_dropitem/dropitem_green/dropitem_green/	0
+str	1870	new_dropitem/dropitem_green/dropitem_green_bottom/dropitem_green_bottom	new_dropitem/dropitem_green/dropitem_green_bottom/	0
+str	1871	new_dropitem/dropitem_red/dropitem_red/dropitem_red	new_dropitem/dropitem_red/dropitem_red/	0
+str	1871	new_dropitem/dropitem_red/dropitem_red_bottom/dropitem_red_bottom	new_dropitem/dropitem_red/dropitem_red_bottom/	0
+str	1872	grade_enchant/new_success/new_success	grade_enchant/new_success/	0
+str	1876	ui_enchant/ui_enchant_success/ui_enchant_success	ui_enchant/ui_enchant_success/	0
+misc	0	371
+misc	1	158
+misc	2	155
+misc	3	154
+misc	5	305
+misc	6	306
+misc	7	338
+misc	8	337
+misc	9	582
+skill	5	hitEffectId	1
+skill	5	beginCastEffectId	16
+skill	6	successEffectId	67
+skill	7	effectIdOnCaster	17
+skill	8	effectId	11
+skill	11	hitEffectId	1
+skill	13	hitEffectId	1
+skill	13	beforeHitEffectId	15
+skill	14	hitEffectId	51
+skill	14	beforeHitEffectId	26
+skill	15	hitEffectId	28
+skill	16	effectId	23
+skill	17	hitEffectId	49
+skill	17	beforeHitEffectId	24
+skill	18	hitEffectId	49
+skill	18	groundEffectId	25
+skill	19	hitEffectId	49
+skill	19	beforeHitEffectId	31
+skill	20	effectId	29
+skill	20	hitEffectId	52
+skill	21	effectId	30
+skill	21	hitEffectId	52
+skill	24	hitEffectId	1
+skill	25	groundEffectId	141
+skill	28	effectId	312
+skill	28	hitEffectId	320
+skill	29	effectId	37
+skill	30	effectId	38
+skill	31	effectId	39
+skill	32	effectId	40
+skill	33	effectId	41
+skill	34	effectId	42
+skill	35	effectId	66
+skill	42	effectId	10
+skill	45	effectId	153
+skill	46	hitEffectId	1
+skill	46	beginCastEffectId	16
+skill	47	hitEffectId	1
+skill	50	successEffectId	18
+skill	52	hitEffectId	20
+skill	53	effectId	21
+skill	54	effectId	77
+skill	54	effectId	140
+skill	56	effectIdOnCaster	148
+skill	56	hitEffectId	147
+skill	57	effectId	70
+skill	57	effectIdOnCaster	144
+skill	58	effectIdOnCaster	150
+skill	59	effectIdOnCaster	151
+skill	59	hitEffectId	80
+skill	60	effectId	130
+skill	61	effectId	131
+skill	62	effectIdOnCaster	149
+skill	62	hitEffectId	1
+skill	66	effectId	84
+skill	67	effectId	88
+skill	68	effectId	86
+skill	69	effectId	91
+skill	70	effectId	83
+skill	70	groundEffectId	319
+skill	71	effectId	136
+skill	72	effectId	78
+skill	73	effectId	112
+skill	74	effectId	76
+skill	75	effectId	75
+skill	76	effectId	87
+skill	77	hitEffectId	152
+skill	78	effectId	85
+skill	79	effectId	113
+skill	79	hitEffectId	152
+skill	79	groundEffectId	318
+skill	80	effectId	96
+skill	80	hitEffectId	97
+skill	80	groundEffectId	138
+skill	81	effectId	62
+skill	81	hitEffectId	49
+skill	83	effectId	92
+skill	83	hitEffectId	49
+skill	84	effectId	93
+skill	84	beforeHitEffectId	94
+skill	85	effectId	90
+skill	85	hitEffectId	52
+skill	87	groundEffectId	74
+skill	88	effectIdOnCaster	28
+skill	88	hitEffectId	51
+skill	89	effectId	89
+skill	89	hitEffectId	51
+skill	90	effectId	79
+skill	90	hitEffectId	147
+skill	91	effectId	142
+skill	91	hitEffectId	147
+skill	92	groundEffectId	95
+skill	108	effectId	101
+skill	110	effectId	102
+skill	111	effectId	98
+skill	112	effectId	103
+skill	113	effectId	128
+skill	114	effectId	104
+skill	115	effectId	69
+skill	118	effectId	145
+skill	118	hitEffectId	146
+skill	119	hitEffectId	139
+skill	120	hitEffectId	99
+skill	121	hitEffectId	108
+skill	122	hitEffectId	106
+skill	123	hitEffectId	107
+skill	124	effectId	100
+skill	130	effectId	119
+skill	131	effectId	111
+skill	135	effectId	120
+skill	136	effectId	143
+skill	136	effectIdOnCaster	121
+skill	136	hitEffectId	122
+skill	137	hitEffectId	132
+skill	138	effectId	20
+skill	139	effectId	126
+skill	139	hitEffectId	127
+skill	140	effectId	124
+skill	140	groundEffectId	171
+skill	141	effectId	129
+skill	142	effectId	309
+skill	149	effectId	310
+skill	153	hitEffectId	170
+skill	153	beginCastEffectId	170
+skill	155	effectId	311
+skill	157	effectId	169
+skill	158	effectIdOnCaster	148
+skill	159	effectId	181
+skill	162	effectId	174
+skill	163	effectId	177
+skill	164	effectId	173
+skill	165	effectId	175
+skill	166	effectId	179
+skill	167	effectId	178
+skill	168	effectId	172
+skill	169	effectId	176
+skill	170	effectIdOnCaster	16
+skill	172	effectId	191
+skill	173	effectId	183
+skill	175	effectId	185
+skill	176	effectId	192
+skill	178	effectId	193
+skill	179	effectId	194
+skill	180	effectId	195
+skill	181	effectId	196
+skill	182	effectId	197
+skill	184	hitEffectId	51
+skill	185	hitEffectId	147
+skill	186	hitEffectId	49
+skill	187	hitEffectId	52
+skill	188	hitEffectId	53
+skill	189	hitEffectId	152
+skill	190	effectId	184
+skill	190	hitEffectId	180
+skill	191	effectId	198
+skill	192	hitEffectId	182
+skill	194	successEffectId	67
+skill	199	effectIdOnCaster	216
+skill	200	effectIdOnCaster	217
+skill	201	effectId	214
+skill	202	effectId	212
+skill	205	effectId	213
+skill	211	successEffectId	268
+skill	211	successEffectId	274
+skill	212	hitEffectId	275
+skill	214	effectIdOnCaster	276
+skill	215	successEffectId	269
+skill	216	successEffectId	270
+skill	217	successEffectId	271
+skill	218	successEffectId	272
+skill	234	effectId	300
+skill	235	effectId	300
+skill	236	effectId	300
+skill	237	effectId	300
+skill	249	effectId	336
+skill	250	effectId	246
+skill	251	effectId	249
+skill	252	effectId	252
+skill	253	effectId	245
+skill	254	effectId	226
+skill	255	effectId	251
+skill	256	effectId	248
+skill	257	effectId	222
+skill	258	effectId	250
+skill	263	effectId	329
+skill	264	effectId	166
+skill	266	effectId	267
+skill	267	effectId	265
+skill	267	hitEffectId	1
+skill	268	effectId	254
+skill	270	effectIdOnCaster	261
+skill	270	beginCastEffectId	12
+skill	272	effectId	262
+skill	272	effectId	273
+skill	272	effectIdOnCaster	263
+skill	273	effectId	330
+skill	276	successEffectId	244
+skill	277	successEffectId	234
+skill	280	successEffectId	255
+skill	281	successEffectId	256
+skill	282	successEffectId	257
+skill	283	successEffectId	258
+skill	285	effectIdOnCaster	225
+skill	285	groundEffectId	239
+skill	286	effectIdOnCaster	236
+skill	286	groundEffectId	240
+skill	287	effectIdOnCaster	237
+skill	287	groundEffectId	241
+skill	288	effectIdOnCaster	238
+skill	288	groundEffectId	242
+skill	289	successEffectId	235
+skill	306	effectId	278
+skill	307	effectId	279
+skill	308	effectId	280
+skill	309	effectId	281
+skill	310	effectId	282
+skill	311	effectId	283
+skill	312	effectId	284
+skill	313	effectId	285
+skill	318	beginCastEffectId	295
+skill	319	effectId	286
+skill	320	effectId	287
+skill	321	effectId	288
+skill	322	effectId	289
+skill	326	beginCastEffectId	296
+skill	327	effectId	291
+skill	328	effectId	292
+skill	329	effectId	293
+skill	330	effectId	294
+skill	337	effectId	494
+skill	338	effectId	450
+skill	340	effectId	451
+skill	341	effectId	93
+skill	341	hitEffectId	94
+skill	342	effectId	453
+skill	349	effectId	456
+skill	355	effectId	367
+skill	356	effectId	336
+skill	357	effectId	369
+skill	359	effectId	368
+skill	360	effectId	368
+skill	361	effectId	440
+skill	362	groundEffectId	374
+skill	365	effectId	380
+skill	366	beginCastEffectId	16
+skill	364	effectIdOnCaster	217
+skill	367	beforeHitEffectId	365
+skill	368	effectId	366
+skill	369	effectId	370
+skill	370	hitEffectId	376
+skill	371	effectId	377
+skill	371	effectIdOnCaster	263
+skill	372	effectId	512
+skill	373	effectId	383
+skill	373	effectIdOnCaster	378
+skill	374	effectId	384
+skill	374	successEffectId	385
+skill	375	effectId	406
+skill	378	effectId	493
+skill	379	beforeHitEffectId	361
+skill	380	effectId	386
+skill	381	effectId	387
+skill	382	hitEffectId	388
+skill	383	effectId	389
+skill	384	effectId	390
+skill	387	effectId	391
+skill	389	beginCastEffectId	501
+skill	390	effectId	392
+skill	394	effectId	393
+skill	395	effectId	394
+skill	396	effectId	395
+skill	396	hitEffectId	396
+skill	397	effectId	339
+skill	398	beginCastEffectId	399
+skill	399	beginCastEffectId	400
+skill	400	effectId	401
+skill	401	beginCastEffectId	402
+skill	401	beginCastEffectId	12
+skill	402	successEffectId	403
+skill	403	effectId	505
+skill	405	groundEffectId	404
+skill	406	effectIdOnCaster	409
+skill	408	effectId	408
+skill	411	effectId	443
+skill	411	groundEffectId	442
+skill	413	effectId	435
+skill	415	effectId	413
+skill	417	effectId	414
+skill	421	effectId	439
+skill	421	hitEffectId	457
+skill	426	effectIdOnCaster	445
+skill	426	groundEffectId	411
+skill	427	effectId	432
+skill	428	effectId	488
+skill	429	effectId	488
+skill	430	effectId	488
+skill	431	effectId	441
+skill	432	effectId	441
+skill	433	effectId	441
+skill	434	groundEffectId	487
+skill	444	effectId	433
+skill	446	effectId	220
+skill	446	beforeHitEffectId	541
+skill	462	effectId	590
+skill	463	effectId	543
+skill	464	effectId	546
+skill	465	effectId	419
+skill	467	effectId	547
+skill	468	effectId	555
+skill	469	effectId	553
+skill	469	successEffectId	425
+skill	470	effectId	589
+skill	470	successEffectId	420
+skill	471	effectId	427
+skill	472	effectId	254
+skill	472	effectId	261
+skill	475	effectId	496
+skill	476	successEffectId	495
+skill	479	effectId	300
+skill	479	effectId	500
+skill	482	effectId	521
+skill	483	effectId	223
+skill	483	groundEffectId	224
+skill	485	effectId	518
+skill	487	effectId	500
+skill	488	groundEffectId	517
+skill	489	successEffectId	500
+skill	490	effectId	537
+skill	494	effectId	424
+skill	494	effectId	503
+skill	502	effectId	648
+skill	503	effectId	649
+skill	504	effectId	625
+skill	505	effectId	626
+skill	506	effectId	456
+skill	507	effectId	644
+skill	512	effectId	646
+skill	512	hitEffectId	647
+skill	513	effectId	627
+skill	515	effectId	643
+skill	516	effectId	637
+skill	517	effectId	626
+skill	518	effectId	628
+skill	519	effectId	584
+skill	520	effectId	645
+skill	527	groundEffectId	631
+skill	528	effectId	632
+skill	530	effectId	630
+skill	532	effectId	617
+skill	534	effectId	618
+skill	535	groundEffectId	634
+skill	536	effectId	635
+skill	537	effectId	619
+skill	538	groundEffectId	620
+skill	539	effectId	636
+skill	540	effectId	621
+skill	541	effectId	622
+skill	544	effectId	633
+skill	653	effectIdOnCaster	666
+skill	654	hitEffectId	49
+skill	656	hitEffectId	52
+skill	659	effectId	668
+skill	661	effectIdOnCaster	409
+skill	664	effectIdOnCaster	89
+skill	763	effectIdOnCaster	89
+skill	665	effectIdOnCaster	669
+skill	670	groundEffectId	674
+skill	673	hitEffectId	677
+skill	698	effectId	717
+skill	1002	effectId	599
+skill	1005	effectId	602
+skill	1005	groundEffectId	604
+skill	1006	effectId	601
+skill	1008	effectId	256
+skill	1009	hitEffectId	1
+skill	1010	successEffectId	606
+skill	1011	successEffectId	607
+skill	1016	effectId	514
+skill	1017	effectId	258
+skill	1018	effectId	255
+skill	1019	effectId	257
+skill	2001	effectId	756
+skill	2002	effectId	832
+skill	2004	effectId	723
+skill	2006	effectIdOnCaster	722
+skill	2008	hitEffectId	587
+skill	2009	effectId	731
+skill	2011	effectId	749
+skill	2201	effectId	802
+skill	2203	effectId	726
+skill	2204	hitEffectId	28
+skill	2205	effectId	729
+skill	2209	effectId	799
+skill	2211	effectId	727
+skill	2212	groundEffectId	728
+skill	2215	effectId	734
+skill	2216	groundEffectId	732
+skill	2217	effectId	804
+skill	2217	beginCastEffectId	805
+skill	2230	effectId	751
+skill	2021	effectId	788
+skill	2036	effectId	775
+skill	2038	effectId	718
+skill	2038	hitEffectId	152
+skill	2040	effectId	721
+skill	2043	effectId	313
+skill	2044	effectId	883
+skill	2044	groundEffectId	754
+skill	2046	effectId	755
+skill	2051	effectId	325
+skill	2051	hitEffectId	320
+skill	2052	effectId	753
+skill	2233	effectId	746
+skill	2236	effectId	745
+skill	2237	effectId	750
+skill	2247	effectId	744
+skill	2249	groundEffectId	739
+skill	2250	groundEffectId	740
+skill	2251	groundEffectId	741
+skill	2252	groundEffectId	742
+skill	2259	effectId	787
+skill	2270	effectId	794
+skill	2272	effectId	781
+skill	2279	effectId	795
+skill	2289	effectId	811
+skill	2292	effectId	813
+skill	2293	effectId	814
+skill	2294	effectId	815
+skill	2295	effectId	816
+skill	2296	effectId	817
+skill	2297	effectId	818
+skill	2298	effectId	820
+skill	2328	effectId	888
+skill	2417	effectId	863
+skill	2418	effectId	857
+skill	2420	groundEffectId	879
+skill	2422	effectId	858
+skill	2423	effectId	861
+skill	2427	effectIdOnCaster	865
+skill	2428	effectIdOnCaster	867
+skill	2432	effectIdOnCaster	873
+skill	2433	effectIdOnCaster	875
+skill	2447	effectId	928
+skill	2449	effectId	922
+skill	2454	beforeHitEffectId	930
+skill	2483	effectId	915
+skill	2490	effectId	919
+skill	5001	effectId	1040
+skill	5003	effectId	1049
+skill	5005	effectId	1044
+skill	5006	effectId	1050
+skill	5008	effectId	1046
+skill	5009	effectId	1043
+skill	5011	effectId	1047
+skill	5012	effectId	1048
+skill	5014	effectId	1042
+skill	8004	effectId	505
+skill	8005	effectId	570
+skill	8006	effectId	569
+skill	8008	effectId	571
+skill	8010	effectId	564
+skill	8011	effectId	564
+skill	8016	effectId	183
+skill	8024	effectId	960
+skill	8026	effectId	961
+skill	8028	effectId	965
+skill	8030	effectId	967
+skill	8036	effectId	966
+skill	8039	effectId	962
+item	501	204
+item	684	261
+item	502	205
+item	503	206
+item	504	207
+item	505	208
+item	506	209
+item	507	204
+item	508	206
+item	509	207
+item	510	208
+item	511	209
+item	512	204
+item	513	204
+item	514	208
+item	515	204
+item	516	204
+item	517	210
+item	518	210
+item	519	210
+item	520	210
+item	521	210
+item	522	210
+item	523	210
+item	525	210
+item	526	210
+item	528	210
+item	529	210
+item	530	210
+item	531	210
+item	532	210
+item	533	211
+item	534	210
+item	535	210
+item	536	210
+item	537	210
+item	538	210
+item	539	210
+item	540	210
+item	541	210
+item	542	210
+item	543	210
+item	544	210
+item	545	204
+item	546	206
+item	547	207
+item	548	210
+item	549	204
+item	550	210
+item	551	210
+item	552	210
+item	553	210
+item	554	210
+item	555	210
+item	556	210
+item	557	204
+item	558	363
+item	559	363
+item	560	363
+item	561	363
+item	562	204
+item	563	204
+item	564	204
+item	565	204
+item	566	204
+item	567	204
+item	568	204
+item	569	204
+item	570	204
+item	571	204
+item	572	204
+item	573	363
+item	574	204
+item	575	204
+item	576	204
+item	577	204
+item	578	204
+item	579	204
+item	580	204
+item	581	204
+item	582	205
+item	583	204
+item	584	204
+item	585	204
+item	586	204
+item	587	204
+item	588	204
+item	589	204
+item	590	204
+item	591	204
+item	592	204
+item	593	204
+item	594	204
+item	595	204
+item	596	204
+item	597	204
+item	598	204
+item	599	205
+item	607	204
+item	608	204
+item	663	204
+item	669	204
+item	680	204
+item	685	204
+item	11500	206
+item	11501	207
+item	11502	208
+item	11503	207
+item	11504	208
+item	11505	204
+item	11506	205
+item	11507	204
+item	11508	204
+item	11509	204
+item	11510	204
+item	11511	204
+item	11512	204
+item	11513	204
+item	11514	204
+item	11515	204
+item	11516	204
+item	11517	204
+item	11518	208
+item	11519	204
+item	11520	204
+item	11521	204
+item	11522	204
+item	11523	206
+item	11524	207
+item	11525	204
+item	11526	204
+item	11527	204
+item	11528	204
+item	11529	204
+item	11530	204
+item	11531	204
+item	11532	204
+item	11533	204
+item	11534	204
+item	11535	363
+item	11536	204
+item	11537	204
+item	11538	204
+item	11539	204
+item	11540	204
+item	11541	204
+item	11542	204
+item	11543	204
+item	11544	204
+item	11545	204
+item	11546	204
+item	11547	204
+item	11548	207
+item	11549	208
+item	11550	204
+item	11551	204
+item	11552	204
+item	11553	204
+item	11554	204
+item	11555	204
+item	11557	207
+item	11558	207
+item	11565	207
+item	11566	206
+item	11567	204
+item	11568	204
+item	11569	205
+item	11570	204
+item	11571	209
+item	11572	208
+item	11573	207
+item	11574	206
+item	11577	204
+item	11578	204
+item	11580	204
+item	11581	204
+item	11582	204
+item	11583	363
+item	11584	363
+item	11585	363
+item	11586	363
+item	11587	363
+item	11588	204
+item	11589	204
+item	11590	204
+item	11592	204
+item	11593	208
+item	11594	206
+item	11595	209
+item	11596	204
+item	11597	204
+item	11598	204
+item	11599	204
+item	11600	204
+item	11602	204
+item	11605	204
+item	11701	204
+item	11702	204
+item	11703	204
+item	11704	204
+item	11705	204
+item	11706	204
+item	11707	204
+item	11708	204
+item	11709	204
+item	11710	204
+item	11711	204
+item	11712	204
+item	11713	204
+item	12021	204
+item	12022	204
+item	12041	593
+item	12042	593
+item	12043	593
+item	12044	593
+item	12045	593
+item	12046	204
+item	12047	204
+item	12048	204
+item	12049	594
+item	12050	594
+item	12051	204
+item	12052	204
+item	12053	204
+item	12054	595
+item	12055	595
+item	12056	204
+item	12057	204
+item	12058	204
+item	12059	596
+item	12060	596
+item	12061	204
+item	12062	363
+item	12063	204
+item	12064	597
+item	12065	597
+item	12066	204
+item	12067	204
+item	12068	204
+item	12069	598
+item	12070	598
+item	12071	593
+item	12072	593
+item	12073	593
+item	12074	593
+item	12075	593
+item	12076	594
+item	12077	594
+item	12078	594
+item	12079	594
+item	12080	594
+item	12081	595
+item	12082	595
+item	12083	595
+item	12084	595
+item	12085	595
+item	12086	596
+item	12087	596
+item	12088	596
+item	12089	596
+item	12090	596
+item	12091	597
+item	12092	597
+item	12093	597
+item	12094	597
+item	12095	597
+item	12096	598
+item	12097	598
+item	12098	598
+item	12099	598
+item	12100	598
+item	12101	204
+item	12102	204
+item	12131	204
+item	12133	204
+item	12188	204
+item	12192	204
+item	12195	204
+item	12196	204
+item	12197	204
+item	12202	204
+item	12203	204
+item	12204	204
+item	12205	204
+item	12206	204
+item	12207	204
+item	12226	204
+item	12227	204
+item	12228	204
+item	12229	204
+item	12230	204
+item	12231	204
+item	12233	204
+item	12234	204
+item	12245	204
+item	12257	204
+item	12271	204
+item	12274	204
+item	12275	204
+item	12292	204
+item	12293	204
+item	12322	363
+item	12331	204
+item	12332	204
+item	12335	204
+item	12336	204
+item	12337	204
+item	12428	207
+item	12436	204
+item	12601	204
+item	12624	204
+item	12704	204
+item	12709	204
+item	12711	204
+item	12717	204
+item	12718	204
+item	12719	204
+item	12720	204
+item	12721	204
+item	12722	204
+item	12723	204
+item	12724	204
+item	12734	204
+item	12735	204
+item	12736	204
+item	12737	204
+item	12738	204
+item	14522	204
+item	14523	204
+item	14524	204
+item	14551	204
+item	14552	204
+item	14553	204
+item	14554	594
+item	14555	594
+item	14556	594
+item	14557	595
+item	14558	595
+item	14559	595
+item	14560	596
+item	14561	596
+item	14562	596
+item	14563	597
+item	14564	597
+item	14565	597
+item	14566	598
+item	14567	598
+item	14568	598
+item	14575	204
+item	14576	204
+item	14577	204
+item	14578	204
+item	14579	204
+item	14580	204
+item	14672	204
+item	14673	204
+item	22555	363
+item	22556	363
+item	22557	363
+item	22567	204
+item	22568	204
+item	22624	204
+item	22657	204
+item	22659	204
+item	22658	204
+item	22686	204
+item	22770	204
+item	22771	204
+item	22772	204
+item	22773	204
+item	22774	204
+item	22775	204
+item	22776	204
+item	22985	204
+item	645	218
+item	656	219
+item	657	220
+item	12016	519
+item	12017	210
+item	12028	576
+item	12030	577
+item	12031	579
+item	12033	580
+item	12118	491
+item	12119	491
+item	12120	491
+item	12121	491
+item	12184	210
+item	12185	210
+item	12241	218
+item	12242	219
+item	12243	220
+item	12298	210
+item	12299	491
+item	12404	210
+item	12422	210
+item	12423	210
+item	12424	210
+item	12425	210
+item	12426	210
+item	12427	210
+item	12459	210
+item	12460	210
+item	12461	210
+item	12462	210
+item	12463	210
+item	12464	210
+item	12465	210
+item	12515	210
+item	12516	210
+item	12517	210
+item	12518	210
+item	12519	210
+item	12520	210
+item	12521	210
+item	12529	210
+item	12531	210
+item	12648	210
+item	12676	210
+item	12679	210
+item	12680	210
+item	12683	210
+item	12684	210
+item	12774	210
+item	12831	210
+item	14534	210
+item	14535	210
+item	14537	210
+item	14541	210
+item	14542	210
+item	14543	210
+item	14544	210
+item	14600	210
+item	14614	210
+item	16254	210
+item	16481	210
+item	17263	218
+item	17264	219
+item	17265	220
+item	22542	218
+item	22543	220
+item	22544	219
+item	22545	519
+item	22546	210
+item	12018	508
+item	12326	709
+item	12788	612
+item	14546	682
+item	14547	683
+item	14548	684
+item	14549	685
+item	14550	686
+item	662	507
+item	12262	507
+part	1	2D	alphaMax=12;angleRand=0,35;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens1.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1;wav=effect/ef_hit2
+part	1	2D	alphaMax=12;angleRand=50,85;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens2.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=100,135;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens1.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=150,185;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens2.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=200,235;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens1.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=255,290;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens2.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=300,335;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens1.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	1	2D	alphaMax=12;angleRand=340,360;attachedEntity=false;duration=250;durationRand=200,350;fadeOut=true;fade=true;file=effect/lens2.tga;sizeEndX=1;sizeRandEndY=250,300;sizeRandStartX=25,40;sizeRandStartY=10,10;circlePattern=true;circleOuterSizeRand=5,6;circleInnerSize=2.2;overlay=true;zIndex=1
+part	4	3D	alphaMax=1;angle=90;attachedEntity=false;duration=400;fadeOut=true;file=effect/lens2.tga;posz=1;rotate=true;sizeEndY=200;sizeStartY=10;sizeX=15;toAngle=0;wav=effect/ef_hit5
+part	4	3D	alphaMax=1;angle=180;attachedEntity=false;duration=400;fadeOut=true;file=effect/lens2.tga;posz=1;rotate=true;sizeEndY=200;sizeStartY=10;sizeX=15;toAngle=90;wav=effect/ef_hit5
+part	5	2D	alphaMax=1;angle=90;attachedEntity=false;duration=400;fadeOut=true;file=effect/lens2.tga;posz=1;rotate=true;sizeEndY=150;sizeStartY=10;sizeX=10;toAngle=0;overlay=true;wav=effect/ef_hit6
+part	5	2D	alphaMax=1;angle=180;attachedEntity=false;duration=400;fadeOut=true;file=effect/lens2.tga;posz=1;rotate=true;sizeEndY=150;sizeStartY=10;sizeX=10;toAngle=90;overlay=true;wav=effect/ef_hit6
+part	9	3D	alphaMax=0.8;attachedEntity=true;duration=1000;delayLate=500;duplicate=7;fadeOut=true;file=effect/ac_center2.tga;posxRand=1.5;posyRand=1;poszEndRand=1;poszEndRandMiddle=6;poszStartRand=1;poszStartRandMiddle=1;sizeRandY=15;sizeRandYMiddle=45;sizeX=2.5;zIndex=0
+part	9	3D	alphaMax=0.8;attachedEntity=true;duration=1000;delayOffset=400;duplicate=3;fadeOut=true;file=effect/ac_center2.tga;posxRand=1.5;posyRand=1;poszEndRand=1;poszEndRandMiddle=6;poszStartRand=1;poszStartRandMiddle=1;sizeRandY=15;sizeRandYMiddle=45;sizeX=2.5;zIndex=0
+part	14	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;duration=1000;delayOffset=400;duplicate=6;fadeIn=true;fadeOut=true;file=effect/pok3.tga;posxRand=1.5;posyRand=1.5;poszEndRand=3;poszEndRandMiddle=6;poszStart=0;size=9;sizeRand=2;sparkling=true;sparkNumber=2;red=0.1;green=0.5;blue=1;timeBetweenDupli=80;zIndex=1
+part	14	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;duration=900;delayLate=200;duplicate=3;fadeIn=true;fadeOut=true;file=effect/pok3.tga;posxRand=1;posyRand=1;poszEnd=6;poszStartRand=1;poszStartRandMiddle=0;size=9;sizeRand=2;sparkling=true;sparkNumber=2;red=0.1;green=0.5;blue=1;timeBetweenDupli=200;zIndex=1
+part	15	3D	alphaMax=1;attachedEntity=true;blue=1;duration=200;delayLate=250;duplicate=-1;fadeIn=true;fadeOut=true;file=effect/pok3.tga;toSrc=true;green=1;poszEnd=1;poszSmooth=true;poszStartRand=5;poszStartRandMiddle=6;red=1;size=50;timeBetweenDupli=150;wav=effect/ef_soulstrike;zIndex=1
+part	15	3D	duration=250;duplicate=5;timeBetweenDupli=20;absoluteSpriteName=data/sprite/이팩트/particle1;playSprite=true;toSrc=true;rotateToTarget=true;sizeStart=100.0;sizeEnd=500.0;zOffsetStart=3;arc=4.0;retreat=3.0;soulStrikePattern=true
+part	20	3D	alphaMax=1;attachedEntity=true;blue=1;duration=1000;duplicate=10;fadeIn=true;fadeOut=true;file=effect/pok1.tga;green=0.7;posxRand=1;posyRand=1;poszEnd=5;poszStart=0;red=1;size=100;sizeRand=20;zIndex=1
+part	33	3D	shadowTexture=true;alphaMax=0.5;attachedEntity=true;blendMode=8;duration=12200;duplicate=8;timeBetweenDupli=0;nbOfRotation=8;posx=-2;rotateLate=0.7;rotateLateDelta=-0.1;rotatePosX=3;rotatePosY=3;rotationClockwise=true;size=0.4;sizeDelta=0.15
+part	33	3D	spriteName=particle2;alphaMax=0.07;alphaMaxDelta=0.07;attachedEntity=true;blendMode=2;red=0;green=1;blue=1;duration=12200;duplicate=10;timeBetweenDupli=0;nbOfRotation=8;posx=-2;posz=2;rotateLate=0.7;rotateLateDelta=-0.1;rotatePosX=3;rotatePosY=3;rotationClockwise=true;size=80;sizeDelta=30
+part	37	3D	alphaMax=1;attachedEntity=true;duration=1000;delayLate=500;duplicate=7;fadeOut=true;file=effect/ac_center2.tga;posxRand=1.5;posyRand=1;poszEndRand=1;poszEndRandMiddle=6;poszStartRand=1;poszStartRandMiddle=1;sizeRandY=15;sizeRandYMiddle=45;sizeX=2.5;zIndex=0
+part	37	3D	alphaMax=0.75;attachedEntity=true;duration=1000;delayOffset=400;duplicate=3;fadeOut=true;file=effect/ac_center2.tga;posxRand=1.5;posyRand=1;poszEndRand=1;poszEndRandMiddle=6;poszStartRand=1;poszStartRandMiddle=1;sizeRandY=15;sizeRandYMiddle=45;sizeX=2.5;zIndex=0
+part	37	3D	alphaMax=1;attachedEntity=true;duration=1000;duplicate=10;fadeOut=true;file=effect/ac_center2.tga;posxRand=1.5;posyRand=1;poszEndRand=1;poszEndRandMiddle=6;poszStartRand=1;poszStartRandMiddle=1;sizeRandY=15;sizeRandYMiddle=45;sizeX=2.5;zIndex=0
+part	37	3D	alphaMax=1;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;file=effect/agi_up.bmp;poszEnd=3;poszStart=0.4;sizeEnd=100;sizeSmooth=true;sizeStart=100;sizeY=45;wav=effect/ef_incagility;overlay=true;zIndex=10
+part	47	3D	absoluteSpriteName=data/sprite/이팩트/torch_01;attachedEntity=true;playSprite=true;duration=600;posz=0.8;posx=0.1;size=100;angle=0;rotateToTarget=true;repeat=true
+part	50	2D	overlay=true;duration=500;file=effect/firering.tga;sizeStart=10;sizeEnd=300;angle=0;toAngle=-360;rotate=true;fadeOut=true;posz=1;attachedEntity=true
+part	61	3D	alphaMax=1;attachedEntity=true;blue=1;duration=1000;duplicate=3;fadeIn=true;fadeOut=true;file=effect/pok1.tga;green=1;posxStartRand=3;posxStartRandMiddle=0;posyStartRand=3;posyStartRandMiddle=0;poszEndRand=2;poszEndRandMiddle=2;poszStart=0;red=1;size=100;sizeRand=17;zIndex=1
+part	93	3D	file=effect/thunder_center.bmp;duration=200;size=35;toSrc=true;blendMode=2;overlay=true;alphaMax=0.66
+part	93	3D	fileList=effect/thunder_ball_a.bmp,effect/thunder_ball_b.bmp,effect/thunder_ball_c.bmp,effect/thunder_ball_d.bmp,effect/thunder_ball_e.bmp,effect/thunder_ball_f.bmp;frameDelay=10;duration=200;size=45;toSrc=true;overlay=true;blendMode=2
+part	94	3D	file=effect/thunder_pang.bmp;duration=100;sizeStart=0;sizeEnd=25;blendMode=2;rotateToTarget=true;fadeOut=true;overlay=true;attachedEntity=true
+part	94	3D	fileList=effect/thunder_plazma_blast_a.bmp,effect/thunder_plazma_blast_b.bmp,effect/thunder_ball_d.bmp,effect/thunder_ball_e.bmp,effect/thunder_ball_f.bmp;frameDelay=10;duration=300;size=75;blendMode=2;overlay=true;attachedEntity=true
+part	116	3D	duration=500;fileList=effect/water_out_a.bmp,effect/water_out_b.bmp,effect/water_out_c.bmp;fadeOut=true;posxRand=1.5;poszRand=1.5;posyStart=0;posyEnd=3;posySmooth=true;size=30.5;rotateWithCamera=true;blendMode=2;attachedEntity=true;wav=effect/wizard_waterball_chulung
+part	217	3D	duration=600;duplicate=5;timeBetweenDupli=0;absoluteSpriteName=data/sprite/이팩트/particle1;playSprite=true;toSrc=true;rotateToTarget=true;red=0.4;green=0.4;blue=1.0;sizeStart=150.0;sizeEnd=180.0;zOffsetStart=5;arc=3.0;retreat=3.0;drainPattern=true
+part	232	3D	alphaMax=0.5;angle=180;attachedEntity=true;blendMode=2;red=0.1;green=0.1;blue=0.9;duration=100;fadeIn=true;fadeOut=true;file=effect/alpha_center.tga;fromSrc=true;rotateToTarget=true;rotateWithCamera=true;sizeX=5;sizeY=50;zOffset=1;zIndex=1
+part	262	3D	wav=effect/mon_폭기;duplicate=12;timeBetweenDupli=0;file=effect/alpha_center.tga;delayStart=250;duration=550;alphaMax=0.8;fadeIn=true;fadeOut=true;posxStart=0;posyStart=0;posxEndRand=40;posyEndRand=40;sizeStartX=10;sizeStartY=150;sizeEndX=10;sizeEndY=150;blendMode=2;attachedEntity=true;overlay=true;rotateToTarget=true;rotateWithCamera=true
+part	313	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1500;duplicate=4;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1.2;posyRand=1.2;poszEndRand=1;poszEndRandMiddle=8;poszStart=0;red=1;size=9;sizeRand=2;sparkling=true;sparkNumber=2;timeBetweenDupli=10;zIndex=1
+part	313	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1300;delayOffset=400;duplicate=20;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1.5;posyRand=1.5;poszEndRand=3;poszEndRandMiddle=6;poszStart=0;red=1;size=9;sizeRand=2;sparkling=true;sparkNumber=2;timeBetweenDupli=10;zIndex=1
+part	313	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1100;delayLate=200;duplicate=10;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1;posyRand=1;poszEnd=6;poszStartRand=1;poszStartRandMiddle=0;red=1;size=9;sizeRand=2;timeBetweenDupli=50;zIndex=1
+part	321	3D	alphaMax=1.0;attachedEntity=true;blendMode=2;renderBeforeEntities=true;duration=1000;duplicate=5;timeBetweenDupli=300;fadeIn=true;fadeOut=true;file=effect/pok1.tga;red=0.9;green=1;blue=0.9;posxStartRand=3;posxStartRandMiddle=0;posyStartRand=3;posyStartRandMiddle=0;poszEndRand=2;poszEndRandMiddle=2;poszStart=0;repeat=true;size=50;zIndex=1
+part	325	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1500;duplicate=7;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1.2;posyRand=1.2;poszEndRand=1;poszEndRandMiddle=8;poszStart=0;red=1;size=9;sizeRand=2;sparkling=true;sparkNumber=3;timeBetweenDupli=10;zIndex=1
+part	325	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1300;delayOffset=400;duplicate=25;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1.5;posyRand=1.5;poszEndRand=3;poszEndRandMiddle=6;poszStart=0;red=1;size=10;sizeRand=5;sparkling=true;sparkNumber=3;timeBetweenDupli=10;zIndex=1
+part	325	3D	alphaMax=0.8;attachedEntity=true;blendMode=2;blue=1;duration=1100;delayLate=200;duplicate=15;fadeIn=true;fadeOut=true;file=effect/pok3.tga;green=1;posxRand=1;posyRand=1;poszEnd=6;poszStartRand=1;poszStartRandMiddle=0;red=1;size=11;sizeRand=2;timeBetweenDupli=50;zIndex=1
+part	328	3D	file=effect/asura1.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=-6.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=0
+part	328	3D	file=effect/asura1.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=-6.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1200
+part	328	3D	file=effect/asura2.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=-3.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=100
+part	328	3D	file=effect/asura2.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=-3.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1300
+part	328	3D	file=effect/asura3.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=-1.2;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=200
+part	328	3D	file=effect/asura3.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=-1.2;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1400
+part	328	3D	file=effect/asura4.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=1.2;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=300
+part	328	3D	file=effect/asura4.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=1.2;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1500
+part	328	3D	file=effect/asura5.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=3.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=400
+part	328	3D	file=effect/asura5.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=3.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1600
+part	328	3D	file=effect/asura6.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=250;sizeEnd=120;sizeSmooth=true;posx=6.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=500
+part	328	3D	file=effect/asura6.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=120;sizeEnd=200;posx=6.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1700
+part	331	3D	duplicate=12;file=effect/pok1.tga;delay=500;timeBetweenDupli=10;alphaMax=0.8;fadeOut=true;fadeIn=true;zIndex=1;size=30;sizeRand=20;red=0.9;green=1;blue=0.9;blendMode=2;poszStartRand=1.5;poszStartRandMiddle=2;poszEndRandMiddle=5;poszEndRand=1;sparkling=true;sparkNumberRand=3,6;posxRand=0.6;posyRand=0.6;attachedEntity=true
+part	332	3D	duplicate=12;file=effect/pok1.tga;delay=500;timeBetweenDupli=10;alphaMax=0.8;fadeOut=true;fadeIn=true;zIndex=1;size=30;sizeRand=20;red=0.9;green=0.9;blue=1;blendMode=2;poszStartRand=1.5;poszStartRandMiddle=2;poszEndRandMiddle=5;poszEndRand=1;sparkling=true;sparkNumberRand=3,6;posxRand=0.6;posyRand=0.6;attachedEntity=true
+part	452	3D	file=effect/pokjuk_d.bmp;duration=100;sizeStart=0;sizeEnd=25;blendMode=2;rotateToTarget=true;fadeOut=true;overlay=true;attachedEntity=true
+part	452	3D	fileList=effect/twirl_soft.bmp,effect/thunder_ball_b.bmp,effect/twirl_soft.bmp,effect/thunder_ball_c.bmp,effect/twirl_soft.bmp;frameDelay=10;duration=300;size=75;blendMode=2;overlay=true;attachedEntity=true
+part	467	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon1.tga
+part	467	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon1.tga
+part	467	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon1.tga
+part	467	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon1.tga
+part	467	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon1.tga
+part	468	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon2.tga
+part	468	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon2.tga
+part	468	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon2.tga
+part	468	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon2.tga
+part	468	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon2.tga
+part	469	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon3.tga
+part	469	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon3.tga
+part	469	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon3.tga
+part	469	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon3.tga
+part	469	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon3.tga
+part	470	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon4.tga
+part	470	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon4.tga
+part	470	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon4.tga
+part	470	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon4.tga
+part	470	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon4.tga
+part	471	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon7.tga
+part	471	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon7.tga
+part	471	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon7.tga
+part	471	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon7.tga
+part	471	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon7.tga
+part	472	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon5.tga
+part	472	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon5.tga
+part	472	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon5.tga
+part	472	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon5.tga
+part	472	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon5.tga
+part	473	3D	alphaMax=1;blendMode=2;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=300;zIndex=10;file=effect/hanmoon6.tga
+part	473	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/hanmoon6.tga
+part	473	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=350;zIndex=10;file=effect/hanmoon6.tga
+part	473	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=400;zIndex=10;file=effect/hanmoon6.tga
+part	473	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=100;sizeSmooth=true;sizeStart=450;zIndex=10;file=effect/hanmoon6.tga
+part	510	3D	file=effect/asura11.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=-8.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=0
+part	510	3D	file=effect/asura11.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=-8.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1200
+part	510	3D	file=effect/asura12.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=-4.8;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=100
+part	510	3D	file=effect/asura12.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=-4.8;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1300
+part	510	3D	file=effect/asura13.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=-1.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=200
+part	510	3D	file=effect/asura13.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=-1.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1400
+part	510	3D	file=effect/asura14.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=1.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=300
+part	510	3D	file=effect/asura14.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=1.6;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1500
+part	510	3D	file=effect/asura15.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=4.8;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=400
+part	510	3D	file=effect/asura15.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=4.8;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1600
+part	510	3D	file=effect/asura16.tga;alphaMax=1;attachedEntity=true;duration=1200;duplicate=3;timeBetweenDupli=150;alphaMaxDelta=-0.25;fadeIn=true;sizeStart=300;sizeEnd=150;sizeSmooth=true;posx=8.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=500
+part	510	3D	file=effect/asura16.tga;alphaMax=1;attachedEntity=true;duration=400;fadeOut=true;sizeStart=150;sizeEnd=250;posx=8.0;posy=0;posz=4;overlay=true;red=0.1;green=0.1;blue=0.1;delayStart=1700
+part	523	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot01.tga
+part	524	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot02.tga
+part	525	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot03.tga
+part	526	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot04.tga
+part	527	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot05.tga
+part	528	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot06.tga
+part	529	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot07.tga
+part	530	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot08.tga
+part	531	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot09.tga
+part	532	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot10.tga
+part	533	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot11.tga
+part	534	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot12.tga
+part	535	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot13.tga
+part	536	3D	alphaMax=1;attachedEntity=true;duration=3000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=70;sizeSmooth=true;sizeStart=100;wav=effect/priest_slowpoison;zIndex=10;file=effect/tarot14.tga
+part	758	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터1.tga
+part	758	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터1.tga
+part	758	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터1.tga
+part	758	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터1.tga
+part	758	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터1.tga
+part	759	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터2.tga
+part	759	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터2.tga
+part	759	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터2.tga
+part	759	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터2.tga
+part	759	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터2.tga
+part	760	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터3.tga
+part	760	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터3.tga
+part	760	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터3.tga
+part	760	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터3.tga
+part	760	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터3.tga
+part	761	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터4.tga
+part	761	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터4.tga
+part	761	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터4.tga
+part	761	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터4.tga
+part	761	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터4.tga
+part	762	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터5.tga
+part	762	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터5.tga
+part	762	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터5.tga
+part	762	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터5.tga
+part	762	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터5.tga
+part	763	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터6.tga
+part	763	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터6.tga
+part	763	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터6.tga
+part	763	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터6.tga
+part	763	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터6.tga
+part	764	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터7.tga
+part	764	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터7.tga
+part	764	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터7.tga
+part	764	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터7.tga
+part	764	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터7.tga
+part	765	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터8.tga
+part	765	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터8.tga
+part	765	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터8.tga
+part	765	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터8.tga
+part	765	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터8.tga
+part	766	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터9.tga
+part	766	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터9.tga
+part	766	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터9.tga
+part	766	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터9.tga
+part	766	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터9.tga
+part	767	3D	alphaMax=1;blendMode=1;red=1.0;green=1.0;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=200;zIndex=10;file=effect/회전카운터10.tga
+part	767	3D	alphaMax=0.2;blendMode=2;red=0.7;green=0.7;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=220;zIndex=10;file=effect/회전카운터10.tga
+part	767	3D	alphaMax=0.2;blendMode=2;red=0.5;green=0.5;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=240;zIndex=10;file=effect/회전카운터10.tga
+part	767	3D	alphaMax=0.2;blendMode=2;red=0.3;green=0.3;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=260;zIndex=10;file=effect/회전카운터10.tga
+part	767	3D	alphaMax=0.2;blendMode=2;red=0.1;green=0.1;blue=1.0;attachedEntity=true;duration=1000;fadeIn=true;fadeOut=true;posz=4;sizeEnd=20;sizeSmooth=true;sizeStart=280;zIndex=10;file=effect/회전카운터10.tga
+part	883	3D	alphaMax=0.6;attachedEntity=true;blendMode=2;duration=30000;red=0.0001;green=1.0;blue=0.0001;size=400;posz=7;zIndex=1;wav=effect/ef_readyportal;file=effect/ef_epitree.tga
+part	883	3D	alphaMax=0.6;attachedEntity=true;blendMode=2;duration=990;duplicate=15;timeBetweenDupli=2000;red=0.0001;green=1.0;blue=0.0001;sizeStart=380;sizeEnd=420;posz=7;zIndex=1;file=effect/ef_epitree.tga
+part	883	3D	alphaMax=0.6;attachedEntity=true;blendMode=2;duration=990;duplicate=15;timeBetweenDupli=2000;delayOffset=1000;red=0.0001;green=1.0;blue=0.0001;sizeStart=420;sizeEnd=380;posz=7;zIndex=1;file=effect/ef_epitree.tga
+part	930	3D	alphaMax=0.6;attachedEntity=true;blendMode=2;duration=500;rotate=true;angle=0;toAngle=-611;poszStart=20;poszEnd=5;size=100;zIndex=1;file=effect/cross1.bmp;wav=effect/프레셔
+part	930	3D	alphaMax=0.6;attachedEntity=true;blendMode=2;duration=500;delayOffset=501;fadeOut=true;angle=-611;posz=5;size=100;zIndex=1;file=effect/cross1.bmp
+ring	2	textureName=lens2;angleX=-90;posZ=1;rotateWithCamera=true;bottomSize=0.37;topSize=1;height=4;animation=1;fade=true;duration=150;alphaMax=0.8;wav=effect/ef_hit3;attachedEntity=true
+ring	2	textureName=lens2;angleX=-90;posZ=1;rotateWithCamera=true;bottomSize=0.37;topSize=0.37;height=4;animation=1;fade=true;duration=150;alphaMax=0.8;wav=effect/ef_hit3;attachedEntity=true
+ring	3	textureName=lens2;angleX=-90;posZ=1;rotateWithCamera=true;bottomSize=0.15;topSize=1;height=4;animation=1;fade=true;duration=150;alphaMax=0.8;wav=effect/ef_hit4;attachedEntity=true
+ring	6	file=effect/ring_blue;alphaMax=0.62;animation=1;attachedEntity=false;blendMode=8;bottomSize=0.9;duration=500;fade=true;height=7.5;rotate=true;textureName=ring_blue;topSize=0.9;wav=effect/ef_portal
+ring	6	alphaMax=0.62;animation=1;attachedEntity=true;blendMode=8;bottomSize=0.85;duration=500;fade=true;height=8;rotate=true;textureName=ring_blue;topSize=0.85
+ring	6	alphaMax=0.8;animation=1;attachedEntity=true;blendMode=8;bottomSize=0.9;duration=500;fade=true;height=1;rotate=true;textureName=ring_blue;topSize=1.5
+ring	8	alphaMax=0.8;animation=4;attachedEntity=true;bottomSize=10;duration=1000;duplicate=4;fade=true;height=0;posZ=0.1;textureName=ring_yellow;timeBetweenDupli=300;topSize=13
+ring	9	alphaMax=0.2;animation=1;attachedEntity=true;blendMode=2;bottomSize=0.95;duration=2000;fade=true;height=10;textureName=alpha_down;topSize=0.95
+ring	14	alphaMax=0.2;animation=1;attachedEntity=true;blendMode=2;bottomSize=0.95;duration=2000;fade=true;height=10;rotate=true;red=0.1;green=0.5;blue=1;textureName=ring_blue;topSize=0.95;wav=_heal_effect
+ring	34	alphaMax=0.5;animation=5;attachedEntity=true;blendMode=8;bottomSize=0.8;duration=1000;fade=true;red=1;green=1;blue=1;height=35;rotate=true;textureName=ring_blue;topSize=0.7;wav=effect/ef_teleportation
+ring	35	alphaMax=0.6;animation=0;attachedEntity=true;blue=1;bottomSize=0.6;duration=25000;fade=true;green=0.7;height=15;red=0.7;rotate=true;textureName=alpha_down;topSize=0.6;wav=effect/ef_readyportal
+ring	61	alphaMax=0.3;animation=3;attachedEntity=true;blendMode=2;blue=1;bottomSize=2;duration=2800;fade=true;green=0.5;height=1.1;red=0.5;rotate=true;textureName=ring_blue;topSize=3.3
+ring	61	alphaMax=0.3;animation=3;attachedEntity=true;blendMode=2;blue=1;bottomSize=1.9;duration=2800;fade=true;green=0.5;height=1.1;red=0.5;rotate=true;textureName=ring_blue;topSize=3.2
+# ponytail: the teleport keeps its rings' shape; violet and purple are the textures' own colours (white).
+ring	313	alphaMax=0.3;animation=1;attachedEntity=true;blendMode=2;blue=0.7;bottomSize=1.1;duration=1500;fade=true;green=1;height=2;red=0.7;rotate=true;textureName=ring_white;topSize=3
+ring	316	alphaMax=0.4;animation=4;attachedEntity=true;blendMode=2;renderBeforeEntities=true;blue=1;bottomSize=2.4;duration=500;fadeOut=true;green=1;height=0.1;posZ=0.1;red=1;rotate=true;textureName=ring_blue;repeat=true;repeatDelay=-300;topSize=3.9;wav=effect/ef_readyportal
+ring	317	alphaMax=0.4;animation=4;attachedEntity=true;blendMode=2;renderBeforeEntities=true;blue=1;bottomSize=2.4;duration=500;fadeOut=true;green=0.392;height=0.1;posZ=0.1;red=0.392;rotate=true;textureName=ring_blue;repeat=true;repeatDelay=-300;topSize=3.9;wav=effect/ef_readyportal
+ring	317	alphaMax=0.3;animation=0;attachedEntity=true;blendMode=2;blue=1;bottomSize=0.6;duration=25000;fade=true;green=0.392;height=15;red=0.392;rotate=true;textureName=ring_blue;topSize=0.6;wav=effect/ef_portal
+ring	317	alphaMax=0.3;animation=0;attachedEntity=true;blendMode=2;blue=1;bottomSize=0.8;duration=25000;fade=true;green=0.392;height=13;red=0.392;rotate=true;textureName=ring_blue;topSize=0.8
+ring	317	alphaMax=0.5;animation=0;attachedEntity=true;blendMode=2;blue=1;bottomSize=1;duration=25000;fade=true;green=0.392;height=1;posZ=2;red=0.392;rotate=true;totalCircleSides=20;circleSides=10;repeatTextureX=2;textureName=alpha1;topSize=1
+ring	321	alphaMax=0.4;animation=3;renderBeforeEntities=true;attachedEntity=true;blendMode=2;bottomSize=2;duration=4000;duplicate=4;timeBetweenDupli=1000;fade=true;red=0.5;green=0.5;blue=1;height=1.1;repeat=true;rotate=false;textureName=ring_blue;topSize=3.3
+ring	321	alphaMax=0.4;animation=3;renderBeforeEntities=true;attachedEntity=true;blendMode=2;bottomSize=1.9;duration=4000;duplicate=4;timeBetweenDupli=1000;fade=true;red=0.5;green=0.5;blue=1;height=1.1;repeat=true;rotate=false;textureName=ring_blue;topSize=3.2
+ring	325	alphaMax=0.3;animation=1;attachedEntity=true;blendMode=2;blue=0.7;bottomSize=1.1;duration=1500;fade=true;green=1;height=3;red=0.7;rotate=true;textureName=ring_white;topSize=3
+ring	328	textureName=ring_white;fade=true;animation=2;attachedEntity=true;blendMode=2;bottomSize=1;topSize=4.5;height=-4;duration=800
+ring	328	textureName=ring_white;fade=true;animation=2;attachedEntity=true;blendMode=2;bottomSize=1;topSize=2.5;height=-4;duration=800
+ring	374	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.45;topSize=2.45;height=2.0;alphaMax=32;blendMode=2;rotateWithCamera=true;duration=20000;attachedEntity=true
+ring	374	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.52;topSize=2.52;height=2.1;alphaMax=32;blendMode=2;rotateWithCamera=true;angleY=10;duration=20000;attachedEntity=true
+ring	374	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.6;topSize=2.6;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=26.6;duration=20000;attachedEntity=true
+ring	374	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.6;topSize=2.6;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=79.8;duration=20000;attachedEntity=true
+ring	510	textureName=ring_white;fade=true;animation=2;attachedEntity=true;blendMode=2;bottomSize=1;topSize=4.5;height=-4;duration=800
+ring	510	textureName=ring_white;fade=true;animation=2;attachedEntity=true;blendMode=2;bottomSize=1;topSize=2.5;height=-4;duration=800
+ring	715	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.5;topSize=1.5;height=2.0;alphaMax=40;blendMode=2;rotateWithCamera=true;red=0.2;green=0.6;blue=1.0;duration=20000;attachedEntity=true
+ring	715	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.58;topSize=1.58;height=2.1;alphaMax=32;blendMode=2;rotateWithCamera=true;angleY=10;red=0.2;green=0.6;blue=1.0;duration=20000;attachedEntity=true
+ring	715	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.65;topSize=1.65;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=26.6;red=0.1;green=0.4;blue=1.0;duration=20000;attachedEntity=true
+ring	715	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.65;topSize=1.65;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=79.8;red=0.1;green=0.4;blue=1.0;duration=20000;attachedEntity=true
+ring	716	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.5;topSize=1.5;height=2.0;alphaMax=40;blendMode=2;rotateWithCamera=true;red=0.2;green=0.6;blue=1.0;duration=20000;attachedEntity=true
+ring	716	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.58;topSize=1.58;height=2.1;alphaMax=32;blendMode=2;rotateWithCamera=true;angleY=10;red=0.2;green=0.6;blue=1.0;duration=20000;attachedEntity=true
+ring	716	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.65;topSize=1.65;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=26.6;red=0.1;green=0.4;blue=1.0;duration=20000;attachedEntity=true
+ring	716	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=1.65;topSize=1.65;height=2.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=79.8;red=0.1;green=0.4;blue=1.0;duration=20000;attachedEntity=true
+ring	718	attachedEntity=false;topSize=0.5;bottomSize=0.4;textureName=ring_white;height=3.5;duration=1000;rotate=true
+ring	718	attachedEntity=false;topSize=0.75;bottomSize=0.45;textureName=ring_white;height=2.5;duration=1000;rotate=true
+ring	718	attachedEntity=false;topSize=1;bottomSize=0.5;textureName=ring_white;height=1.5;duration=1000;rotate=true
+ring	754	alphaMax=0.4;animation=4;attachedEntity=true;blendMode=2;red=0.6;green=1.0;blue=0.6;bottomSize=2.4;duration=500;duplicate=150;fadeOut=true;height=0.1;posZ=0.1;rotate=true;textureName=magic_green;timeBetweenDupli=200;topSize=3.9
+ring	754	alphaMax=0.4;animation=0;attachedEntity=true;blendMode=2;red=0.6;green=1.0;blue=0.6;bottomSize=0.6;duration=30000;fade=true;height=7;rotate=true;textureName=magic_green;topSize=0.6
+ring	754	alphaMax=0.4;animation=0;attachedEntity=true;blendMode=2;red=0.6;green=1.0;blue=0.6;bottomSize=0.8;duration=30000;fade=true;height=6;rotate=true;textureName=magic_green;topSize=0.8
+ring	754	alphaMax=0.5;animation=0;attachedEntity=true;blendMode=2;red=0.6;green=1.0;blue=0.6;bottomSize=1;duration=30000;fade=true;height=1;posZ=2;rotate=true;totalCircleSides=20;circleSides=10;repeatTextureX=2;textureName=alpha1;topSize=1
+ring	802	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.2;topSize=2.2;height=3.0;alphaMax=65;blendMode=2;rotateWithCamera=true;duration=20000;attachedEntity=true
+ring	802	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.25;topSize=2.25;height=3.1;alphaMax=65;blendMode=2;rotateWithCamera=true;angleY=10;duration=20000;attachedEntity=true
+ring	802	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.3;topSize=2.3;height=3.0;alphaMax=15;blendMode=2;rotateWithCamera=true;duration=20000;attachedEntity=true
+ring	802	textureName=alpha_down;totalCircleSides=4;circleSides=4;bottomSize=2.3;topSize=2.3;height=3.0;alphaMax=15;blendMode=2;rotateWithCamera=true;angleY=53.2;duration=20000;attachedEntity=true
+spr	53	poisonhit	0	-
+spr	165	크리스마스	1	duration=1000
+spr	212	darkbreath	1	head=true
+# ponytail: the puff takes the monster's place at tick 0 (it stands still while it summons), not at tick 35.
+spr	215	smoke	0	delay=560
+spr	302	데몬스트레이션	0	delayFrame=64;scale=1.2;alpha=200;firstFrame=1;repeat=true;yOffset=-7
+spr	363	vallentine	1	-
+spr	373	poisonhit	1	-
+spr	453	cconfine	1	delayFrame=192;firstFrame=1;hold=true;alpha=100;onTop=true
+spr	509	05vallentine	1	-
+spr	519	fast	1	-
+spr	570	캐슬링	1	delayFrame=32;firstFrame=1;onTop=true
+spr	571	블러드러스트	1	delayFrame=32;firstFrame=1;onTop=true
+spr	576	item_thunder	1	-
+spr	577	item_cloud	1	-
+spr	578	item_curse	1	-
+spr	579	item_zzz	1	-
+spr	580	item_rain	1	-
+spr	583	m_ef01	1	-
+spr	584	m_ef02	1	delayFrame=64;firstFrame=1;onTop=true
+spr	622	썬더스톰	1	delayFrame=32;firstFrame=1;repeat=true;duration=1584;onTop=true;scale=2.5;yOffset=-31.5
+spr	585	m_ef03	1	-
+spr	586	m_ef04	1	-
+spr	587	m_ef05	1	-
+spr	588	m_ef06	1	-
+spr	589	m_ef07	1	delayFrame=64;firstFrame=1;onTop=true
+spr	604	cconfine	1	stopAtEnd=true
+spr	612	합격_	1	-
+spr	630	그림자베기	1	delayFrame=64;firstFrame=1;onTop=true;sideAction=4
+spr	631	다다미	1	delayFrame=96;firstFrame=1;yOffset=-6
+spr	632	안개베기	1	delayFrame=64;firstFrame=1;onTop=true;sideAction=2
+spr	633	일섬	1	delayFrame=32;firstFrame=1;onTop=true;yOffset=-6;frame=0
+spr	634	화염진	1	repeat=true;firstFrame=1;frameTicks=3;frameTicksRan=5;restart=true;yOffset=-1
+spr	1026	icemine	0	repeat=true;firstFrame=1;frameTicks=10;restart=true;yOffset=-1
+spr	637	데스페라도	1	delayFrame=64;firstFrame=1;onTop=true
+spr	638	라이트닝스피어	0	frame=0;repeat=true;yOffset=-7
+spr	639	블라인드스피어	0	frame=0;repeat=true;yOffset=-7
+spr	640	포이즌스피어	0	frame=0;repeat=true;yOffset=-7
+spr	641	프리징스피어	0	frame=0;repeat=true;yOffset=-7
+spr	642	플레어스피어	0	frame=0;repeat=true;yOffset=-7
+spr	643	래피드샤워	1	delayFrame=64;firstFrame=1;onTop=true
+spr	644	매지컬불릿	1	delayFrame=32;firstFrame=1;onTop=true
+spr	645	스프레드	1	delayFrame=64;firstFrame=1;onTop=true
+spr	647	트래킹	1	delayFrame=32;firstFrame=1;onTop=true
+spr	648	트리플액션	1	delayFrame=32;firstFrame=1;onTop=true;delayStart=480
+spr	666	어스퀘이크	1	frame=0;delayFrame=64;firstFrame=1;onTop=true;drawn=99
+spr	682	폭죽_러브	1	-
+spr	683	폭죽_화이트데이	1	-
+spr	684	폭죽_발렌타인	1	-
+spr	685	폭죽_생일	1	-
+spr	686	폭죽_크리스마스	1	-
+spr	729	mashofa	1	delayFrame=64;firstFrame=1;onTop=true
+spr	1240	digital_space\digital_space	1	repeat=true
+spr	947	거스트	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	948	블래스트	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	949	아쿠아플레이	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	950	업히벌	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	951	와일드스톰	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	952	칠리에어	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	953	커즈드소일	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	954	쿨러	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	955	트로픽	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	956	파이로테크닉	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	957	페트롤로지	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	958	히터	1	delayFrame=32;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	961	silent_brz	1	delayFrame=64;firstFrame=1;repeat=true;drawn=99;onTop=true
+spr	962	magma_flow	1	delayFrame=64;firstFrame=1;repeat=false;drawn=92;onTop=true
+spr	1053	wideweb	1	delayFrame=64;firstFrame=1;onTop=true
+spr	1054	burnt	1	delayFrame=64;firstFrame=1;repeat=true;onTop=true
+func	79	quake	0	200
+func	90	quake	800	650
+func	90	quake	1600	650
+func	90	quake	2400	650
+func	90	quake	3200	650
+func	92	quake	640	650
+func	102	quake	560	650
+func	142	quake	0	650
+func	183	quake	48	200
+func	183	quake	112	200
+func	183	quake	144	200
+func	220	quake	288	200
+func	266	quake	0	200
+func	303	quake	132	650
+func	330	quake	0	650
+func	365	quake	528	650
+func	380	quake	480	650
+func	522	quake	0	650
+func	387	quake	480	650
+func	512	quake	132	650
+func	537	quake	200	650
+func	619	quake	0	200
+func	563	quake	0	650
+func	563	quake	80	650
+func	563	quake	160	650
+func	563	quake	240	650
+func	563	quake	320	650
+func	563	quake	400	650
+func	563	quake	480	650
+func	563	quake	560	650
+func	563	quake	640	650
+func	563	quake	720	650
+func	563	quake	800	650
+func	563	quake	880	650
+func	563	quake	960	650
+func	563	quake	1040	650
+func	563	quake	1120	650
+func	563	quake	1200	650
+func	563	quake	1280	650
+func	563	quake	1360	650
+func	563	quake	1440	650
+func	563	quake	1520	650
+func	666	quake	0	650
+func	666	quake	560	650
+func	666	quake	1120	650
+func	668	quake	16	650
+func	732	quake	0	200
+func	756	quake	288	200
+func	804	quake	0	650
+func	804	quake	640	650
+func	804	quake	1280	650
+func	835	quake	704	650
+func	863	quake	0	650
+func	906	quake	528	650
+func	1399	quake	0	650
+unit	133	141
+rsm	143	외부소품\트랩03_3
+rsm	144	외부소품\트랩02
+rsm	145	외부소품\트랩01
+rsm	147	외부소품\트랩03
+rsm	148	외부소품\트랩03_6
+rsm	149	외부소품\트랩03_4
+rsm	150	외부소품\트랩03_5
+rsm	151	외부소품\트랩03_2
+rsm	152	외부소품\트랩04
+rsm	20852	effect\deepblindtrap\deep_trap.rsm2
+rsm	20853	effect\solidtrap\sol_trap.rsm2
+rsm	20854	effect\swifttrap\swi_trap.rsm2
+rsm	20855	effect\flametrap\fla_trap.rsm2
+rsm	153	외부소품\트랩05
+rsm	210	event\3차트랩_변화01
+rsm	211	event\3차트랩_변수01
+rsm	212	event\3차트랩_변지01
+rsm	213	event\3차트랩_변풍01
+rsm	214	event\3차트랩_화01
+rsm	215	event\3차트랩_수01
+rsm	216	event\3차트랩_풍01
+rsm	217	event\3차트랩_지01
+rsm	229	event\3차트랩_가시01
+wav	1	effect\ef_hit2	0
+wav	2	effect\ef_hit3	0
+wav	3	effect\ef_hit4	0
+wav	4	effect\ef_hit5	0
+wav	5	effect\ef_hit6	0
+wav	6	effect\ef_portal	0
+wav	7	_heal_effect	0
+wav	10	effect\ef_coin2	0
+wav	11	effect\ef_endure	0
+wav	12	effect\ef_beginspell	0
+wav	13	effect\ef_glasswall	0
+wav	14	_heal_effect	0
+wav	15	effect\ef_soulstrike	0
+wav	16	effect\ef_bash	0
+wav	17	effect\ef_magnumbreak	0
+wav	18	effect\ef_steal	0
+wav	20	effect\ef_detoxication	0
+wav	21	effect\ef_detoxication	0
+wav	24	effect\ef_fireball	0
+wav	25	effect\ef_firewall	0
+wav	26	effect\ef_icearrow%d	0	1	3
+wav	28	effect\ef_frostdiver2	0
+wav	30	effect\magician_thunderstorm	0
+wav	31	effect\ef_firearrow%d	0	1	3
+wav	32	effect\ef_napalmbeat	0
+wav	33	effect\ef_ruwach	0
+wav	34	effect\ef_teleportation	0
+wav	35	effect\ef_readyportal	0
+wav	37	effect\ef_incagility	0
+wav	38	effect\ef_decagility	0
+wav	39	effect\ef_aqua	0
+wav	40	effect\ef_signum	480
+wav	40	effect\ef_bash	480
+wav	41	effect\ef_angelus	0
+wav	42	effect\ef_blessing	0
+wav	43	effect\ef_incagidex	0
+wav	49	_enemy_hit_fire%d	0	1	2
+wav	53	effect\ef_poisonattack	0
+wav	54	effect\ef_beginspell	0
+wav	55	effect\ef_beginspell	0
+wav	56	effect\ef_beginspell	0
+wav	57	effect\ef_beginspell	0
+wav	58	effect\ef_beginspell	0
+wav	59	effect\ef_beginspell	0
+wav	62	effect\wizard_sightrasher	0
+wav	65	effect\thief_invenom	0
+wav	66	effect\acolyte_cure	0
+wav	67	effect\swordman_provoke	80
+wav	67	effect\swordman_provoke	480
+wav	68	effect\st_mvp	0
+wav	69	effect\hunter_skidtrap	0
+wav	70	effect\knight_brandish_spear	0
+wav	74	effect\wizard_icewall	0
+wav	75	effect\priest_gloria	0
+wav	76	effect\priest_magnificat	0
+wav	77	effect\priest_resurrection	0
+wav	78	effect\priest_recovery	0
+wav	79	effect\wizard_earthspike	0
+wav	80	effect\ef_fireball	0
+wav	80	effect\ef_fireball	64
+wav	80	effect\ef_fireball	128
+wav	80	effect\ef_fireball	192
+wav	81	effect\ef_bash	0
+wav	82	effect\ef_bash	592
+wav	83	effect\priest_sanctuary	0
+wav	84	effect\priest_impositio	960
+wav	85	effect\priest_lexaeterna	240
+wav	86	effect\priest_aspersio	1120
+wav	87	effect\priest_lexdivina	0
+wav	87	effect\priest_lexdivina	320
+wav	87	effect\priest_lexdivina	560
+wav	87	effect\priest_lexdivina	960
+wav	87	effect\priest_lexdivina	1120
+wav	88	effect\priest_suffragium	0
+wav	89	effect\wizard_stormgust	0
+wav	90	effect\wizard_meteo	0
+wav	90	effect\hunter_blastmine	0
+wav	90	effect\hunter_blastmine	160
+wav	90	effect\wizard_meteo	320
+wav	90	effect\wizard_meteo	800
+wav	90	effect\wizard_meteo	1280
+wav	90	effect\wizard_meteo	1600
+wav	90	effect\wizard_meteo	2080
+wav	90	effect\wizard_meteo	2240
+wav	90	effect\wizard_meteo	2880
+wav	90	effect\wizard_meteo	3200
+wav	91	effect\priest_benedictio	0
+wav	92	effect\wizard_meteor	0
+wav	93	effect\hunter_shockwavetrap	0
+wav	95	effect\wizard_quagmire	0
+wav	96	effect\wizard_fire_pillar_a	0
+wav	97	effect\wizard_fire_pillar_b	0
+wav	98	effect\black_adrenalinerush_a	0
+wav	98	effect\black_adrenalinerush_b	480
+wav	99	effect\hunter_flasher	0
+wav	100	effect\hunter_removetrap	0
+wav	101	effect\black_weapon_repair_a	320
+wav	101	effect\black_weapon_repair_a	880
+wav	102	effect\wizard_fire_pillar_b	480
+wav	103	effect\black_weapon_perfection	0
+wav	104	effect\black_maximize_power_circle	0
+wav	104	effect\black_maximize_power_sword	640
+wav	104	effect\black_maximize_power_sword	752
+wav	104	effect\black_maximize_power_sword_bic	1040
+wav	105	effect\hun_anklesnare	0
+wav	106	effect\hunter_blastmine	320
+wav	107	effect\hunter_claymoretrap	0
+wav	108	effect\hunter_freezingtrap	0
+wav	111	effect\hunter_springtrap	0
+wav	112	effect\priest_kyrie_eleison_b	0
+wav	112	effect\priest_kyrie_eleison_a	240
+wav	113	effect\priest_magnus	0
+wav	115	effect\hunter_blitzbeat_1st	80
+wav	115	effect\hunter_blitzbeat	480
+wav	116	effect\wizard_waterball_chulung	0
+wav	117	effect\wizard_waterball_chulung	0
+wav	119	effect\hunter_detecting	0
+wav	125	effect\assasin_enchantpoison	0
+wav	125	effect\EF_PoisonAttack	0
+wav	120	effect\assasin_cloaking	0
+wav	121	effect\ef_stonecurse	0
+wav	123	effect\ef_frostdiver	0
+wav	124	effect\assasin_poisonreact	0
+wav	126	effect\assasin_poisonreact	0
+wav	127	effect\assasin_poisonreact	0
+wav	128	effect\black_overthrust	0
+wav	128	effect\EF_StoneCurse	0
+wav	129	effect\assasin_venomsplasher	0
+wav	130	effect\knight_twohandquicken	0
+wav	131	effect\knight_autocounter	0
+wav	136	effect\priest_slowpoison	0
+wav	139	effect\hunter_sandman	0
+wav	142	effect\wizard_earthspike	0
+wav	144	effect\knight_brandish_spear	0
+wav	150	_enemy_hit_normal1	0
+wav	151	effect\knight_spear_boomerang	0
+wav	153	effect\ac_concentration	0
+wav	154	effect\bs_refinesuccess	240
+wav	155	effect\bs_refinefailed	80
+wav	170	effect\ef_magnumbreak	112
+wav	170	effect\ef_magnumbreak	320
+wav	183	effect\ef_hit2	0
+wav	208	effect\흡기	0
+wav	210	_heal_effect	0
+wav	211	effect\흡기	0
+wav	218	effect\ac_concentration	0
+wav	219	effect\ac_concentration	0
+wav	220	effect\ac_concentration	288	listener
+wav	226	effect\cru_grand cross	0
+wav	227	effect\EF_Bash	0	listener
+wav	227	effect\rog_intimidate	560
+wav	234	effect\sage_spell breake	0
+wav	244	effect\sage_magic rod	0
+wav	245	effect\cru_holy cross	0	listener
+wav	249	effect\cru_shield boomerang	0
+wav	250	effect\knight_twohandquicken	0
+wav	253	effect\흡기	0
+wav	255	_enemy_hit_wind1	160
+wav	256	_enemy_hit_wind1	160
+wav	257	_enemy_hit_wind1	160
+wav	258	_enemy_hit_wind1	160
+wav	262	effect\mon_폭기	0
+wav	265	effect\mon_탄지신통	0
+wav	266	effect\mon_아수라 패황권	0	listener
+wav	267	effect\mon_침투경	0
+wav	269	effect\복호격	96
+wav	270	effect\복호격	96
+wav	271	effect\복호격	96
+wav	272	effect\복호격	96
+wav	273	effect\mon_연환	0
+wav	274	effect\rog_steal coin	0
+wav	275	effect\rog_back stap	320
+wav	278	effect\자장가	0
+wav	279	effect\김서방돈	0
+wav	280	effect\영원의 혼돈	0
+wav	281	effect\전장의	0
+wav	282	effect\니벨룽겐의 반지	0
+wav	283	effect\로키	0
+wav	284	effect\심연속으로	0
+wav	285	effect\불사신	0
+wav	286	effect\달빛세레나데	0
+wav	287	effect\석양의 어쌔신	0
+wav	288	effect\브라기의 시	0
+wav	289	effect\이둔의 사과	0
+wav	291	effect\흥얼거림	0
+wav	292	effect\나를잊지말아요	0
+wav	293	effect\행운의	0
+wav	294	effect\당신을 위한 서비스	0
+wav	298	_heal_effect	0
+wav	300	apocalips_attack	0
+wav	304	effect\ef_teleportation	0
+wav	305	effect\p_success	0
+wav	306	effect\p_failed	0
+wav	309	_heal_effect	0
+wav	311	effect\고성방가	0
+wav	312	_heal_effect	0
+wav	313	_heal_effect	0
+wav	314	effect\ef_teleportation	0
+wav	315	effect\ef_glasswall	0
+wav	316	effect\ef_readyportal	0
+wav	317	effect\ef_readyportal	0
+wav	317	effect\ef_portal	0
+wav	320	_heal_effect	0
+wav	325	_heal_effect	0
+wav	329	effect\ef_hit2	160
+wav	329	effect\ef_hit4	320
+wav	329	effect\ef_hit2	480
+wav	342	effect\EF_BeginSpell	0
+wav	441	effect\EF_BeginSpell	0
+wav	497	assulter_attack	0	listener
+wav	331	_heal_effect	0
+wav	332	effect\흡기	0
+wav	336	effect\kyrie_guard	0
+wav	339	permeter_attack	320
+wav	339	effect\ef_magnumbreak	480
+wav	344	effect\ef_portal	0
+wav	347	effect\wedding	0
+wav	361	effect\기공포	320
+wav	363	effect\vallentine	0
+wav	365	effect\프레셔	48
+wav	366	effect\세크리파이스	352
+wav	223	effect\EF_FireWall	0	listener
+wav	330	effect\mon_맹룡과강	0	listener
+wav	343	effect\EF_BeginSpell	0
+wav	367	effect\오라 블레이드	0
+wav	368	effect\버서크	0
+wav	369	effect\knight_twohandquicken	0
+wav	371	levelup	0
+wav	376	effect\맹호경파산	0
+wav	377	effect\mon_맹룡과강	80
+wav	380	effect\매직 크래쉬	400
+wav	384	effect\소울 체인지	0
+wav	386	effect\hunter_detecting	0
+wav	388	effect\샤프슈팅	480
+wav	389	effect\윈드워크	0
+wav	391	effect\ef_incagility	0
+wav	390	effect\black_overthrust	0
+wav	392	effect\kyrie_guard	0
+wav	393	effect\애로우 발칸	480
+wav	395	effect\소울 체인지	0
+wav	399	effect\헤드 크러쉬	0
+wav	400	effect\비트 조인트	352
+wav	401	effect\EF_NapalmBeat	320
+wav	401	effect\EF_NapalmBeat	480
+wav	401	effect\EF_NapalmBeat	640
+wav	401	effect\EF_NapalmBeat	800
+wav	401	effect\EF_NapalmBeat	960
+wav	403	effect\swordman_provoke	400
+wav	408	effect\EF_Blessing	0
+wav	409	effect\메테오 어썰트	0
+wav	413	effect\T_내려찍기	80
+wav	415	effect\EF_hit2	272
+wav	415	effect\EF_hit4	400
+wav	426	effect\복호격	0
+wav	435	effect\T_회오리차기	80
+wav	1197	effect\t_피링	0
+wav	1198	effect\t_피링	0
+wav	1199	effect\t_피링	0
+wav	1200	effect\g카트토네이도	0
+wav	1201	effect\t_캐스팅	0
+wav	1222	effect\t_바람방출	0
+wav	1231	effect\so_elemental_shield	0
+wav	1234	effect\ef_signum	0
+wav	1242	effect\hunter_landmine	0
+wav	439	effect\G스포어익스플로젼	0	listener
+wav	440	effect\아숨프티오	0
+wav	443	effect\T_벽튕김	0
+wav	444	effect\t_효과음1	0
+wav	445	effect\t_회피2	0
+wav	450	effect\cru_grand cross	0
+wav	451	effect\ef_soulstrike	0
+wav	454	effect\ef_beginspell	0
+wav	456	effect\EF_IncAgility	0
+wav	457	effect\t_날라차기	80
+wav	464	effect\REVERBERATION	0
+wav	466	effect\T_돌려차기	80
+wav	467	effect\t_바람방출	0
+wav	468	effect\t_바람방출	0
+wav	469	effect\t_바람방출	0
+wav	470	effect\t_바람방출	0
+wav	471	effect\t_바람방출	0
+wav	472	effect\t_바람방출	0
+wav	473	effect\t_바람방출	0
+wav	488	effect\T_안락한마법	80
+wav	493	effect\assasin_enchantpoison	0
+wav	493	effect\assasin_enchantpoison	80
+wav	493	effect\assasin_enchantpoison	176
+wav	493	effect\assasin_enchantpoison	288
+wav	493	effect\assasin_enchantpoison	416
+wav	493	effect\assasin_enchantpoison	640
+wav	494	effect\cru_shield boomerang	0
+wav	495	effect\복호격	16
+wav	495	effect\복호격	176
+wav	495	effect\복호격	336
+wav	495	effect\복호격	496
+wav	496	effect\black_maximize_power_sword_bic	0
+wav	501	effect\EF_BeginSpell	0
+wav	502	effect\EF_BeginSpell	0
+wav	503	effect\T_캐스팅	0
+wav	503	effect\T_영혼	2320
+wav	505	effect\priest_suffragium	0
+wav	507	effect\mapae	0
+wav	508	effect\itempokjuk	0
+wav	518	effect\wizard_fire_pillar_b	480
+wav	519	effect\fast	0
+wav	572	effect\T_따듯한마법	160
+wav	584	effect\풀버스터	80
+wav	520	effect\cru_shield boomerang	0
+wav	522	effect\wizard_earthspike	0	listener
+wav	523	effect\priest_slowpoison	0
+wav	524	effect\priest_slowpoison	0
+wav	525	effect\priest_slowpoison	0
+wav	526	effect\priest_slowpoison	0
+wav	527	effect\priest_slowpoison	0
+wav	528	effect\priest_slowpoison	0
+wav	529	effect\priest_slowpoison	0
+wav	530	effect\priest_slowpoison	0
+wav	531	effect\priest_slowpoison	0
+wav	532	effect\priest_slowpoison	0
+wav	533	effect\priest_slowpoison	0
+wav	534	effect\priest_slowpoison	0
+wav	535	effect\priest_slowpoison	0
+wav	536	effect\priest_slowpoison	0
+wav	547	effect\T_바람마법	160
+wav	553	effect\T_날라차기	80	listener
+wav	553	effect\T_날라차기	320	listener
+wav	553	effect\T_날라차기	560	listener
+wav	553	effect\T_날라차기	800	listener
+wav	553	effect\T_날라차기	1040	listener
+wav	555	effect\t_에너지방출	0
+wav	565	effect\h_moonlight_1	0
+wav	566	effect\h_moonlight_2	0
+wav	567	effect\h_moonlight_3	0
+wav	579	_snore	0
+wav	587	dragon_breath	0
+wav	590	effect\priest_resurrection	0
+wav	571	effect\h_blood_lust	0
+wav	935	effect\맹호경파산	0	listener
+wav	460	ice_titan_attack	80
+wav	564	effect\ef_beginspell	0
+wav	1224	effect\mon_침투경	80
+wav	1206	effect\T_날라차기	80	listener
+wav	1206	effect\T_날라차기	320	listener
+wav	1206	effect\T_날라차기	560	listener
+wav	1206	effect\T_날라차기	800	listener
+wav	1206	effect\T_날라차기	1040	listener
+wav	604	effect\ef_hit6	0
+wav	599	effect\EF_BeginSpell	80
+wav	602	effect\ef_hit6	320
+wav	606	amon_ra_die01	0	listener
+wav	607	effect\vallentine	0	listener
+wav	840	effect\EF_BeginSpell	0
+wav	841	effect\EF_BeginSpell	0
+wav	842	effect\EF_BeginSpell	0
+wav	843	effect\EF_BeginSpell	0
+wav	844	effect\EF_BeginSpell	0
+wav	845	effect\EF_BeginSpell	0
+wav	608	_heal_effect	0
+wav	609	caramel_die	0
+wav	612	effect\itempokjuk	0
+wav	613	effect\닌자_던지기	0
+wav	614	effect\닌자_던지기	0
+wav	615	effect\닌자_던지기	0
+wav	616	effect\닌자_던지기	0
+wav	618	effect\EF_FireArrow%d	192	1	3
+wav	618	effect\EF_FireArrow%d	208	1	3
+wav	618	effect\EF_FireArrow%d	224	1	3
+wav	618	effect\EF_FireArrow%d	240	1	3
+wav	619	effect\ef_icearrow%d	0	1	3
+wav	621	effect\풍인	0
+wav	622	effect\ef_thunderstorm	0
+wav	623	effect\피어싱샷	448
+wav	624	effect\t_바람방출	16
+wav	627	effect\디스암	336
+wav	628	effect\더스트샷	0
+wav	630	effect\그림자베기	0
+wav	631	effect\다다미뒤집기	0
+wav	632	effect\안개베기	0
+wav	633	effect\일섬	0
+wav	634	effect\화염진	0
+wav	635	effect\폭염룡	0
+wav	636	effect\빙정락	0
+wav	637	effect\데스페라도	160
+wav	643	effect\래피드샤워	320
+wav	644	effect\매지컬블릿	0
+wav	648	effect\트리플액션	400	listener
+wav	666	effect\earth_quake	0
+wav	668	effect\dragonfear	16
+wav	669	effect\wideb	16
+wav	670	effect\dragonfear	0
+wav	675	effect\kyrie_guard	0
+wav	676	effect\EF_DecAgility	160
+wav	677	effect\wideb	16
+wav	682	effect\itempokjuk	0
+wav	683	effect\itempokjuk	0
+wav	684	effect\itempokjuk	0
+wav	685	effect\itempokjuk	0
+wav	686	effect\itempokjuk	0
+wav	708	effect\wizard_stormgust	0
+wav	717	effect\wewish	0
+wav	718	effect\ab_judex	0
+wav	721	effect\ab_adoramus	0
+wav	722	effect\wl_jackfrost	0	listener
+wav	723	hundred	0
+wav	725	effect\priest_benedictio	0
+wav	726	effect\t_에너지방출	0
+wav	727	effect\crimson_r	0
+wav	731	dragon_h	0
+wav	732	effect\wizard_earthspike	0
+wav	734	effect\chainlight	0
+wav	744	effect\assasin_cloaking	0
+wav	750	effect\ac_concentration	0
+wav	751	effect\EF_FireBall	80	listener
+wav	769	effect\T_날라차기	80	listener
+wav	769	effect\T_날라차기	320	listener
+wav	769	effect\T_날라차기	560	listener
+wav	769	effect\T_날라차기	800	listener
+wav	769	effect\T_날라차기	1040	listener
+wav	770	effect\복호격	16
+wav	770	effect\복호격	176
+wav	770	effect\복호격	336
+wav	770	effect\복호격	496
+wav	771	effect\assasin_enchantpoison	16	listener
+wav	771	effect\EF_PoisonAttack	16	listener
+wav	775	effect\EF_BeginSpell	0
+wav	776	effect\데스페라도	720	listener
+wav	777	effect\EF_IncAgility	0
+wav	779	effect\소울 체인지	0
+wav	780	effect\cru_grand cross	0
+wav	781	effect\MAGNETICFIELD	80
+wav	782	effect\black_maximize_power_sword_bic	0
+wav	782	effect\mon_금강불괴	0	listener
+wav	786	effect\ANALYZE	0
+wav	791	ice_titan_attack	0	listener
+wav	794	effect\INFRAREDSCAN	0	listener
+wav	797	effect\wl_siennaexecrate	0	listener
+wav	799	effect\wl_stasis	96	listener
+wav	802	effect\wl_whiteimprison	0
+wav	803	effect\wl_recognizedspell	0
+wav	804	effect\wizard_meteo	0
+wav	804	effect\hunter_blastmine	0
+wav	804	effect\wl_tetravortex	160
+wav	804	effect\wl_tetravortex	320
+wav	804	effect\wl_tetravortex	800
+wav	804	effect\wl_tetravortex	1280
+wav	805	effect\EF_BeginSpell	0	listener
+wav	806	effect\맹호경파산	0	listener
+wav	809	effect\assasin_cloaking	0
+wav	811	effect\bodypaint	0	listener
+wav	812	effect\deadlyinfect	0	listener
+wav	813	effect\enervation	0	listener
+wav	814	effect\groomy	0	listener
+wav	815	effect\ignorance	0	listener
+wav	816	effect\laziness	0	listener
+wav	817	effect\unlucky	0	listener
+wav	818	effect\weakness	0	listener
+wav	820	effect\복호격	16
+wav	820	effect\복호격	176
+wav	820	effect\복호격	336
+wav	820	effect\복호격	496
+wav	823	effect\manhole	0	listener
+wav	825	effect\dimension	16	listener
+wav	827	effect\chaospanic	0
+wav	828	effect\maelstrom	0
+wav	829	effect\bloodylust	0
+wav	830	effect\EF_BeginSpell	16	listener
+wav	831	effect\EF_BeginSpell	0
+wav	832	effect\기공포	0	listener
+wav	833	effect\AB_duplelight	0	listener
+wav	853	effect\사망의골짜기에서	0	listener
+wav	856	effect\reverberation	0	listener
+wav	857	effect\rainstorm	0
+wav	858	effect\안식의자장가	0
+wav	860	effect\POEMOFNETHERWORLD	0
+wav	861	effect\순환하는자연의소리	0
+wav	862	effect\AB_ancilla	0	listener
+wav	863	effect\LG_EARTHDRIVE	0	listener
+wav	866	effect\워그와함께춤을	0	listener
+wav	868	effect\마나의노래	0	listener
+wav	869	effect\metalic	0	listener
+wav	869	effect\복호격	16
+wav	869	effect\복호격	176
+wav	869	effect\복호격	336
+wav	869	effect\복호격	496
+wav	870	effect\새터데이나이트피버	0	listener
+wav	872	effect\SR_LIGHTNINGWALK	0	listener
+wav	874	effect\멜로디오브싱크	0	listener
+wav	876	effect\비욘드오브워크라이	0	listener
+wav	878	effect\언리미티드허밍보이스	0	listener
+wav	879	effect\세이렌의목소리	0
+wav	882	effect\LG_EXEEDBREAK	160
+wav	883	effect\ef_readyportal	0
+wav	885	effect\mon_맹룡과강	80
+wav	888	effect\sr_earthshaker	0
+wav	889	effect\mon_맹룡과강	80
+wav	892	effect\EF_hit2	160
+wav	892	effect\EF_hit4	320
+wav	1030	effect\EF_hit2	160
+wav	1030	effect\EF_hit4	320
+wav	1030	effect\LG_CANNONSPEAR	0	listener
+wav	1032	effect\kyrie_guard	0
+wav	893	effect\SR_KNUCKLEARROW	0	listener
+wav	905	effect\LG_TRAMPLE	0	listener
+wav	906	effect\프레셔	48
+wav	906	effect\LG_SHIELDPRESS	400
+wav	907	effect\LG_PINPOINTATTACK	416
+wav	908	effect\lg_prestige	0
+wav	909	effect\LG_BANDING	160
+wav	910	effect\LG_INSPIRATION	160
+wav	911	effect\EF_BeginSpell	0
+wav	922	effect\s사이킥웨이브	0
+wav	928	effect\wl_jackfrost	0
+wav	929	effect\s워머	0	listener
+wav	930	effect\프레셔	0
+wav	942	effect\wizard_waterball_chulung	0	listener
+wav	943	effect\기공포	0	listener
+wav	944	effect\매직 크래쉬	16	listener
+wav	949	effect\EF_FrostDiver2	0	listener
+wav	952	effect\EF_IceArrow1	0	listener
+wav	954	effect\EF_FrostDiver	0	listener
+wav	1042	effect\all_full_throttle	0
+wav	1043	effect\sr_flashcombo	0
+wav	1046	effect\so_elemental_shield	0
+wav	1047	effect\ab_offertorium	0
+wav	1048	effect\wl_telekinesis_intense	0
+wav	1049	effect\gn_illusiondoping	0
+wav	1050	effect\nc_magma_eruption	0
+wav	1062	effect\RL_HAMMER_OF_GOD	0
+wav	1082	effect\기공포	320
+wav	1088	effect\EF_FireWall	0
+wav	1104	effect\su_cn_powdering	0
+wav	1110	effect\su_roottwist	0
+wav	1125	effect\su_nyanggrass	0
+wav	2183	effect\IG_SHIELD_SHOOTING	0
+wav	1756	effect\AG_CRIMSON_ARROW1	0
+wav	2114	effect\ABC_FRENZY_SHOT	0
+wav	1837	effect\SHC_SAVAGE_IMPACT	0
+wav	1872	effect\ef_beginspell	0
+wav	1876	effect\ef_beginspell	0
+wav	1902	effect\ef_beginspell	0
+wav	1910	effect\ef_beginspell	0
+wav	1918	effect\ef_beginspell	0
+wav	1923	effect\ef_beginspell	0
+wav	1932	effect\ef_beginspell	0
+wav	1938	effect\ef_beginspell	0
+wav	1959	effect\ef_beginspell	0
+wav	1963	effect\ef_beginspell	0
+wav	1986	effect\ef_beginspell	0
+wav	1998	effect\ef_beginspell	0
+wav	2240	effect\ef_beginspell	0
+wav	2249	effect\ef_beginspell	0
+wav	2255	effect\ef_beginspell	0
+wav	2288	effect\EF_IncAgility	0
+wav	2294	effect\EF_IncAgility	0
+wav	2296	effect\EF_IncAgility	0
+wav	2298	effect\EF_IncAgility	0
+wav	2300	effect\EF_IncAgility	0
+wav	1418	effect\ef_beginspell	0
+wav	1449	effect\ef_beginspell	0
+wav	1556	effect\ef_beginspell	0
+wav	1560	effect\ef_beginspell	0
+wav	1565	effect\ef_beginspell	0
+wav	1656	effect\EF_BeginSpell	0
+wav	1664	effect\ef_beginspell	0
+wav	1677	effect\ef_beginspell	0
+wav	1709	effect\ef_beginspell	0
+wav	1569	effect\REVERBERATION	0	listener
+# ponytail: the game plays Severe Rainstorm's rain sound at the listener.
+wav	1276	effect\rainstorm	0
+wav	1286	effect\EF_BeginSpell	0
+wav	1286	effect\EF_BeginSpell	0
+wav	1286	effect\EF_BeginSpell	0
+wav	1286	effect\EF_BeginSpell	0
+wav	1365	effect\T_회오리차기	80
+wav	1409	effect\LG_CANNONSPEAR	0	listener
+wav	1575	effect\SR_GATEOFHELL	0	listener
+wav	1584	effect\metalic	0	listener
+wav	914	effect\G스포어익스플로젼	0
+wav	916	effect\EF_FireWall	0	listener
+wav	917	effect\EF_FireWall	0	listener
+wav	918	effect\EF_FireWall	0	listener
+wav	921	effect\S스펠피스트	0	listener
+wav	923	effect\S포이즌버스터	0	listener
+wav	931	effect\S포이즌버스터	0	listener
+wav	969	effect\안식의자장가	0	listener
+wav	981	effect\T_회오리차기	0
+wav	983	effect\닌자_던지기	0
+# ponytail: Swirling Petal's sound plays at its object; the game plays it at the listener.
+wav	984	effect\T_회오리차기	0
+wav	989	effect\닌자_던지기	0
+wav	990	effect\폭염룡	0
+wav	1044	effect\rk_luxanima	0
+wav	1132	effect\mon_금강불괴	0
+wav	1195	effect\EF_BeginSpell	0
+wav	1399	effect\wizard_earthspike	0
+wav	1600	effect\kyrie_guard	0
+hit	1	0	-1
+hit	2	0	-1
+hit	3	0	-1
+hit	4	0	-1
+hit	5	0	1
+hit	6	0	-1
+hit	8	0	-1
+hit	9	0	-1
+hit	10	0	-1
+hit	11	0	1
+hit	12	0	-1
+hit	13	0	1
+hit	16	0	-1
+hit	18	0	-1
+hit	21	0	-1
+hit	22	0	-1
+hit	23	0	-1
+hit	24	0	-1
+hit	25	0	-1
+hit	26	0	-1
+hit	27	0	-1
+hit	28	0	1
+hit	29	0	1
+hit	30	0	-1
+hit	31	0	-1
+hit	32	0	-1
+hit	33	0	-1
+hit	34	0	1
+hit	35	0	-1
+hit	36	0	-1
+hit	37	0	-1
+hit	38	0	-1
+hit	39	0	-1
+hit	40	0	-1
+hit	41	0	-1
+hit	42	0	-1
+hit	43	0	-1
+hit	44	0	-1
+hit	45	0	-1
+hit	46	0	1
+hit	47	0	1
+hit	48	0	-1
+hit	49	0	-1
+hit	50	0	-1
+hit	51	0	-1
+hit	52	0	-1
+hit	53	0	-1
+hit	55	0	-1
+hit	60	0	-1
+hit	61	0	-1
+hit	62	0	73
+hit	63	0	-1
+hit	64	0	-1
+hit	65	0	-1
+hit	66	0	-1
+hit	67	0	-1
+hit	68	0	-1
+hit	69	0	-1
+hit	70	0	-1
+hit	71	0	-1
+hit	72	0	-1
+hit	73	0	-1
+hit	74	0	-1
+hit	75	0	-1
+hit	76	0	-1
+hit	77	0	-1
+hit	78	0	-1
+hit	79	0	-1
+hit	80	0	-1
+hit	81	0	-1
+hit	82	0	-1
+hit	83	0	-1
+hit	84	0	94
+hit	85	0	-1
+hit	86	0	-1
+hit	87	0	-1
+hit	88	0	-1
+hit	89	0	-1
+hit	92	0	-1
+hit	93	0	-1
+hit	94	0	-1
+hit	95	0	-1
+hit	96	0	-1
+hit	97	0	-1
+hit	98	0	-1
+hit	99	0	-1
+hit	100	0	-1
+hit	101	0	-1
+hit	102	0	-1
+hit	103	0	-1
+hit	104	0	-1
+hit	105	0	-1
+hit	106	0	-1
+hit	107	0	-1
+hit	108	0	-1
+hit	109	0	-1
+hit	110	0	-1
+hit	111	0	-1
+hit	112	0	-1
+hit	113	0	-1
+hit	114	0	-1
+hit	115	0	-1
+hit	129	-1	115
+hit	116	0	-1
+hit	117	0	-1
+hit	118	0	-1
+hit	119	0	-1
+hit	120	0	-1
+hit	121	0	-1
+hit	122	0	-1
+hit	123	0	-1
+hit	124	0	-1
+hit	125	0	-1
+hit	126	0	-1
+hit	127	0	-1
+hit	128	0	-1
+hit	130	0	-1
+hit	131	0	-1
+hit	132	0	-1
+hit	133	0	-1
+hit	134	0	-1
+hit	135	0	-1
+hit	136	0	-1
+hit	137	0	132
+hit	138	0	-1
+hit	139	0	-1
+hit	140	0	-1
+hit	141	0	-1
+hit	142	0	-1
+hit	143	0	-1
+hit	144	0	-1
+hit	145	0	-1
+hit	146	0	-1
+hit	147	0	-1
+hit	148	0	-1
+hit	149	0	-1
+hit	150	0	-1
+hit	151	0	-1
+hit	152	0	-1
+hit	153	0	-1
+hit	154	0	-1
+hit	155	0	-1
+hit	156	0	152
+hit	157	0	-1
+hit	158	0	-1
+hit	159	0	-1
+hit	160	0	-1
+hit	161	0	-1
+hit	162	0	-1
+hit	163	0	-1
+hit	164	0	-1
+hit	165	0	-1
+hit	166	0	-1
+hit	167	0	-1
+hit	168	0	-1
+hit	169	0	-1
+hit	170	0	-1
+hit	171	0	-1
+hit	172	0	-1
+hit	173	0	-1
+hit	174	0	-1
+hit	175	0	-1
+hit	176	0	125
+hit	177	0	-1
+hit	178	0	-1
+hit	179	0	-1
+hit	180	0	-1
+hit	181	0	-1
+hit	182	0	-1
+hit	183	0	-1
+hit	191	0	-1
+hit	192	0	-1
+hit	193	0	-1
+hit	194	0	-1
+hit	195	0	-1
+hit	196	0	-1
+hit	197	0	-1
+hit	198	0	-1
+hit	199	0	-1
+hit	200	0	-1
+hit	201	0	-1
+hit	202	0	-1
+hit	203	0	-1
+hit	204	0	-1
+hit	205	0	-1
+hit	206	0	-1
+hit	207	0	-1
+hit	208	0	-1
+hit	209	0	-1
+hit	210	0	-1
+hit	211	0	-1
+hit	212	0	-1
+hit	213	0	-1
+hit	214	0	-1
+hit	215	0	-1
+hit	216	0	-1
+hit	217	0	-1
+hit	218	0	-1
+hit	219	0	-1
+hit	220	0	-1
+hit	221	0	-1
+hit	222	0	-1
+hit	223	0	-1
+hit	224	0	-1
+hit	225	0	-1
+hit	226	0	-1
+hit	227	0	-1
+hit	228	0	-1
+hit	229	0	-1
+hit	230	0	-1
+hit	231	0	-1
+hit	232	0	-1
+hit	233	0	-1
+hit	234	0	-1
+hit	235	0	-1
+hit	236	0	-1
+hit	237	0	-1
+hit	238	0	-1
+hit	239	0	-1
+hit	240	0	-1
+hit	241	0	-1
+hit	242	0	-1
+hit	243	0	-1
+hit	244	0	-1
+hit	245	0	-1
+hit	246	0	-1
+hit	247	0	-1
+hit	248	0	-1
+hit	249	0	-1
+hit	250	0	-1
+hit	251	0	-1
+hit	252	0	-1
+hit	253	0	-1
+hit	254	0	-1
+hit	255	0	-1
+hit	256	0	-1
+hit	257	0	-1
+hit	258	0	-1
+hit	259	0	-1
+hit	260	0	-1
+hit	261	0	-1
+hit	262	0	-1
+hit	263	0	-1
+hit	264	0	-1
+hit	265	0	-1
+hit	266	0	-1
+hit	267	0	1
+hit	268	0	-1
+hit	269	0	-1
+hit	270	0	-1
+hit	271	0	-1
+hit	272	0	-1
+hit	273	0	-1
+hit	274	0	-1
+hit	275	0	-1
+hit	276	0	-1
+hit	277	0	-1
+hit	278	0	-1
+hit	279	0	-1
+hit	280	0	-1
+hit	281	0	-1
+hit	282	0	-1
+hit	283	0	-1
+hit	284	0	-1
+hit	285	0	-1
+hit	286	0	-1
+hit	287	0	-1
+hit	288	0	-1
+hit	289	0	-1
+hit	290	0	-1
+hit	291	0	-1
+hit	292	0	-1
+hit	293	0	-1
+hit	294	0	-1
+hit	295	0	-1
+hit	296	0	-1
+hit	297	0	-1
+hit	298	0	-1
+hit	299	0	-1
+hit	300	0	-1
+hit	301	0	-1
+hit	302	0	-1
+hit	303	0	-1
+hit	304	0	-1
+hit	305	0	-1
+hit	306	0	-1
+hit	307	0	-1
+hit	308	0	-1
+hit	309	0	-1
+hit	310	0	-1
+hit	311	0	-1
+hit	312	0	-1
+hit	313	0	-1
+hit	314	0	-1
+hit	315	0	-1
+hit	316	0	-1
+hit	317	0	-1
+hit	318	0	-1
+hit	319	0	-1
+hit	320	0	-1
+hit	321	0	-1
+hit	322	0	-1
+hit	323	0	-1
+hit	324	0	-1
+hit	325	0	-1
+hit	326	0	-1
+hit	327	0	-1
+hit	328	0	-1
+hit	329	0	-1
+hit	330	0	-1
+hit	331	0	-1
+hit	332	0	-1
+hit	333	0	-1
+hit	334	0	-1
+hit	335	0	-1
+hit	336	0	-1
+hit	337	0	-1
+hit	338	0	-1
+hit	339	0	-1
+hit	340	0	-1
+hit	341	0	-1
+hit	342	0	-1
+hit	343	0	-1
+hit	344	0	-1
+hit	345	0	-1
+hit	346	0	-1
+hit	348	0	-1
+hit	349	0	-1
+hit	350	0	-1
+hit	351	0	-1
+hit	352	0	-1
+hit	353	0	-1
+hit	354	0	-1
+hit	355	0	-1
+hit	356	0	-1
+hit	357	0	-1
+hit	358	0	-1
+hit	359	0	-1
+hit	360	0	-1
+hit	361	0	-1
+hit	362	0	-1
+hit	363	0	-1
+hit	364	0	-1
+hit	365	0	-1
+hit	366	0	-1
+hit	367	0	-1
+hit	368	0	-1
+hit	369	0	-1
+hit	370	0	-1
+hit	371	0	-1
+hit	372	0	-1
+hit	373	0	-1
+hit	374	0	-1
+hit	375	0	-1
+hit	376	0	-1
+hit	377	0	-1
+hit	378	0	-1
+hit	379	0	-1
+hit	380	0	-1
+hit	381	0	-1
+hit	382	0	-1
+hit	383	0	-1
+hit	384	0	-1
+hit	385	0	-1
+hit	386	0	-1
+hit	387	0	-1
+hit	388	0	-1
+hit	389	0	-1
+hit	390	0	-1
+hit	391	0	-1
+hit	392	0	-1
+hit	393	0	-1
+hit	394	0	-1
+hit	395	0	-1
+hit	396	0	-1
+hit	398	0	-1
+hit	399	0	-1
+hit	400	0	-1
+hit	401	0	-1
+hit	402	0	-1
+hit	403	0	-1
+hit	404	0	-1
+hit	405	0	-1
+hit	406	0	-1
+hit	407	0	-1
+hit	408	0	-1
+hit	409	0	-1
+hit	410	0	-1
+hit	473	0	-1
+hit	474	0	-1
+hit	475	0	-1
+hit	476	0	-1
+hit	477	0	-1
+hit	478	0	-1
+hit	479	0	-1
+hit	480	0	-1
+hit	481	0	-1
+hit	482	0	-1
+hit	483	0	-1
+hit	484	0	-1
+hit	485	0	-1
+hit	486	0	-1
+hit	487	0	-1
+hit	488	0	-1
+hit	489	0	-1
+hit	490	0	-1
+hit	491	0	-1
+hit	492	0	-1
+hit	7	49	-1
+hit	17	49	1
+hit	19	49	-1
+hit	8202	49	-1
+hit	14	51	-1
+hit	15	51	28
+hit	20	52	-1
+hit	54	152	-1
+hit	90	147	147
+hit	91	147	-1
+hit	770	147	-1
+hit	190	180	-1
+hit	2600	180	-1
+hit	2602	180	-1
+hit	467	549	-1
+hit	468	549	-1
+hit	2332	549	550
+hit	2022	1567	-1
+hit	2202	1591	1592
+hit	2307	-1	1411
+hit	2317	1689	-1
+hit	2519	1689	-1
+hit	2414	1593	-1
+hit	2446	1623	-1
+hit	5243	2095	2096
+hit	5274	1826	-1
+hit	5320	2132	-1
+hit	5322	2115	-1
+caster	1	16
+caster	2	16
+caster	3	16
+caster	4	16
+caster	6	16
+caster	8	16
+caster	36	16
+caster	37	16
+caster	38	16
+caster	39	16
+caster	40	16
+caster	41	16
+caster	43	16
+caster	44	16
+caster	48	16
+caster	49	16
+caster	50	16
+caster	52	16
+caster	53	16
+caster	355	16
+caster	5	16
+caster	7	16
+caster	42	16
+caster	46	16
+caster	366	16
+caster	499	16
+caster	1009	16
+caster	8202	16
+caster	9	12
+caster	10	12
+caster	11	-1
+caster	12	-1
+caster	13	-1
+caster	14	-1
+caster	15	-1
+caster	16	-1
+caster	17	-1
+caster	18	-1
+caster	19	-1
+caster	20	-1
+caster	21	-1
+caster	22	12
+caster	23	12
+caster	24	12
+caster	25	12
+caster	26	12
+caster	27	-1
+caster	30	-1
+caster	31	12
+caster	32	-1
+caster	33	-1
+caster	35	12
+caster	54	12
+caster	65	12
+caster	66	12
+caster	67	12
+caster	68	12
+caster	69	12
+caster	70	12
+caster	71	12
+caster	72	12
+caster	73	12
+caster	74	12
+caster	75	12
+caster	76	12
+caster	77	-1
+caster	78	12
+caster	79	12
+caster	80	12
+caster	81	12
+caster	82	12
+caster	83	12
+caster	84	12
+caster	85	12
+caster	86	-1
+caster	87	12
+caster	88	12
+caster	89	12
+caster	90	12
+caster	91	12
+caster	92	12
+caster	340	-1
+caster	341	12
+caster	342	12
+caster	400	12
+caster	483	12
+caster	669	12
+caster	694	12
+caster	723	12
+caster	769	12
+caster	770	12
+caster	1006	12
+caster	2533	-1
+caster	2534	-1
+caster	2536	-1
+caster	2537	12
+caster	8222	12
+caster	28	-1
+caster	34	-1
+caster	136	-1
+caster	156	-1
+caster	157	-1
+caster	334	-1
+caster	335	-1
+caster	408	-1
+caster	487	-1
+caster	489	-1
+caster	689	-1
+caster	2051	-1
+caster	5063	-1
+caster	5064	-1
+caster	5065	-1
+caster	29	-1
+caster	151	-1
+caster	304	-1
+caster	690	-1
+caster	45	43
+caster	47	-1
+caster	212	-1
+caster	214	-1
+caster	219	-1
+caster	253	-1
+caster	266	-1
+caster	267	-1
+caster	338	-1
+caster	367	-1
+caster	368	-1
+caster	379	-1
+caster	382	-1
+caster	406	-1
+caster	502	-1
+caster	503	-1
+caster	512	-1
+caster	513	-1
+caster	514	-1
+caster	515	-1
+caster	518	-1
+caster	519	-1
+caster	520	-1
+caster	661	-1
+caster	674	-1
+caster	712	-1
+caster	728	-1
+caster	732	-1
+caster	740	-1
+caster	1001	-1
+caster	1005	-1
+caster	2004	-1
+caster	2005	-1
+caster	2006	-1
+caster	2017	-1
+caster	2023	-1
+caster	2030	-1
+caster	2031	-1
+caster	2036	-1
+caster	2037	-1
+caster	2233	-1
+caster	2236	-1
+caster	2259	-1
+caster	2261	-1
+caster	2280	-1
+caster	2284	-1
+caster	2288	-1
+caster	2298	-1
+caster	2314	-1
+caster	2317	-1
+caster	2320	-1
+caster	2324	-1
+caster	2342	-1
+caster	2476	-1
+caster	5245	-1
+caster	5248	-1
+caster	5249	-1
+caster	5250	-1
+caster	5277	-1
+caster	5283	-1
+caster	5287	-1
+caster	5289	-1
+caster	5294	-1
+caster	5295	-1
+caster	5296	-1
+caster	5344	-1
+caster	5345	-1
+caster	5346	-1
+caster	5348	-1
+caster	8601	-1
+caster	8602	-1
+caster	8603	-1
+caster	8604	-1
+caster	8605	-1
+caster	51	-1
+caster	55	-1
+caster	60	-1
+caster	63	-1
+caster	64	-1
+caster	93	-1
+caster	94	-1
+caster	95	-1
+caster	96	-1
+caster	97	-1
+caster	98	-1
+caster	99	-1
+caster	100	-1
+caster	101	-1
+caster	102	-1
+caster	103	-1
+caster	104	-1
+caster	105	-1
+caster	106	-1
+caster	107	-1
+caster	108	-1
+caster	110	-1
+caster	111	-1
+caster	112	-1
+caster	113	-1
+caster	114	-1
+caster	126	-1
+caster	127	-1
+caster	128	-1
+caster	129	-1
+caster	130	-1
+caster	131	-1
+caster	132	-1
+caster	133	-1
+caster	134	-1
+caster	135	-1
+caster	137	-1
+caster	138	-1
+caster	139	-1
+caster	140	-1
+caster	141	-1
+caster	153	-1
+caster	158	-1
+caster	159	-1
+caster	160	-1
+caster	161	-1
+caster	162	-1
+caster	163	-1
+caster	164	-1
+caster	165	-1
+caster	166	-1
+caster	167	-1
+caster	168	-1
+caster	169	-1
+caster	170	-1
+caster	171	-1
+caster	172	-1
+caster	173	-1
+caster	174	-1
+caster	175	-1
+caster	176	-1
+caster	177	-1
+caster	178	-1
+caster	179	-1
+caster	180	-1
+caster	181	-1
+caster	182	-1
+caster	183	-1
+caster	184	-1
+caster	185	-1
+caster	186	-1
+caster	187	-1
+caster	188	-1
+caster	189	-1
+caster	190	-1
+caster	191	-1
+caster	192	-1
+caster	234	-1
+caster	235	-1
+caster	236	-1
+caster	237	-1
+caster	258	-1
+caster	264	-1
+caster	271	-1
+caster	272	-1
+caster	273	-1
+caster	371	-1
+caster	383	-1
+caster	459	-1
+caster	479	-1
+caster	486	-1
+caster	495	-1
+caster	544	-1
+caster	654	-1
+caster	663	-1
+caster	666	-1
+caster	667	-1
+caster	668	-1
+caster	675	-1
+caster	676	-1
+caster	678	-1
+caster	721	-1
+caster	724	-1
+caster	757	-1
+caster	758	-1
+caster	759	-1
+caster	760	-1
+caster	762	-1
+caster	780	-1
+caster	783	-1
+caster	2033	-1
+caster	2038	-1
+caster	2040	-1
+caster	2055	-1
+caster	2056	-1
+caster	2326	-1
+caster	2328	-1
+caster	2329	-1
+caster	2332	-1
+caster	2335	-1
+caster	2338	-1
+caster	2341	-1
+caster	2519	-1
+caster	2584	-1
+caster	2592	-1
+caster	2602	-1
+caster	2604	-1
+caster	5030	-1
+caster	5036	-1
+caster	5043	-1
+caster	5205	-1
+caster	5210	-1
+caster	5214	-1
+caster	5220	-1
+caster	5230	-1
+caster	5233	-1
+caster	5234	-1
+caster	5235	-1
+caster	5237	-1
+caster	5251	-1
+caster	5252	-1
+caster	5253	-1
+caster	5265	-1
+caster	5273	-1
+caster	5274	-1
+caster	5284	-1
+caster	5290	-1
+caster	5326	-1
+caster	5329	-1
+caster	5336	-1
+caster	5338	-1
+caster	5339	-1
+caster	5347	-1
+caster	5356	-1
+caster	5357	-1
+caster	5369	-1
+caster	5373	-1
+caster	5380	-1
+caster	5389	-1
+caster	5390	-1
+caster	5391	-1
+caster	5392	-1
+caster	5393	-1
+caster	8425	-1
+caster	8426	-1
+caster	8428	-1
+caster	8430	-1
+caster	8431	-1
+caster	8433	-1
+caster	8434	-1
+caster	8435	-1
+caster	8442	-1
+caster	8443	-1
+caster	8444	-1
+caster	8445	-1
+caster	8446	-1
+caster	8447	-1
+caster	8448	-1
+caster	8449	-1
+caster	8450	-1
+caster	8451	-1
+caster	8452	-1
+caster	8453	-1
+caster	8454	-1
+caster	8455	-1
+caster	8456	-1
+caster	8457	-1
+caster	56	-1
+caster	58	-1
+caster	61	-1
+caster	62	-1
+caster	109	-1
+caster	263	-1
+caster	370	-1
+caster	372	-1
+caster	397	-1
+caster	398	-1
+caster	399	-1
+caster	484	-1
+caster	1016	-1
+caster	2002	-1
+caster	2022	-1
+caster	5314	-1
+caster	5315	-1
+caster	5316	-1
+caster	5320	-1
+caster	5322	-1
+caster	5382	-1
+caster	57	144
+caster	59	-1
+caster	149	-1
+caster	152	-1
+caster	1004	-1
+caster	115	16
+caster	116	16
+caster	117	16
+caster	118	16
+caster	119	16
+caster	120	16
+caster	121	16
+caster	122	16
+caster	123	16
+caster	124	16
+caster	125	16
+caster	688	16
+caster	2238	16
+caster	2239	16
+caster	2249	16
+caster	2250	16
+caster	2251	16
+caster	2252	16
+caster	2253	16
+caster	2254	16
+caster	5335	16
+caster	196	-1
+caster	209	-1
+caster	249	-1
+caster	252	-1
+caster	257	-1
+caster	268	-1
+caster	349	-1
+caster	350	-1
+caster	356	-1
+caster	380	-1
+caster	384	-1
+caster	387	-1
+caster	411	-1
+caster	444	-1
+caster	8204	-1
+caster	8219	-1
+caster	8220	-1
+caster	229	-1
+caster	230	-1
+caster	231	-1
+caster	232	-1
+caster	250	-1
+caster	251	-1
+caster	480	-1
+caster	2480	-1
+caster	2493	-1
+caster	5340	-1
+caster	5341	-1
+caster	5342	-1
+caster	5343	-1
+caster	243	-1
+caster	244	-1
+caster	247	-1
+caster	337	-1
+caster	344	-1
+caster	345	-1
+caster	346	-1
+caster	365	-1
+caster	373	-1
+caster	374	-1
+caster	375	-1
+caster	381	-1
+caster	389	-1
+caster	402	-1
+caster	403	-1
+caster	425	-1
+caster	427	-1
+caster	434	-1
+caster	462	-1
+caster	463	-1
+caster	464	-1
+caster	465	-1
+caster	467	-1
+caster	468	-1
+caster	469	-1
+caster	470	-1
+caster	471	-1
+caster	472	-1
+caster	485	-1
+caster	493	-1
+caster	720	-1
+caster	731	-1
+caster	735	-1
+caster	736	-1
+caster	737	-1
+caster	738	-1
+caster	739	-1
+caster	741	-1
+caster	742	-1
+caster	744	-1
+caster	745	-1
+caster	2001	-1
+caster	2008	-1
+caster	2009	-1
+caster	2012	-1
+caster	2013	-1
+caster	2014	-1
+caster	2019	-1
+caster	2020	-1
+caster	2021	-1
+caster	2202	-1
+caster	2203	-1
+caster	2204	-1
+caster	2211	-1
+caster	2212	-1
+caster	2214	-1
+caster	2217	-1
+caster	2230	-1
+caster	2231	-1
+caster	2237	-1
+caster	2243	-1
+caster	2244	-1
+caster	2246	-1
+caster	2286	-1
+caster	2287	-1
+caster	2289	-1
+caster	2290	-1
+caster	2291	-1
+caster	2292	-1
+caster	2293	-1
+caster	2294	-1
+caster	2295	-1
+caster	2296	-1
+caster	2297	-1
+caster	2299	-1
+caster	2300	-1
+caster	2301	-1
+caster	2302	-1
+caster	2303	-1
+caster	2304	-1
+caster	2309	-1
+caster	2310	-1
+caster	2315	-1
+caster	2316	-1
+caster	2318	-1
+caster	2319	-1
+caster	2321	-1
+caster	2322	-1
+caster	2325	-1
+caster	2350	-1
+caster	2351	-1
+caster	2352	-1
+caster	2381	-1
+caster	2382	-1
+caster	2383	-1
+caster	2413	-1
+caster	2414	-1
+caster	2417	-1
+caster	2418	-1
+caster	2419	-1
+caster	2420	-1
+caster	2422	-1
+caster	2426	-1
+caster	2429	-1
+caster	2443	-1
+caster	2444	-1
+caster	2446	-1
+caster	2447	-1
+caster	2448	-1
+caster	2449	-1
+caster	2450	-1
+caster	2451	-1
+caster	2452	-1
+caster	2453	-1
+caster	2454	-1
+caster	2455	-1
+caster	2456	-1
+caster	2457	-1
+caster	2458	-1
+caster	2459	-1
+caster	2460	-1
+caster	2477	-1
+caster	2479	-1
+caster	2483	-1
+caster	2492	-1
+caster	2518	-1
+caster	5004	-1
+caster	5078	-1
+caster	8009	-1
+caster	8012	-1
+caster	8401	-1
+caster	256	16
+caster	261	16
+caster	269	16
+caster	369	16
+caster	401	16
+caster	730	16
+caster	1015	16
+caster	2334	16
+caster	306	-1
+caster	307	-1
+caster	308	-1
+caster	309	-1
+caster	310	-1
+caster	311	-1
+caster	312	-1
+caster	313	-1
+caster	325	-1
+caster	327	-1
+caster	328	-1
+caster	329	-1
+caster	330	-1
+caster	395	-1
+caster	396	-1
+caster	488	-1
+caster	316	-1
+caster	324	-1
+caster	394	-1
+caster	530	-1
+caster	2258	-1
+caster	2307	-1
+caster	2308	-1
+caster	2312	-1
+caster	5330	-1
+caster	317	-1
+caster	319	-1
+caster	320	-1
+caster	321	-1
+caster	322	-1
+caster	347	454
+caster	357	16
+caster	359	16
+caster	360	16
+caster	361	16
+caster	362	16
+caster	405	16
+caster	482	16
+caster	691	16
+caster	8206	16
+caster	8413	-1
+caster	8414	-1
+caster	8415	-1
+caster	8416	16
+caster	8417	16
+caster	8418	16
+caster	8419	-1
+caster	8420	-1
+caster	8421	-1
+caster	8422	-1
+caster	8423	-1
+caster	8424	-1
+caster	364	-1
+caster	412	-1
+caster	2015	-1
+caster	2285	-1
+caster	413	-1
+caster	2337	-1
+caster	2576	-1
+caster	414	-1
+caster	2478	-1
+caster	415	-1
+caster	2313	-1
+caster	416	-1
+caster	445	-1
+caster	447	-1
+caster	448	-1
+caster	449	-1
+caster	450	-1
+caster	451	-1
+caster	452	-1
+caster	453	-1
+caster	454	-1
+caster	455	-1
+caster	456	-1
+caster	457	-1
+caster	458	-1
+caster	460	-1
+caster	461	-1
+caster	494	-1
+caster	572	-1
+caster	573	-1
+caster	574	-1
+caster	575	-1
+caster	2333	-1
+caster	2340	-1
+caster	2596	-1
+caster	2597	-1
+caster	2598	-1
+caster	2599	-1
+caster	417	-1
+caster	2311	-1
+caster	2344	-1
+caster	2345	-1
+caster	2346	-1
+caster	2347	-1
+caster	2348	-1
+caster	2593	-1
+caster	418	-1
+caster	2018	-1
+caster	2343	-1
+caster	419	-1
+caster	420	-1
+caster	2323	-1
+caster	421	-1
+caster	2336	-1
+caster	426	-1
+caster	2581	-1
+caster	5023	-1
+caster	428	-1
+caster	429	-1
+caster	430	-1
+caster	431	-1
+caster	432	-1
+caster	433	-1
+caster	446	-1
+caster	478	-1
+caster	490	-1
+caster	2215	-1
+caster	2218	-1
+caster	2219	-1
+caster	2220	-1
+caster	2221	-1
+caster	2240	-1
+caster	2241	-1
+caster	2242	-1
+caster	2415	-1
+caster	2416	-1
+caster	2481	-1
+caster	2482	-1
+caster	2484	-1
+caster	2485	-1
+caster	2486	-1
+caster	2490	-1
+caster	2516	-1
+caster	5219	-1
+caster	5223	-1
+caster	5224	-1
+caster	5226	-1
+caster	5231	-1
+caster	5236	-1
+caster	5243	-1
+caster	5244	-1
+caster	500	-1
+caster	2256	-1
+caster	2260	-1
+caster	2271	-1
+caster	2272	-1
+caster	501	-1
+caster	504	-1
+caster	505	-1
+caster	506	-1
+caster	516	-1
+caster	517	-1
+caster	508	-1
+caster	521	-1
+caster	523	-1
+caster	524	-1
+caster	525	-1
+caster	526	-1
+caster	531	-1
+caster	534	-1
+caster	539	-1
+caster	540	-1
+caster	541	-1
+caster	542	-1
+caster	543	-1
+caster	3006	-1
+caster	3007	-1
+caster	3008	-1
+caster	527	-1
+caster	528	-1
+caster	529	-1
+caster	532	-1
+caster	535	-1
+caster	536	-1
+caster	537	-1
+caster	538	-1
+caster	707	16
+caster	2003	16
+caster	2011	16
+caster	719	49
+caster	1011	-1
+caster	1013	-1
+caster	2027	768
+caster	2028	16
+caster	2029	768
+caster	2032	771
+caster	2034	441
+caster	2262	441
+caster	8404	441
+caster	8406	441
+caster	2257	441
+caster	2445	441
+caster	2263	441
+caster	2264	441
+caster	2265	441
+caster	2267	441
+caster	2268	441
+caster	2273	441
+caster	2274	441
+caster	2269	441
+caster	2270	548
+caster	2275	58
+caster	2278	12
+caster	2279	12
+caster	2327	-1
+caster	2330	-1
+caster	2494	911
+caster	2495	911
+caster	2496	911
+caster	2497	911
+caster	8407	911
+caster	8409	911
+caster	2520	548
+caster	2580	-1
+caster	5021	-1
+caster	8410	56
+caster	11	-1
+caster	12	-1
+caster	13	-1
+caster	14	-1
+caster	15	-1
+caster	16	-1
+caster	17	-1
+caster	18	-1
+caster	19	-1
+caster	20	-1
+caster	21	-1
+caster	27	-1
+caster	29	-1
+caster	30	-1
+caster	32	-1
+caster	33	-1
+caster	77	-1
+caster	86	-1
+caster	340	-1
+caster	690	-1
+caster	731	-1
+caster	2008	-1
+caster	2533	-1
+caster	2534	-1
+caster	2536	-1
+caster	5004	-1
+# the cast table's None rows show no aura
+cast	1	16
+cast	2	16
+cast	3	16
+cast	4	16
+cast	5	16
+cast	6	16
+cast	7	16
+cast	8	16
+cast	9	12
+cast	10	12
+cast	11	12
+cast	12	12
+cast	13	12
+cast	14	12
+cast	15	12
+cast	16	12
+cast	17	12
+cast	18	12
+cast	19	12
+cast	20	12
+cast	21	12
+cast	22	12
+cast	23	12
+cast	24	12
+cast	25	12
+cast	26	12
+cast	27	12
+cast	28	12
+cast	29	12
+cast	30	12
+cast	31	12
+cast	32	12
+cast	33	12
+cast	34	12
+cast	35	12
+cast	36	16
+cast	37	16
+cast	38	16
+cast	39	16
+cast	40	16
+cast	41	16
+cast	42	16
+cast	43	16
+cast	44	16
+cast	45	43
+cast	46	16
+cast	47	-1
+cast	48	16
+cast	49	16
+cast	50	16
+cast	51	-1
+cast	52	16
+cast	53	16
+cast	54	12
+cast	55	-1
+cast	56	-1
+cast	57	144
+cast	58	-1
+cast	59	-1
+cast	60	-1
+cast	61	-1
+cast	62	-1
+cast	63	-1
+cast	64	-1
+cast	66	12
+cast	67	12
+cast	68	12
+cast	69	12
+cast	70	12
+cast	72	12
+cast	73	12
+cast	74	12
+cast	75	12
+cast	76	12
+cast	77	12
+cast	78	12
+cast	79	12
+cast	80	12
+cast	81	12
+cast	82	12
+cast	83	12
+cast	84	12
+cast	85	12
+cast	86	12
+cast	87	12
+cast	88	12
+cast	89	12
+cast	90	12
+cast	91	12
+cast	92	12
+cast	93	-1
+cast	94	16
+cast	95	16
+cast	96	16
+cast	97	16
+cast	98	16
+cast	99	16
+cast	100	16
+cast	101	16
+cast	102	16
+cast	103	16
+cast	104	16
+cast	105	16
+cast	106	16
+cast	107	16
+cast	108	12
+cast	109	16
+cast	110	16
+cast	111	16
+cast	112	16
+cast	113	16
+cast	114	16
+cast	115	16
+cast	116	16
+cast	117	16
+cast	118	16
+cast	119	16
+cast	120	16
+cast	121	16
+cast	122	16
+cast	123	16
+cast	124	16
+cast	125	16
+cast	126	16
+cast	127	16
+cast	128	16
+cast	129	16
+cast	130	16
+cast	131	16
+cast	132	16
+cast	133	16
+cast	134	16
+cast	135	16
+cast	136	-1
+cast	137	16
+cast	138	16
+cast	139	16
+cast	140	16
+cast	141	59
+cast	149	16
+cast	151	-1
+cast	152	-1
+cast	156	12
+cast	157	12
+cast	158	-1
+cast	159	-1
+cast	160	-1
+cast	161	-1
+cast	162	-1
+cast	163	-1
+cast	164	-1
+cast	165	-1
+cast	166	-1
+cast	167	-1
+cast	168	-1
+cast	169	-1
+cast	170	-1
+cast	171	-1
+cast	172	-1
+cast	173	-1
+cast	174	-1
+cast	175	-1
+cast	176	-1
+cast	177	-1
+cast	178	-1
+cast	179	-1
+cast	180	-1
+cast	181	-1
+cast	182	-1
+cast	183	-1
+cast	184	-1
+cast	185	-1
+cast	186	-1
+cast	187	-1
+cast	188	-1
+cast	189	-1
+cast	190	-1
+cast	191	-1
+cast	192	-1
+cast	196	-1
+cast	209	-1
+cast	230	12
+cast	231	12
+cast	232	12
+cast	234	12
+cast	235	12
+cast	236	12
+cast	237	12
+cast	243	342
+cast	244	342
+cast	247	342
+cast	249	-1
+cast	254	12
+cast	255	12
+cast	256	12
+cast	258	-1
+cast	261	12
+cast	262	12
+cast	266	12
+cast	267	12
+cast	268	12
+cast	270	-1
+cast	272	-1
+cast	273	-1
+cast	277	12
+cast	279	12
+cast	280	12
+cast	281	12
+cast	282	12
+cast	283	12
+cast	285	12
+cast	286	12
+cast	287	12
+cast	288	12
+cast	289	12
+cast	290	12
+cast	306	58
+cast	307	12
+cast	308	58
+cast	309	12
+cast	310	12
+cast	311	58
+cast	312	12
+cast	313	12
+cast	317	441
+cast	319	441
+cast	320	441
+cast	321	441
+cast	322	441
+cast	325	342
+cast	327	342
+cast	328	342
+cast	329	342
+cast	330	342
+cast	334	342
+cast	335	343
+cast	336	342
+cast	338	-1
+cast	339	12
+cast	340	12
+cast	341	12
+cast	342	12
+cast	344	59
+cast	345	59
+cast	346	59
+cast	347	-1
+cast	349	-1
+cast	350	59
+cast	361	58
+cast	362	58
+cast	365	12
+cast	367	58
+cast	368	-1
+cast	370	-1
+cast	371	-1
+cast	372	-1
+cast	373	12
+cast	374	12
+cast	375	12
+cast	379	59
+cast	382	58
+cast	383	58
+cast	389	1195
+cast	394	58
+cast	397	502
+cast	398	-1
+cast	399	-1
+cast	400	12
+cast	401	12
+cast	402	12
+cast	403	12
+cast	405	12
+cast	406	59
+cast	408	342
+cast	409	342
+cast	410	342
+cast	411	441
+cast	425	441
+cast	426	-1
+cast	427	441
+cast	434	441
+cast	444	441
+cast	445	441
+cast	446	12
+cast	447	441
+cast	448	441
+cast	449	441
+cast	450	441
+cast	451	441
+cast	452	441
+cast	453	441
+cast	454	441
+cast	455	441
+cast	456	441
+cast	457	441
+cast	458	441
+cast	459	16
+cast	460	441
+cast	461	441
+cast	462	441
+cast	463	441
+cast	464	441
+cast	465	441
+cast	467	441
+cast	468	441
+cast	469	441
+cast	470	441
+cast	471	441
+cast	472	441
+cast	475	59
+cast	478	12
+cast	479	12
+cast	480	58
+cast	482	12
+cast	483	58
+cast	484	12
+cast	486	16
+cast	489	58
+cast	490	12
+cast	493	441
+cast	494	441
+cast	495	-1
+cast	496	573
+cast	497	574
+cast	498	575
+cast	499	16
+cast	503	441
+cast	504	441
+cast	505	441
+cast	512	441
+cast	513	441
+cast	514	441
+cast	515	441
+cast	517	441
+cast	518	441
+cast	519	441
+cast	520	441
+cast	521	441
+cast	525	441
+cast	532	441
+cast	534	55
+cast	535	55
+cast	536	55
+cast	537	54
+cast	538	54
+cast	539	54
+cast	540	57
+cast	541	57
+cast	542	57
+cast	543	441
+cast	555	501
+cast	572	441
+cast	573	441
+cast	574	441
+cast	575	441
+cast	654	-1
+cast	661	59
+cast	663	-1
+cast	666	-1
+cast	667	-1
+cast	668	-1
+cast	669	12
+cast	675	-1
+cast	676	-1
+cast	678	-1
+cast	688	16
+cast	689	12
+cast	690	12
+cast	691	58
+cast	694	12
+cast	707	12
+cast	708	12
+cast	712	59
+cast	720	12
+cast	721	-1
+cast	723	12
+cast	724	-1
+cast	728	12
+cast	729	12
+cast	731	12
+cast	735	911
+cast	736	12
+cast	737	-1
+cast	738	12
+cast	739	12
+cast	740	12
+cast	741	12
+cast	742	12
+cast	744	57
+cast	745	55
+cast	757	-1
+cast	758	-1
+cast	759	-1
+cast	760	-1
+cast	762	-1
+cast	769	12
+cast	770	12
+cast	782	-1
+cast	783	-1
+cast	1001	58
+cast	1004	-1
+cast	1006	12
+cast	1008	54
+cast	1009	16
+cast	1010	58
+cast	1011	-1
+cast	1014	58
+cast	1015	12
+cast	1016	-1
+cast	1017	56
+cast	1018	55
+cast	1019	57
+cast	2001	12
+cast	2002	12
+cast	2004	12
+cast	2005	-1
+cast	2006	12
+cast	2008	12
+cast	2011	12
+cast	2012	12
+cast	2013	58
+cast	2014	12
+cast	2015	12
+cast	2018	12
+cast	2019	12
+cast	2020	12
+cast	2021	12
+cast	2022	-1
+cast	2032	768
+cast	2033	16
+cast	2036	12
+cast	2038	-1
+cast	2039	441
+cast	2040	12
+cast	2041	830
+cast	2042	830
+cast	2043	12
+cast	2044	12
+cast	2045	830
+cast	2046	12
+cast	2047	830
+cast	2048	830
+cast	2050	58
+cast	2051	12
+cast	2052	1560
+cast	2053	12
+cast	2054	12
+cast	2055	-1
+cast	2056	-1
+cast	2057	12
+cast	2201	12
+cast	2202	-1
+cast	2203	12
+cast	2204	1449
+cast	2205	12
+cast	2206	58
+cast	2206	803
+cast	2207	12
+cast	2209	441
+cast	2210	12
+cast	2211	12
+cast	2212	-1
+cast	2213	1418
+cast	2214	-1
+cast	2216	12
+cast	2217	805
+cast	2217	1277
+cast	2217	1261
+cast	2230	12
+cast	2231	58
+cast	2233	12
+cast	2234	16
+cast	2236	-1
+cast	2237	12
+cast	2239	16
+cast	2240	441
+cast	2241	-1
+cast	2242	-1
+cast	2243	12
+cast	2244	12
+cast	2246	12
+cast	2253	16
+cast	2254	16
+cast	2256	12
+cast	2258	12
+cast	2259	12
+cast	2260	12
+cast	2261	-1
+cast	2262	12
+cast	2267	775
+cast	2268	12
+cast	2270	55
+cast	2271	58
+cast	2272	54
+cast	2273	58
+cast	2274	441
+cast	2275	58
+cast	2278	-1
+cast	2280	775
+cast	2286	441
+cast	2287	826
+cast	2288	441
+cast	2290	501
+cast	2292	441
+cast	2293	441
+cast	2294	441
+cast	2295	441
+cast	2296	441
+cast	2297	441
+cast	2298	441
+cast	2299	441
+cast	2300	441
+cast	2301	12
+cast	2302	1556
+cast	2303	441
+cast	2304	501
+cast	2313	58
+cast	2314	58
+cast	2315	58
+cast	2316	882
+cast	2317	-1
+cast	2318	58
+cast	2319	58
+cast	2320	58
+cast	2321	-1
+cast	2322	830
+cast	2323	1709
+cast	2324	58
+cast	2325	58
+cast	2326	831
+cast	2327	831
+cast	2328	831
+cast	2329	831
+cast	2330	831
+cast	2332	831
+cast	2338	831
+cast	2340	831
+cast	2341	831
+cast	2343	-1
+cast	2344	831
+cast	2345	831
+cast	2346	831
+cast	2347	831
+cast	2348	831
+cast	2350	840
+cast	2351	840
+cast	2352	840
+cast	2381	844
+cast	2382	844
+cast	2383	441
+cast	2413	-1
+cast	2414	1656
+cast	2417	840
+cast	2418	1286
+cast	2419	840
+cast	2420	840
+cast	2421	841
+cast	2422	840
+cast	2423	841
+cast	2424	840
+cast	2425	840
+cast	2426	843
+cast	2427	843
+cast	2428	843
+cast	2429	-1
+cast	2430	843
+cast	2431	843
+cast	2432	843
+cast	2433	843
+cast	2434	843
+cast	2443	55
+cast	2444	57
+cast	2446	1664
+cast	2447	12
+cast	2448	12
+cast	2449	12
+cast	2450	12
+cast	2451	12
+cast	2452	12
+cast	2453	12
+cast	2454	1565
+cast	2455	12
+cast	2456	12
+cast	2457	12
+cast	2458	12
+cast	2459	12
+cast	2460	12
+cast	2476	911
+cast	2477	-1
+cast	2478	1677
+cast	2479	911
+cast	2480	911
+cast	2481	911
+cast	2482	-1
+cast	2483	911
+cast	2485	911
+cast	2486	911
+cast	2490	911
+cast	2492	-1
+cast	2494	911
+cast	2495	911
+cast	2496	911
+cast	2497	911
+cast	2515	58
+cast	2517	-1
+cast	2518	831
+cast	2520	-1
+cast	2533	12
+cast	2534	12
+cast	2536	12
+cast	2537	12
+cast	2564	-1
+cast	2579	12
+cast	2581	58
+cast	2582	58
+cast	2584	12
+cast	2585	58
+cast	2587	58
+cast	2596	441
+cast	2597	441
+cast	2598	441
+cast	2599	441
+cast	2600	454
+cast	2601	454
+cast	2602	454
+cast	2603	454
+cast	2604	454
+cast	2605	441
+cast	2606	454
+cast	2607	441
+cast	2608	441
+cast	2610	454
+cast	5002	16
+cast	5004	12
+cast	5023	-1
+cast	5026	-1
+cast	5027	-1
+cast	5028	12
+cast	5032	-1
+cast	5033	-1
+cast	5035	-1
+cast	5036	-1
+cast	5038	-1
+cast	5040	-1
+cast	5042	12
+cast	5043	-1
+cast	5063	342
+cast	5064	342
+cast	5065	342
+cast	5072	830
+cast	5073	58
+cast	5078	58
+cast	5210	12
+cast	5214	-1
+cast	5215	-1
+cast	5216	-1
+cast	5217	-1
+cast	5218	-1
+cast	5220	-1
+cast	5221	-1
+cast	5222	-1
+cast	5225	-1
+cast	5227	-1
+cast	5229	-1
+cast	5230	-1
+cast	5232	-1
+cast	5233	-1
+cast	5234	-1
+cast	5235	-1
+cast	5237	-1
+cast	5238	1986
+cast	5239	1998
+cast	5241	-1
+cast	5242	1963
+cast	5244	-1
+cast	5246	-1
+cast	5247	-1
+cast	5254	-1
+cast	5268	12
+cast	5269	-1
+cast	5271	-1
+cast	5272	-1
+cast	5273	-1
+cast	5275	-1
+cast	5278	-1
+cast	5279	1959
+cast	5280	-1
+cast	5281	-1
+cast	5282	-1
+cast	5284	1932
+cast	5294	-1
+cast	5302	1938
+cast	5303	1918
+cast	5304	1902
+cast	5305	1910
+cast	5313	-1
+cast	5315	-1
+cast	5316	-1
+cast	5318	-1
+cast	5319	-1
+cast	5321	-1
+cast	5329	-1
+cast	5331	1872
+cast	5332	-1
+cast	5333	1876
+cast	5335	1923
+cast	5338	-1
+cast	5339	-1
+cast	5340	-1
+cast	5341	-1
+cast	5342	-1
+cast	5343	-1
+cast	5344	-1
+cast	5345	-1
+cast	5346	-1
+cast	5347	-1
+cast	5348	-1
+cast	5357	-1
+cast	5361	-1
+cast	5367	-1
+cast	5368	-1
+cast	5369	-1
+cast	5370	-1
+cast	5371	-1
+cast	5372	-1
+cast	5373	-1
+cast	5375	-1
+cast	5376	-1
+cast	5377	-1
+cast	5378	-1
+cast	5379	-1
+cast	5380	-1
+cast	5381	58
+cast	5382	-1
+cast	5384	2249
+cast	5385	2249
+cast	5387	2240
+cast	5388	2255
+cast	5389	-1
+cast	5390	-1
+cast	5391	-1
+cast	5392	-1
+cast	5393	-1
+cast	8202	16
+cast	8220	-1
+cast	8222	12
+cast	8401	55
+cast	8425	55
+cast	8426	55
+cast	8428	55
+cast	8430	54
+cast	8431	54
+cast	8433	54
+cast	8434	57
+cast	8435	57
+cast	8442	56
+cast	8444	-1
+cast	8445	12
+cast	8447	-1
+cast	8448	12
+cast	8450	-1
+cast	8451	12
+cast	8453	-1
+cast	8454	12
+cast	8456	-1
+cast	8457	12
+cast	8603	-1
+cast	8604	-1
+cast	8605	-1
+cast	271	-1
+cast	2222	-1
+cast	2223	-1
+cast	2224	-1
+cast	2229	-1
+cast	2464	216
+cast	5478	12
+cast	5478	934
+cast	5493	1656
+cast	5493	812
+cast	5494	1656
+cast	5494	812
+cast	5495	1656
+cast	5495	812
+cast	5483	986
+cast	5484	986
+cast	5485	986
+cast	5487	986
+struck	13	caster	15
+struck	2278	target	1660
+struck	340	caster	451
+struck	14	target	26
+struck	15	caster	27
+struck	17	caster	24
+struck	19	target	31
+struck	20	target	29
+struck	21	target	30
+struck	28	target	320
+struck	56	caster	148
+struck	57	target	70
+struck	58	caster	150
+struck	59	caster	80
+struck	62	caster	149
+struck	77	caster	82
+# Jupitel Thunder launches its ball twice, both aimed alike: one brighter ball.
+struck	84	caster	93
+struck	84	caster	93
+struck	86	caster	117
+struck	90	target	79
+struck	136	caster	121
+struck	136	caster	143
+struck	137	caster	123
+struck	149	target	310
+struck	153	caster	170
+struck	160	caster	80
+struck	212	caster	275
+struck	250	target	246
+struck	251	caster	249
+struck	219	caster	227
+struck	674	target	227
+struck	253	target	245
+struck	338	target	245
+struck	254	caster	226
+struck	263	caster	329
+struck	266	caster	264
+struck	266	caster	267
+struck	267	caster	265
+struck	271	target	266
+struck	272	target	262
+struck	272	target	263
+struck	272	target	273
+struck	273	target	263
+struck	273	target	330
+struck	337	caster	494
+struck	339	caster	450
+struck	341	caster	93
+struck	341	caster	93
+struck	344	target	271
+struck	345	target	272
+struck	346	target	270
+struck	365	target	380
+struck	367	target	365
+struck	368	caster	366
+struck	371	target	263
+struck	371	target	377
+struck	372	target	263
+struck	372	target	512
+struck	379	caster	361
+struck	381	target	387
+struck	382	caster	388
+struck	394	caster	393
+struck	397	target	339
+struck	398	caster	399
+struck	399	caster	400
+struck	400	target	401
+struck	415	target	413
+struck	415	target	431
+struck	417	target	466
+struck	417	target	429
+struck	419	target	415
+struck	2580	target	415
+struck	419	target	430
+struck	2580	target	430
+struck	421	caster	457
+struck	421	caster	439
+struck	421	target	458
+struck	467	caster	547
+struck	468	caster	555
+struck	468	target	429
+struck	469	target	425
+struck	469	caster	553
+struck	469	target	431
+struck	469	target	554
+struck	480	target	520
+struck	485	target	518
+struck	501	target	548
+struck	502	target	648
+struck	503	target	649
+struck	507	target	644
+struck	512	target	647
+struck	514	caster	623
+struck	515	target	643
+struck	518	target	628
+struck	519	caster	584
+struck	520	caster	645
+struck	528	target	632
+struck	530	target	630
+struck	534	target	618
+hit	534	-1	49
+struck	537	target	619
+struck	540	caster	621
+struck	542	caster	624
+struck	544	target	633
+struck	653	caster	666
+struck	750	caster	666
+struck	659	caster	668
+struck	661	caster	409
+struck	712	caster	409
+struck	665	caster	669
+struck	756	caster	669
+struck	667	caster	670
+struck	762	caster	670
+struck	669	caster	22
+struck	672	target	676
+struck	673	target	677
+struck	675	caster	214
+struck	676	caster	675
+struck	714	target	1029
+struck	715	target	1030
+struck	716	caster	1032
+struck	742	target	923
+struck	2448	target	923
+struck	2002	caster	832
+struck	2002	caster	1678
+struck	2004	caster	723
+struck	2004	caster	835
+struck	2012	target	589
+struck	2022	caster	1568
+struck	2022	target	1566
+struck	6506	caster	1568
+struck	2023	caster	457
+struck	2023	caster	439
+struck	2023	target	458
+struck	2030	target	770
+struck	2031	caster	768
+struck	2031	target	589
+struck	2034	caster	768
+struck	2034	caster	773
+struck	2037	target	550
+struck	2037	caster	769
+struck	2055	caster	265
+struck	2056	caster	265
+struck	2218	caster	804
+struck	2225	target	49
+struck	2226	target	52
+struck	2227	target	51
+struck	2228	target	147
+struck	2237	caster	750
+struck	2256	caster	806
+struck	2258	caster	776
+struck	2258	caster	1703
+struck	2258	caster	1704
+struck	2258	target	1705
+struck	2270	caster	780
+struck	2270	caster	794
+struck	2271	target	786
+struck	2272	caster	781
+struck	2307	caster	1409
+struck	2309	caster	905
+struck	2310	caster	906
+struck	2312	caster	907
+struck	2314	caster	58
+struck	2314	caster	377
+struck	2322	target	91
+struck	2324	caster	886
+struck	2324	target	886
+struck	2324	target	899
+struck	2324	target	894
+struck	2324	target	906
+struck	2326	caster	885
+struck	2326	caster	886
+struck	2336	caster	457
+struck	2336	caster	886
+struck	2336	caster	893
+struck	2340	caster	886
+struck	2343	caster	1575
+struck	2343	target	1574
+struck	2329	target	1572
+wdelay	1572	100
+struck	2344	caster	885
+struck	2344	caster	886
+struck	2413	caster	1584
+struck	2414	target	1569
+struck	2414	target	1594
+struck	2426	caster	863
+struck	2429	target	869
+struck	2593	target	1224
+struck	2593	target	429
+struck	2604	target	425
+struck	2604	caster	1206
+struck	8012	target	567
+struck	8012	target	425
+struck	8024	target	960
+struck	8025	caster	1082
+struck	8028	target	965
+struck	8030	target	967
+struck	8036	target	966
+struck	8037	target	966
+struck	8038	target	966
+struck	8241	target	1031
+struck	8401	target	252
+struck	8401	target	336
+struck	8404	caster	441
+struck	8404	target	441
+struck	8407	target	389
+struck	8410	caster	214
+struck	8410	target	214
+struck	8413	caster	936
+struck	8413	target	956
+struck	8414	caster	936
+struck	8414	target	958
+struck	8415	caster	936
+struck	8415	target	955
+struck	8416	caster	886
+struck	8416	target	949
+struck	8417	caster	886
+struck	8417	target	954
+struck	8418	caster	886
+struck	8418	caster	894
+struck	8418	target	952
+struck	8419	caster	937
+struck	8419	target	947
+struck	8420	caster	937
+struck	8420	target	948
+struck	8421	caster	937
+struck	8421	target	951
+struck	8422	caster	938
+struck	8422	target	957
+struck	8423	caster	938
+struck	8423	target	953
+struck	8424	caster	938
+struck	8424	target	950
+struck	8425	target	31
+struck	8426	caster	24
+struck	8428	target	901
+struck	2481	target	901
+struck	8428	target	17
+struck	8430	target	26
+struck	8431	target	941
+struck	8433	target	942
+struck	8433	caster	439
+struck	8434	caster	943
+struck	8435	target	466
+struck	8435	target	460
+struck	8437	caster	935
+struck	8442	target	944
+struck	2259	target	787
+struck	2259	target	49
+struck	2320	caster	885
+struck	2320	caster	886
+struck	2320	caster	890
+struck	2327	target	548
+struck	2327	target	550
+struck	2327	caster	886
+struck	2327	caster	890
+struck	2330	target	889
+struck	2332	caster	886
+struck	2332	caster	1310
+struck	2332	caster	1311
+struck	2336	target	458
+struck	2426	target	466
+struck	2429	target	425
+struck	2604	target	417
+struck	2604	target	431
+struck	230	caster	298
+struck	152	caster	308
+struck	1004	caster	600
+struck	523	caster	613
+struck	524	caster	614
+struck	525	caster	615
+struck	526	caster	616
+struck	3019	target	1008
+struck	3006	target	990
+struck	2582	target	1202
+struck	2600	target	1233
+struck	2610	target	1242
+used	6	target	67
+used	7	caster	17
+used	8202	caster	17
+used	8	caster	11
+used	16	target	23
+used	28	target	325
+used	334	target	325
+used	729	target	325
+used	2043	target	325
+used	2051	target	325
+used	8001	target	325
+used	29	target	37
+used	690	target	37
+used	2042	target	37
+used	8240	target	37
+used	30	target	38
+used	31	caster	39
+used	32	caster	40
+used	33	caster	41
+used	34	target	42
+used	689	target	42
+used	2041	target	42
+used	8239	target	42
+used	35	target	66
+used	45	caster	153
+used	50	target	18
+used	53	target	21
+used	54	target	77
+used	60	caster	130
+used	495	caster	130
+used	66	target	84
+used	67	target	88
+used	68	target	86
+used	71	target	136
+used	72	target	78
+used	73	caster	112
+used	8238	caster	112
+used	74	caster	76
+used	8222	caster	76
+used	75	caster	75
+used	76	target	87
+used	2057	target	87
+used	78	target	85
+used	727	target	85
+used	5072	target	85
+used	81	caster	62
+used	88	target	28
+used	108	target	101
+used	5297	target	101
+used	111	caster	98
+used	459	caster	98
+used	112	target	103
+used	113	caster	128
+used	486	caster	128
+used	114	caster	104
+used	138	target	125
+used	141	target	125
+used	139	target	126
+used	142	caster	309
+used	2016	caster	309
+used	155	caster	311
+used	157	caster	169
+used	162	caster	174
+used	163	caster	177
+used	164	caster	173
+used	165	caster	175
+used	166	caster	179
+used	167	caster	178
+used	168	caster	172
+used	169	caster	176
+used	173	caster	183
+used	724	caster	183
+used	2267	caster	183
+used	8016	caster	183
+used	196	caster	215
+used	201	caster	214
+used	205	caster	213
+used	211	target	274
+used	214	caster	276
+used	215	target	269
+used	343	target	269
+used	216	target	270
+used	217	target	271
+used	218	target	272
+used	234	target	300
+used	235	target	300
+used	236	target	300
+used	237	target	300
+used	252	caster	252
+used	255	caster	251
+used	256	target	248
+used	257	caster	222
+used	8219	caster	222
+used	258	caster	250
+used	262	caster	253
+used	268	caster	261
+used	270	caster	203
+used	270	caster	261
+used	276	caster	244
+used	277	target	234
+used	280	target	255
+used	1018	target	255
+used	281	target	256
+used	1008	target	256
+used	282	target	257
+used	1019	target	257
+used	283	target	258
+used	1017	target	258
+used	289	target	235
+used	746	target	235
+used	304	caster	848
+used	5068	caster	848
+used	306	caster	845
+used	307	caster	842
+used	308	caster	844
+used	309	caster	842
+used	310	caster	842
+used	311	caster	845
+used	312	caster	842
+used	313	caster	842
+used	317	caster	843
+used	325	caster	843
+used	318	caster	295
+used	319	caster	844
+used	320	caster	840
+used	321	caster	843
+used	322	caster	841
+used	326	caster	296
+used	327	caster	844
+used	328	caster	844
+used	329	caster	840
+used	330	caster	840
+used	335	target	253
+used	342	target	453
+used	349	caster	455
+used	350	caster	456
+used	506	caster	456
+used	355	caster	367
+used	357	caster	369
+used	359	caster	368
+used	360	caster	368
+used	8206	caster	368
+used	361	target	375
+used	691	target	375
+used	364	caster	378
+used	364	target	379
+used	373	caster	383
+used	374	caster	384
+used	374	target	385
+used	374	caster	385
+used	375	target	406
+used	375	target	380
+used	378	caster	493
+used	380	caster	386
+used	383	caster	389
+used	384	caster	390
+used	387	caster	391
+used	390	caster	392
+used	395	caster	394
+used	396	caster	395
+used	396	target	396
+used	402	target	403
+used	403	caster	505
+used	8004	caster	505
+used	406	caster	409
+used	408	target	408
+used	411	caster	442
+used	413	caster	435
+used	425	caster	461
+used	426	caster	446
+used	428	caster	418
+used	429	caster	418
+used	430	caster	418
+used	428	caster	572
+used	429	caster	572
+used	430	caster	572
+used	431	caster	488
+used	432	caster	488
+used	433	caster	488
+used	434	target	543
+used	445	target	503
+used	445	target	424
+used	447	target	503
+used	448	target	503
+used	449	target	503
+used	450	target	503
+used	451	target	503
+used	446	target	220
+used	447	target	424
+used	448	target	424
+used	449	target	424
+used	450	target	424
+used	451	target	424
+used	462	target	543
+used	463	target	543
+used	464	target	542
+used	465	target	419
+used	465	target	542
+used	470	target	420
+used	471	target	427
+used	472	target	254
+used	472	target	261
+used	475	caster	496
+used	476	target	495
+used	479	target	300
+used	482	target	521
+used	487	caster	843
+used	489	target	500
+used	504	caster	625
+used	505	caster	626
+used	517	caster	626
+used	513	target	627
+used	516	caster	637
+used	536	target	635
+used	539	caster	636
+used	541	caster	622
+used	555	target	344
+used	578	caster	220
+used	693	target	699
+used	694	target	91
+used	698	caster	717
+used	707	caster	441
+used	2011	caster	441
+used	716	caster	1032
+used	717	caster	1032
+used	718	caster	1033
+used	719	caster	25
+used	720	caster	801
+used	2204	caster	801
+used	721	caster	1053
+used	722	target	1052
+used	730	caster	886
+used	735	caster	886
+used	738	target	768
+used	2021	target	768
+used	740	caster	722
+used	741	caster	538
+used	2020	caster	538
+used	741	target	538
+used	2020	target	538
+used	771	target	1600
+used	1002	caster	599
+used	1005	target	602
+used	1010	caster	606
+used	1011	caster	607
+used	2001	caster	756
+used	2003	caster	441
+used	2009	caster	731
+used	2013	caster	538
+used	2014	caster	756
+used	2015	caster	756
+used	2015	caster	441
+used	2018	caster	756
+used	2017	caster	17
+used	2017	target	263
+used	2017	target	330
+used	2018	caster	441
+used	2019	caster	538
+used	2026	target	21
+used	2026	target	768
+used	2027	caster	771
+used	2028	caster	768
+used	2039	target	441
+used	2045	target	112
+used	2046	caster	725
+used	2047	target	66
+used	2048	target	66
+used	2050	target	719
+used	2054	target	833
+used	2205	target	729
+used	2205	target	466
+used	2207	target	797
+used	2209	caster	799
+used	2230	caster	751
+used	2262	caster	777
+used	2263	caster	543
+used	2263	caster	778
+used	2264	caster	778
+used	2265	caster	778
+used	2268	caster	779
+used	2269	caster	543
+used	2273	caster	782
+used	2274	caster	500
+used	2275	target	785
+used	2287	caster	826
+used	2287	caster	819
+used	2289	caster	811
+used	2291	caster	812
+used	2292	target	813
+used	2293	target	814
+used	2294	target	815
+used	2295	target	816
+used	2296	target	817
+used	2297	target	818
+used	2298	target	820
+used	2311	caster	886
+used	2313	caster	886
+used	2315	caster	886
+used	2318	caster	908
+used	2325	caster	910
+used	2333	caster	886
+used	2334	caster	886
+used	2335	caster	886
+used	2337	caster	435
+used	2337	caster	886
+used	2338	caster	886
+used	2341	caster	886
+used	2341	target	886
+used	2342	caster	886
+used	2342	caster	892
+used	2345	caster	886
+used	2345	target	886
+used	2346	caster	886
+used	2346	target	886
+used	2347	caster	886
+used	2348	caster	886
+used	2350	target	847
+used	2351	target	847
+used	2352	target	847
+used	2381	target	848
+used	2382	target	848
+used	2383	target	849
+used	2383	caster	849
+used	2421	target	861
+used	2421	target	853
+used	2422	target	969
+used	2423	target	861
+used	2424	target	862
+used	2425	target	864
+used	2427	target	868
+used	2428	target	866
+used	2429	caster	842
+used	2430	target	870
+used	2431	target	872
+used	2432	target	874
+used	2433	target	876
+used	2434	target	878
+used	2451	caster	886
+used	2455	target	886
+used	2455	target	441
+used	2455	target	931
+used	2461	caster	934
+used	5478	target	10010
+used	2476	caster	1365
+used	2476	caster	1366
+used	2480	target	216
+used	2493	caster	886
+used	2493	caster	439
+used	2494	caster	911
+used	2495	caster	911
+used	2496	caster	911
+used	2497	caster	911
+used	2564	caster	446
+used	2565	caster	637
+used	2574	caster	1198
+used	2576	caster	399
+used	2576	caster	1223
+used	2576	caster	1230
+used	2581	caster	446
+used	2581	caster	1203
+used	2577	caster	1199
+used	2586	caster	1231
+used	2590	caster	1197
+used	2607	caster	1234
+used	2596	target	503
+used	2597	target	503
+used	2597	target	1235
+used	2598	target	503
+used	2598	target	1237
+used	2599	target	503
+used	2599	target	1236
+used	2605	target	1210
+used	2612	caster	1208
+used	2612	target	1207
+used	5005	caster	1044
+used	5008	caster	1046
+used	5009	target	1043
+used	5010	caster	1081
+used	5011	caster	1047
+used	5014	caster	1042
+used	5071	caster	1042
+used	5023	caster	446
+used	5065	target	408
+used	5065	caster	1142
+used	5313	target	495
+used	5336	caster	58
+used	8002	caster	456
+used	8002	target	456
+used	8005	caster	570
+used	8005	target	570
+used	8006	caster	569
+used	8006	target	569
+used	8008	caster	571
+used	8010	caster	564
+used	8011	caster	564
+used	8026	caster	961
+used	8039	caster	962
+used	8051	caster	2338
+used	8051	caster	2339
+used	8603	target	313
+used	8604	target	253
+used	8604	caster	1904
+used	5304	caster	1904
+used	5299	caster	1817
+used	2556	caster	153
+used	2596	target	424
+used	2597	target	424
+used	2598	target	424
+used	2599	target	424
+used	5023	caster	411
+used	3007	caster	981
+used	3006	caster	983
+used	3007	caster	986
+used	3009	target	984
+used	3009	target	1000
+used	3009	target	1002
+used	3023	caster	991
+used	3019	caster	989
+ground	21	ground	30
+ground	69	ground	91
+ground	694	ground	91
+ground	70	ground	83
+ground	79	ground	113
+ground	83	ground	92
+ground	85	ground	90
+ground	87	ground	74
+ground	89	ground	89
+ground	723	ground	89
+ground	91	ground	142
+ground	92	ground	95
+ground	110	ground	102
+ground	111	ground	98
+ground	459	ground	98
+ground	115	ground	69
+ground	130	ground	119
+ground	140	ground	124
+ground	285	ground	225
+ground	286	ground	236
+ground	287	ground	237
+ground	288	ground	238
+ground	478	ground	497
+ground	483	ground	223
+ground	484	ground	522
+ground	491	caster	58
+ground	710	caster	135
+ground	717	caster	1032
+ground	733	ground	102
+ground	5006	ground	102
+ground	737	ground	1424
+ground	2321	ground	1424
+ground	769	ground	1255
+ground	770	ground	1399
+ground	774	ground	1062
+ground	2260	caster	791
+ground	2446	caster	886
+ground	2447	ground	1450
+ground	2449	ground	922
+ground	2449	caster	886
+ground	2450	caster	886
+ground	2518	caster	885
+ground	2518	caster	886
+ground	2518	ground	899
+ground	2571	ground	1062
+ground	5028	ground	1106
+ground	5042	ground	1112
+ground	5219	ground	1760
+ground	5223	ground	1798
+ground	5319	ground	2087
+ground	3009	ground	984
+ground	3009	ground	1000
+ground	3009	ground	1002
+ground	2587	caster	1232
+ground	5369	ground	2027
+ground	5369	ground	2026
+trap	143	106
+trap	149	139
+trap	150	99
+trap	151	108
+trap	152	107
+trap	210	139
+trap	211	139
+trap	212	139
+trap	213	139
+trap	214	107
+trap	217	107
+trap	215	108
+trap	216	107
+trap	218	464
+trap	222	464
+trap	268	1602
+trap	191	99
+trap	194	99
+trap	264	99
+trap	190	107
+trap	193	108
+trap	228	106
+trap	230	106
+unit	126	315
+unit	127	25
+unit	237	25
+unit	128	317
+unit	129	316
+unit	130	91	once
+unit	131	319	once
+unit	132	318	once
+unit	135	138	once
+unit	197	138	once
+unit	136	97	once
+unit	141	74	once
+unit	195	74	once
+unit	196	74	once
+unit	142	95
+unit	146	171	once
+unit	148	145
+unit	216	145
+unit	154	239	once
+unit	155	240	once
+unit	156	241	once
+unit	157	242	once
+unit	177	302	once
+unit	178	341
+unit	179	370	once
+unit	180	374	once
+unit	182	405	once
+unit	183	404	once
+unit	184	522	once
+unit	185	517	once
+unit	187	620	once
+unit	188	631	once
+unit	189	634
+unit	190	638
+unit	191	639
+unit	192	640
+unit	193	641
+unit	194	642
+unit	199	1555
+unit	200	671	once
+unit	201	672	once
+unit	202	1655
+unitw	202	1654
+unit	203	142	once
+unit	204	822	once
+unit	205	825
+unit	206	827
+unit	207	828
+unit	208	829
+unit	218	856
+every	219	1276	992
+unit	220	920
+unit	221	926
+unit	222	860
+unit	224	1080	once
+unit	225	772	once
+unit	226	783	once
+unit	227	784	once
+unit	228	929
+unit	230	912
+unit	231	916
+unit	241	916
+unit	232	917
+unit	233	918
+unit	234	919
+unit	235	921
+unit	238	939	once
+unit	239	465
+unit	240	1088
+unit	242	916
+unit	243	916
+unit	244	916
+unit	254	1026
+unit	255	25
+unit	256	25
+unit	257	1050
+unit	258	1051
+unit	259	1278
+unit	260	1069
+unit	261	1064
+unit	262	1104	once
+unit	263	1125	once
+unit	264	1120
+unit	273	1804	once
+unit	274	1768	once
+unit	276	1957	once
+unit	266	1752	once
+unit	275	2462	once
+unit	286	2349	once
+unit	287	2350	once
+unit	288	2351	once
+unit	291	2354	once
+unit	265	1200	once
+area	245	959	20
+area	246	964	0
+area	247	975	20
+area	253	1020	0
+keep	248	992
+keep	249	993
+keep	250	994
+keep	251	995
+keep	252	1007
+status	2	166
+status	161	166
+status	25	166
+status	188	166
+status	31	166
+status	68	166
+status	70	865
+status	74	865
+status	83	865
+status	71	873
+status	77	873
+status	72	877
+status	73	861
+status	75	38
+status	76	871
+status	80	871
+status	78	867
+status	79	864
+status	82	864
+status	81	875
+status	84	875
+status	86	203
+status	86	166
+status	87	254
+status	87	1132
+status	235	254
+status	235	1132
+status	97	656
+status	97	655
+status	98	455
+status	103	367
+status	103	474
+status	105	369
+status	107	368
+status	110	375
+status	473	375
+status	1121	375
+status	113	382
+status	121	396
+status	122	396
+status	123	394
+status	133	443
+status	134	426
+status	152	487
+status	152	164
+status	153	419
+status	159	546
+status	165	418
+status	165	544
+status	166	418
+status	166	544
+status	167	418
+status	167	544
+status	198	601
+status	200	604
+status	201	604
+status	207	617
+status	232	418
+status	232	544
+status	263	586
+status	277	456
+status	278	456
+status	279	456
+status	280	456
+status	281	456
+status	328	788
+status	330	755
+status	334	792
+status	869	792
+status	350	833
+status	351	789
+status	358	752
+status	358	166
+status	360	744
+status	379	744
+status	394	809
+status	405	909
+status	422	823
+status	433	453
+status	434	879
+status	437	940
+status	439	865
+status	441	867
+status	445	925
+status	448	864
+status	451	871
+status	452	87
+status	453	799
+status	454	865
+status	464	368
+status	606	963
+status	645	998
+status	646	394
+status	655	963
+status	656	1004
+status	657	1003
+status	659	1005
+status	659	963
+status	660	544
+status	674	1012
+status	675	1013
+status	676	1019
+status	713	1037
+status	716	1057
+status	717	1048
+status	718	1034
+status	719	1035
+status	728	1036
+status	730	1040
+status	734	1049
+status	735	404
+status	736	1055
+status	737	1054
+status	754	1076
+status	755	1061
+status	755	1075
+status	756	1139
+status	757	1074
+status	760	1136
+status	779	1079
+status	822	1083
+status	823	1084
+status	825	1085
+status	826	1086
+status	849	1087
+status	857	1089
+status	859	1090
+status	863	1092
+status	864	1091
+status	872	1095
+status	896	1110
+status	917	1119
+status	919	1097
+status	937	1096
+status	1038	1215
+status	1039	1217
+status	1040	1214
+status	1041	1221
+status	1043	1216
+status	1050	1201
+status	1055	1222
+status	1125	1362
+status	1126	1644
+status	1139	1398
+status	1141	1420
+status	1142	396
+status	1148	1525
+status	1150	1741
+status	1152	1800
+status	1160	2294
+status	1162	2296
+status	1261	2296
+status	1165	1610
+status	1166	1599
+status	1167	1601
+status	1176	1726
+status	1176	1727
+status	1184	1859
+status	1190	1991
+status	1196	1913
+status	1197	1810
+status	1200	2288
+status	1201	1853
+status	1201	1852
+status	1201	2300
+status	1205	334
+status	1205	164
+status	1207	2244
+status	1208	2270
+status	1208	2272
+status	1209	2245
+status	1210	2268
+status	1211	2273
+status	1212	2269
+status	1214	2274
+status	1216	2246
+status	1230	2054
+status	1230	2051
+status	1230	2052
+status	1231	2081
+status	1231	2078
+status	1231	2079
+status	1232	1978
+status	1232	1981
+status	1233	1982
+status	1233	1985
+status	1234	1975
+status	1236	1839
+status	1237	1817
+status	1237	2296
+status	1245	2126
+status	1249	2238
+status	1250	1900
+status	1258	2060
+status	1271	2298
+status	1301	744
+status	1318	2277
+status	1319	2278
+status	1337	2305
+status	1338	2306
+status	1339	2302
+status	1339	2303
+status	1391	2348
+length	22	270
+length	25	40
+length	215	500
+length	568	100
+length	569	60
+length	609	100
+length	619	250
+length	620	29999
+length	622	100
+length	625	60
+length	626	60
+length	666	100
+length	668	28
+length	669	70
+length	704	100
+length	706	100
+length	709	70
+length	728	100
+length	791	200
+length	792	9999
+length	793	100
+length	797	300
+length	799	300
+length	801	150
+length	803	500
+length	804	600
+length	959	60
+length	964	40
+length	975	40
+length	987	100
+length	942	100
+length	943	2000
+length	944	100
+length	947	100
+length	948	100
+length	949	100
+length	950	100
+length	951	100
+length	952	100
+length	953	100
+length	954	100
+length	955	100
+length	956	100
+length	957	100
+length	958	100
+length	961	100
+length	962	100
+length	1082	300
+length	1088	2000
+length	2338	70
+length	988	100
+length	1020	100
+length	920	40
+length	95	150
+length	140	250
+length	172	100
+length	173	100
+length	174	100
+length	175	100
+length	176	100
+length	177	100
+length	178	100
+length	179	100
+length	180	50
+length	341	9999
+length	408	200
+length	411	300
+length	418	99999999
+length	413	50
+length	415	100
+length	417	100
+length	420	99999
+length	424	99999999
+length	427	99999999
+length	446	35
+length	429	200
+length	430	200
+length	431	200
+length	442	9999
+length	444	100
+length	447	340
+length	448	340
+length	450	999
+length	454	60
+length	455	1500
+length	456	100
+length	461	100
+length	488	400
+length	503	500
+length	506	100
+length	542	200
+length	336	200
+length	460	100
+length	465	1000
+length	564	60
+length	570	100
+length	544	99999999
+length	571	100
+length	901	500
+length	935	100
+length	941	500
+length	1003	99999999
+length	1004	99999999
+length	1224	50
+length	1420	99999999
+length	1206	200
+length	1207	200
+length	1208	200
+length	1210	200
+length	623	300
+length	624	200
+length	627	300
+length	637	200
+length	326	340
+length	327	340
+length	551	100
+length	556	50
+length	638	23
+length	639	23
+length	640	23
+length	641	23
+length	642	23
+length	1204	100
+length	643	100
+length	644	100
+length	645	100
+length	647	100
+length	648	100
+length	963	99999
+length	572	300
+length	584	100
+length	590	200
+length	618	300
+length	547	200
+length	549	60
+length	553	200
+length	554	200
+length	555	200
+length	675	200
+length	676	300
+length	677	50
+length	1030	5000
+length	1032	999
+length	1052	200
+length	850	100
+length	634	23
+length	856	29999
+length	1026	999
+length	932	100
+length	936	300
+length	937	300
+length	938	300
+length	939	29999
+length	1545	300
+length	1568	300
+length	1569	150
+length	1365	50
+length	1409	300
+length	1575	300
+length	1584	300
+length	1594	200
+length	1678	1678
+length	1053	999
+length	1054	9999
+length	1600	200
+minid	1285	1533
+minid	1365	1501
+minid	1366	1502
+minid	1310	1461
+minid	1311	1462
+minid	1296	1459
+minid	1297	1460
+minid	1314	1477
+minid	1315	1478
+minid	1316	1479
+minid	1317	1480
+minid	1318	1481
+minid	1319	1482
+minid	1320	1483
+minid	1321	1484
+minid	1322	1485
+minid	1400	1511
+minid	1401	1512
+minid	1402	1513
+minid	1403	1514
+minid	1404	1515
+minid	1405	1516
+minid	1406	1517
+minid	1407	1518
+minid	1408	1519
+minid	1380	1521
+minid	1381	1522
+minid	1382	1523
+minid	1383	1524
+minid	1388	1527
+minid	1389	1528
+minid	1390	1529
+minid	1391	1530
+minid	1378	1520
+minid	1386	1526
+# Quagmire, Lord of Vermilion and Meteor Storm play their reduced STRs at the cell under /mineffect, Quagmire's cell again by
+# its restart period.
+minid	95	1161
+minid	90	1162
+minid	92	1163
+minid	1852	-
+minid	1277	1440
+minid	1261	1431
+# Poison Smoke's cell sends up a violet puff now and then: one draw a tick, 1 or 2 of 100.
+unitr	225	1546	1
+unitr	225	1547	2
+# The sounds and shakes of Steel Body's, Explosion Spirits' and SL_SKA's use packets, heard at full volume.
+skillwav	10	effect\ef_sight	0
+skillwav	8005	effect\h_castling	0
+skillwav	268	effect\mon_맹룡과강	0	listener
+skillquake	268	0	200
+skillwav	270	effect\mon_폭기	0	listener
+skillquake	270	0	200
+skillwav	472	effect\T_방어형	0	listener
+skillquake	472	0	200
+skillwav	320	effect\석양의 어쌔신	0	listener
+skillwav	329	effect\행운의	0	listener
+skillwav	330	effect\당신을 위한 서비스	0	listener
+skillwav	349	effect\mon_폭기	0	listener
+skillwav	366	effect\마법력 증폭	0	listener
+skillwav	482	effect\마법력 증폭	0	listener
+skillwav	2480	effect\S바큠익스트림	0	listener
+skillwav	2464	effect\_heal_effect	0	listener
+skillwav	2013	_heal_effect	0	listener
+skillwav	2019	effect\흡기	0	listener
+skillwav	2263	effect\HOVERING	0	listener
+skillwav	2269	effect\ef_decagility	0	listener
+skillwav	2050	effect\AB_renovatio	0	listener
+skillwav	2205	effect\t_에너지방출	0	listener
+hitwav	2012	_enemy_hit_wind2	0	listener
+hitwav	8428	effect\폭염룡	0	listener
+hitwav	2481	effect\폭염룡	0	listener
+hitquake	2012	0	650
+hitwav	2031	effect\EF_PoisonAttack	0	listener
+skillwav	2001	effect\닌자_던지기	0	listener
+skillwav	2014	effect\닌자_던지기	0	listener
+skillwav	2028	effect\t_낙법	0	listener
+skillwav	2021	effect\수둔	0	listener
+skillwav	2324	effect\LG_HESPERUSLIT	0	listener
+hitwav	2034	effect\mon_맹룡과강	0	listener
+hitwav	8413	effect\EF_FireWall	0	listener
+hitwav	8414	effect\ef_firehit	0	listener
+hitwav	8415	effect\EF_FireArrow1	0	listener
+hitquake	8415	0	650
+hitwav	8419	effect\EF_ThunderStorm	0	listener
+hitwav	8420	effect\EF_LightBolt1	0	listener
+hitwav	8421	effect\EF_LightBolt3	0	listener
+hitquake	8421	0	650
+hitwav	8422	_stonecurse	0	listener
+hitwav	8423	evil_cloud_hermit_attack	0	listener
+hitwav	8424	effect\wizard_earthspike	0	listener
+hitquake	8424	0	650
+skillwav	2350	effect\스윙댄스	0	listener
+skillwav	2351	effect\연인들을위한심포니	0	listener
+skillwav	2352	effect\AB_judex	0	listener

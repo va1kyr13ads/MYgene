@@ -635,12 +635,55 @@ int32 char_memitemdata_to_sql(const struct item items[], int32 max, int32 id, en
 			if( items[i].nameid == 0 || flag[i] )
 				continue;
 
-			if( items[i].nameid == item.nameid
-			&&  items[i].card[0] == item.card[0]
-			&&  items[i].card[2] == item.card[2]
-			&&  items[i].card[3] == item.card[3]
-			&&  items[i].unique_id == item.unique_id
-			) {	//They are the same item.
+			// MYGENE_AWAKENING_V1071
+            const auto slayer_perfect =
+                [](t_itemid id) -> t_itemid {
+                    switch (id) {
+                        case 31001: return 31004;
+                        case 31006: return 31008;
+                        case 60010: return 60012;
+                        case 60013: return 60015;
+                        case 60016: return 60018;
+                        case 60019: return 60021;
+                        default: return 0;
+                    }
+                };
+
+            const bool same_uid =
+                items[i].unique_id != 0 &&
+                items[i].unique_id == item.unique_id;
+
+            const bool awakening =
+                item.expire_time == 0 &&
+                items[i].expire_time != 0 &&
+                slayer_perfect(item.nameid) ==
+                    items[i].nameid;
+
+            const bool reversion =
+                item.expire_time != 0 &&
+                items[i].expire_time == 0 &&
+                slayer_perfect(items[i].nameid) ==
+                    item.nameid;
+
+            const bool mygene_transform =
+                tableswitch == TABLE_INVENTORY &&
+                same_uid &&
+                item.amount == 1 &&
+                items[i].amount == 1 &&
+                (awakening || reversion);
+
+            if (
+                (
+                    (
+                        items[i].nameid == item.nameid &&
+                        items[i].card[0] == item.card[0] &&
+                        items[i].card[2] == item.card[2] &&
+                        items[i].card[3] == item.card[3]
+                    ) ||
+                    mygene_transform
+                ) &&
+                items[i].unique_id == item.unique_id
+            ) {	//They are the same item.
 				int32 k;
 				
 				ARR_FIND( 0, MAX_SLOTS, j, items[i].card[j] != item.card[j] );
@@ -653,7 +696,8 @@ int32 char_memitemdata_to_sql(const struct item items[], int32 max, int32 id, en
 					items[i].identify == item.identify &&
 					items[i].refine == item.refine &&
 					items[i].attribute == item.attribute &&
-					items[i].expire_time == item.expire_time &&
+					items[i].nameid == item.nameid &&
+                    items[i].expire_time == item.expire_time &&
 					items[i].bound == item.bound &&
 					items[i].enchantgrade == item.enchantgrade &&
 					(tableswitch != TABLE_INVENTORY || (items[i].favorite == item.favorite && items[i].equipSwitch == item.equipSwitch)) )
@@ -664,6 +708,30 @@ int32 char_memitemdata_to_sql(const struct item items[], int32 max, int32 id, en
 					StringBuf_Clear(&buf);
 					StringBuf_Printf(&buf, "UPDATE `%s` SET `amount`='%d', `equip`='%u', `identify`='%d', `refine`='%d',`attribute`='%d', `expire_time`='%u', `bound`='%d', `unique_id`='%" PRIu64 "', `enchantgrade`='%d'",
 						tablename, items[i].amount, items[i].equip, items[i].identify, items[i].refine, items[i].attribute, items[i].expire_time, items[i].bound, items[i].unique_id, items[i].enchantgrade);
+
+                    if (mygene_transform) {
+                        StringBuf_Printf(
+                            &buf,
+                            ", `nameid`='%u'",
+                            static_cast<unsigned int>(
+                                items[i].nameid
+                            )
+                        );
+
+                        ShowInfo(
+                            "[MYGENE-RELIC-SAVE] Row=%d Old=%u New=%u UID=%llu\n",
+                            item.id,
+                            static_cast<unsigned int>(
+                                item.nameid
+                            ),
+                            static_cast<unsigned int>(
+                                items[i].nameid
+                            ),
+                            static_cast<unsigned long long>(
+                                items[i].unique_id
+                            )
+                        );
+                    }
 					if (tableswitch == TABLE_INVENTORY)
 						StringBuf_Printf(&buf, ", `favorite`='%d', `equip_switch`='%u'", items[i].favorite, items[i].equipSwitch);
 					for( j = 0; j < MAX_SLOTS; ++j )

@@ -1,0 +1,972 @@
+//! What the client's windows share: the title bar with its buttons, dragging, minimizing and tooltips.
+
+use rustnarok_client::grf::Grf;
+use rustnarok_client::text::Font;
+
+use std::time::{Duration, Instant};
+
+use crate::render::{Gpu, Texture};
+use crate::{Layer, UI, contains, offset, screen};
+
+pub const TITLE_HEIGHT: f32 = 17.0;
+pub const BUTTON_SIZE: [f32; 2] = [11.0, 11.0];
+const BASE_BUTTON: [f32; 2] = [3.0, 3.0];
+const TITLE_TEXT: [f32; 2] = [17.0, 1.0];
+const BORDER: [u8; 4] = [0xCC, 0xCC, 0xCC, 0xFF];
+const TOOLTIP: [u8; 4] = [0, 0, 0, 0x88];
+
+/// Bitmaps every window uses, all from data.grf.
+pub struct Chrome {
+    title: [Texture; 3],
+    /// Normal and hover images of the base, minimize and close buttons.
+    buttons: [[Texture; 2]; 3],
+    pub white: Texture,
+    pub border: Texture,
+    /// The footer strip's pieces, rounded ends around a middle to stretch: the 21 px set and the 29 px one.
+    footers: [[Texture; 3]; 2],
+    tooltip: Texture,
+    /// A cut text's whole-words balloon: the speech balloon's border, a darker fill.
+    whole_fill: Texture,
+    balloon_border: Texture,
+    /// Laid over a button the client can't do yet, so it reads as switched off.
+    pub dimmed: Texture,
+    /// A list's scroll bar: its up and down arrows, the track's piece, and the thumb's top, middle and bottom.
+    scroll_arrows: [Texture; 2],
+    scroll_track: Texture,
+    scroll_thumb: [Texture; 3],
+    /// The plain text button's left, middle and right pieces: normal, under the pointer, held down, switched off.
+    text_buttons: [[Texture; 3]; 4],
+}
+
+impl Chrome {
+    /// The title bar alone (its rounded caps around a stretched middle), `width` wide at `corner`.
+    pub fn draw_title_bar<'a>(&'a self, layer: &mut Layer<'a>, corner: [f32; 2], width: f32) {
+        let [left, middle, right] = &self.title;
+        layer.sprites.push((left, corner, left.size));
+        layer.sprites.push((middle, offset(corner, [left.size[0], 0.0]), [width - left.size[0] - right.size[0], TITLE_HEIGHT]));
+        layer.sprites.push((right, offset(corner, [width - right.size[0], 0.0]), right.size));
+    }
+
+    /// A plain window under its title bar: white inside a 1 px grey frame, down to the window's bottom, where
+    /// `draw_footer` goes over it. `corner` and `size` are the whole window's.
+    pub fn draw_body<'a>(&'a self, layer: &mut Layer<'a>, corner: [f32; 2], [width, height]: [f32; 2]) {
+        layer.sprites.push((&self.border, offset(corner, [0.0, TITLE_HEIGHT]), [width, height - TITLE_HEIGHT]));
+        layer.sprites.push((&self.white, offset(corner, [1.0, TITLE_HEIGHT]), [width - 2.0, height - TITLE_HEIGHT - 1.0]));
+    }
+
+    /// The footer strip along a window's bottom, ending on `bottom` (the window's bottom-left corner): the pieces
+    /// with the rounded corners around a stretched middle, as the game draws every footer. A footer 21 px high
+    /// takes the low pieces, a higher one the 29 px ones.
+    pub fn draw_footer<'a>(&'a self, layer: &mut Layer<'a>, bottom: [f32; 2], width: f32, height: f32) {
+        let [left, middle, right] = &self.footers[usize::from(height > 21.0)];
+        let corner = offset(bottom, [0.0, -left.size[1]]);
+        layer.sprites.push((left, corner, left.size));
+        layer.sprites.push((middle, offset(corner, [left.size[0], 0.0]), [width - left.size[0] - right.size[0], middle.size[1]]));
+        layer.sprites.push((right, offset(corner, [width - right.size[0], 0.0]), right.size));
+    }
+
+    pub fn load(gpu: &Gpu, grf: &Grf) -> Self {
+        let basic = format!("{UI}basic_interface\\");
+        let image = |path: String| gpu.load_texture(grf, &path, false);
+        Self {
+            title: ["left", "mid", "right"].map(|part| image(format!("{basic}titlebar_{part}.bmp"))),
+            buttons: ["base", "mini", "close"].map(|name| ["off", "on"].map(|state| image(format!("{basic}sys_{name}_{state}.bmp")))),
+            white: gpu.solid([255; 4]),
+            border: gpu.solid(BORDER),
+            footers: ["", "2"].map(|set| ["left", "mid", "right"].map(|part| image(format!("{basic}btnbar_{part}{set}.bmp")))),
+            tooltip: gpu.solid(TOOLTIP),
+            whole_fill: gpu.solid([0, 0, 0, 0x88]),
+            balloon_border: gpu.solid([0x5C, 0x5C, 0x5C, 0xFF]),
+            dimmed: gpu.solid([0x90, 0x90, 0x90, 0xB0]),
+            scroll_arrows: ["up", "down"].map(|end| image(format!("{UI}scroll0{end}.bmp"))),
+            scroll_track: image(format!("{UI}scroll0mid.bmp")),
+            scroll_thumb: ["up", "mid", "down"].map(|part| image(format!("{UI}scroll0bar_{part}.bmp"))),
+            text_buttons: ["out", "over", "press", "disable"].map(|look| ["left", "mid", "right"].map(|part| image(format!("{basic}btn_{look}_{part}.bmp")))),
+        }
+    }
+}
+
+impl Chrome {
+    /// The plain text button, 20 px high and `width` wide: a 6 px cap at each end, 6 px middle pieces between them (the
+    /// last one against the right cap), and the label in the middle. `look`: 0 normal, 1 under the pointer, 2 held
+    /// down (the label a pixel down and right, over white), 3 switched off (grey over a lighter grey).
+    pub fn draw_text_button<'a>(&'a self, layer: &mut Layer<'a>, font: &Font, corner: [f32; 2], width: f32, label: &str, look: usize) {
+        let [left, middle, right] = &self.text_buttons[look];
+        let piece = left.size[0];
+        let mut x = piece;
+        while x < width - piece {
+            layer.sprites.push((middle, offset(corner, [x.min(width - 2.0 * piece), 0.0]), middle.size));
+            x += piece;
+        }
+        layer.sprites.push((left, corner, left.size));
+        layer.sprites.push((right, offset(corner, [width - piece, 0.0]), right.size));
+        let at = offset(corner, [((width - font.width(label)) / 2.0).trunc(), ((left.size[1] - font.line_height()) / 2.0).trunc()]);
+        // The text and what lies a pixel off it: under it, or (held down, switched off) it over the lighter one.
+        let (under, over): ([u8; 3], [u8; 3]) = [([0xD7; 3], [0; 3]), ([0x96, 0xA7, 0xC7], [0; 3]), ([0; 3], [0xFF; 3]), ([0x6F; 3], [0xE2; 3])][look];
+        let (first, second) = if look < 2 { (under, over) } else { (over, under) };
+        let low = offset(at, [1.0, 1.0]);
+        layer.texts.push((label.to_owned(), if look < 2 { low } else { at }, first));
+        layer.texts.push((label.to_owned(), if look < 2 { at } else { low }, second));
+    }
+
+    /// The base (0), minimize (1) or close (2) button, lit when hovered.
+    pub fn button(&self, button: usize, hovered: bool) -> &Texture {
+        &self.buttons[button][usize::from(hovered)]
+    }
+}
+
+/// A click on the title bar.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum TitleHit {
+    Title,
+    Minimize,
+    Close,
+}
+
+/// A dragged window's edge this close to the screen's snaps to it.
+const MAGNET: f32 = 10.0;
+/// Dragged off screen, a window keeps this much of its width showing (and its title bar always), to grab it again.
+const KEEP_SHOWING: f32 = 40.0;
+/// Held by the pointer, a window is drawn this see-through (128 of 255 opaque), easing there and back over HOLD_EASE.
+const HELD_FADED: f32 = 1.0 - 128.0 / 255.0;
+const HOLD_EASE: Duration = Duration::from_millis(267);
+/// A second press on the title bar this soon collapses or opens a window that does that.
+const TITLE_DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// Where a window `size` big goes when dragged to `to`: an edge within MAGNET of the screen's snaps flush, and it
+/// stays where it can be grabbed again (the title bar on screen, KEEP_SHOWING of its width).
+pub fn dragged_to(to: [f32; 2], size: [f32; 2]) -> [f32; 2] {
+    let snap = |at: f32, length: f32, screen: f32| {
+        if at.abs() <= MAGNET {
+            0.0
+        } else if (at + length - screen).abs() <= MAGNET {
+            screen - length
+        } else {
+            at
+        }
+    };
+    let x = snap(to[0], size[0], screen()[0]).clamp(KEEP_SHOWING - size[0], screen()[0] - KEEP_SHOWING);
+    let y = snap(to[1], size[1], screen()[1]).clamp(0.0, screen()[1] - TITLE_HEIGHT);
+    [x, y]
+}
+
+/// Where a window `width` wide at `at` goes when the screen turns from `old` to `new` (the Extras' UI scale): on each
+/// axis it keeps its gap to the screen edge it was nearer, so what sat by the right or the bottom edge still does, and
+/// it stays where it can be seen and grabbed: all of its width, and its title bar.
+// ponytail: by its top left corner, as a window's height isn't known here; one that fills its axis counts as by the
+// left or the top.
+pub fn refitted(at: [f32; 2], width: f32, old: [f32; 2], new: [f32; 2]) -> [f32; 2] {
+    let moved = |axis: usize| if at[axis] > old[axis] / 2.0 { at[axis] + new[axis] - old[axis] } else { at[axis] };
+    [moved(0).min(new[0] - width).max(0.0), moved(1).min(new[1] - TITLE_HEIGHT).max(0.0)]
+}
+
+/// How see-through a window is `now`: easing to HELD_FADED while held (since `held`), and back once let go (at
+/// `let_go`, from how faded it was then).
+pub(crate) fn hold_fade(held: Option<Instant>, let_go: Option<(Instant, f32)>, now: Instant) -> f32 {
+    let eased = |since: Instant| (now.saturating_duration_since(since).as_secs_f32() / HOLD_EASE.as_secs_f32()).min(1.0);
+    match (held, let_go) {
+        (Some(held), _) => HELD_FADED * eased(held),
+        (None, Some((at, from))) => from * (1.0 - eased(at)),
+        (None, None) => 0.0,
+    }
+}
+
+/// A window's place on screen and its title bar's state.
+pub struct Frame {
+    pub open: bool,
+    pub minimized: bool,
+    pub position: [f32; 2],
+    width: f32,
+    /// Pointer offset into the title bar while the window is dragged.
+    drag: Option<[f32; 2]>,
+    /// When it was grabbed, or let go (and how faded it was then), for the see-through while held.
+    held: Option<Instant>,
+    let_go: Option<(Instant, f32)>,
+    /// A double click on the title bar collapses or opens it; the last title press.
+    collapses: bool,
+    last_title_press: Option<Instant>,
+}
+
+impl Frame {
+    pub fn new(position: [f32; 2], width: f32) -> Self {
+        Self { open: false, minimized: false, position, width, drag: None, held: None, let_go: None, collapses: false, last_title_press: None }
+    }
+
+    /// The window collapses to its title bar on a double click there (inventory, equipment, status, basic info).
+    pub fn collapsing(mut self) -> Self {
+        self.collapses = true;
+        self
+    }
+
+    /// The pointer is holding it.
+    pub fn dragging(&self) -> bool {
+        self.drag.is_some()
+    }
+
+    /// How see-through to draw it now (0 opaque): half while it's held.
+    pub fn faded(&self) -> f32 {
+        hold_fade(self.held, self.let_go, crate::control::now())
+    }
+
+    pub fn toggle(&mut self) {
+        self.open = !self.open;
+    }
+
+    /// The close button's corner inside the window.
+    pub fn close_button(&self) -> [f32; 2] {
+        [self.width - 14.0, 3.0]
+    }
+
+    /// The minimize button's corner inside the window.
+    pub fn minimize_button(&self) -> [f32; 2] {
+        [self.width - 29.0, 3.0]
+    }
+
+    /// Where `cursor` is inside the window (`height` tall when not minimized), if it is.
+    pub fn local(&self, cursor: [f32; 2], height: f32) -> Option<[f32; 2]> {
+        let height = if self.minimized { TITLE_HEIGHT } else { height };
+        (self.open && contains(self.position, [self.width, height], cursor)).then(|| [cursor[0] - self.position[0], cursor[1] - self.position[1]])
+    }
+
+    /// The screen turned from `old` to `new` (`refitted`).
+    pub fn refit(&mut self, old: [f32; 2], new: [f32; 2]) {
+        self.position = refitted(self.position, self.width, old, new);
+    }
+
+    /// A window whose width changes (the skill window's two views).
+    pub fn set_width(&mut self, width: f32) {
+        self.width = width;
+    }
+
+    pub fn title_hit(&self, local: [f32; 2]) -> Option<TitleHit> {
+        if contains(self.close_button(), BUTTON_SIZE, local) {
+            Some(TitleHit::Close)
+        } else if contains(self.minimize_button(), BUTTON_SIZE, local) {
+            Some(TitleHit::Minimize)
+        } else {
+            (local[1] < TITLE_HEIGHT).then_some(TitleHit::Title)
+        }
+    }
+
+    pub fn click_title(&mut self, hit: TitleHit) {
+        match hit {
+            TitleHit::Close => self.open = false,
+            TitleHit::Minimize => self.minimized = !self.minimized,
+            TitleHit::Title => {}
+        }
+    }
+
+    /// A press on the title bar grabs the window; a second one soon after collapses or opens one that does that.
+    pub fn start_drag(&mut self, cursor: [f32; 2]) {
+        let now = crate::control::now();
+        if self.collapses && self.last_title_press.is_some_and(|at| now.saturating_duration_since(at) < TITLE_DOUBLE_CLICK) {
+            self.minimized = !self.minimized;
+            self.last_title_press = None;
+        } else {
+            self.last_title_press = Some(now);
+        }
+        self.drag = Some([cursor[0] - self.position[0], cursor[1] - self.position[1]]);
+        self.held = Some(now);
+        self.let_go = None;
+    }
+
+    /// Follows the pointer while dragged (see `dragged_to`); returns whether it is.
+    pub fn drag_to(&mut self, cursor: [f32; 2], height: f32) -> bool {
+        let Some(grab) = self.drag else { return false };
+        let height = if self.minimized { TITLE_HEIGHT } else { height };
+        self.position = dragged_to([cursor[0] - grab[0], cursor[1] - grab[1]], [self.width, height]);
+        true
+    }
+
+    /// Ends a drag; returns whether one was going on.
+    pub fn drop_drag(&mut self) -> bool {
+        let now = crate::control::now();
+        if let Some(held) = self.held.take() {
+            self.let_go = Some((now, hold_fade(Some(held), None, now)));
+        }
+        self.drag.take().is_some()
+    }
+
+    /// A point inside the window, on screen.
+    pub fn at(&self, local: [f32; 2]) -> [f32; 2] {
+        offset(self.position, local)
+    }
+
+    /// The title bar: rounded caps around a stretched middle, the three buttons and the title with its white shadow.
+    pub fn draw_title<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, title: &str, cursor: [f32; 2]) {
+        self.draw_bar(layer, chrome);
+        self.draw_buttons(layer, chrome, cursor);
+        layer.texts.push((title.to_owned(), self.at(offset(TITLE_TEXT, [1.0, 1.0])), [255, 255, 255]));
+        layer.texts.push((title.to_owned(), self.at(TITLE_TEXT), [0, 0, 0]));
+    }
+
+    /// The title bar from one piece (`titlebar_fix.bmp`), the three buttons, and the title black at (16, 3) over white
+    /// at (17, 4).
+    pub fn draw_fixed_title<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, bar: &'a Texture, title: &str, cursor: [f32; 2]) {
+        layer.sprites.push((bar, self.at([0.0, 0.0]), bar.size));
+        self.draw_buttons(layer, chrome, cursor);
+        layer.texts.push((title.to_owned(), self.at([17.0, 4.0]), [255, 255, 255]));
+        layer.texts.push((title.to_owned(), self.at([16.0, 3.0]), [0, 0, 0]));
+    }
+
+    /// The base, minimize and close buttons, lit when pointed at.
+    fn draw_buttons<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, cursor: [f32; 2]) {
+        for (button, place) in [BASE_BUTTON, self.minimize_button(), self.close_button()].into_iter().enumerate() {
+            let hovering = contains(self.at(place), BUTTON_SIZE, cursor);
+            let image = &chrome.buttons[button][usize::from(hovering)];
+            layer.sprites.push((image, self.at(place), image.size));
+        }
+    }
+
+    /// The title bar of a window that doesn't minimize: the base and close buttons only.
+    pub fn draw_title_no_minimize<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, title: &str, cursor: [f32; 2]) {
+        self.draw_title_only(layer, chrome, title);
+        for (button, place) in [(0, BASE_BUTTON), (2, self.close_button())] {
+            let image = chrome.button(button, contains(self.at(place), BUTTON_SIZE, cursor));
+            layer.sprites.push((image, self.at(place), image.size));
+        }
+    }
+
+    /// The bar alone: rounded caps around a stretched middle.
+    pub fn draw_bar<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome) {
+        let [left, middle, right] = &chrome.title;
+        layer.sprites.push((left, self.at([0.0, 0.0]), left.size));
+        layer.sprites.push((middle, self.at([left.size[0], 0.0]), [self.width - left.size[0] - right.size[0], TITLE_HEIGHT]));
+        layer.sprites.push((right, self.at([self.width - right.size[0], 0.0]), right.size));
+    }
+
+    /// The bar and the title, with no buttons.
+    pub fn draw_title_only<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, title: &str) {
+        self.draw_bar(layer, chrome);
+        layer.texts.push((title.to_owned(), self.at(offset(TITLE_TEXT, [1.0, 1.0])), [255, 255, 255]));
+        layer.texts.push((title.to_owned(), self.at(TITLE_TEXT), [0, 0, 0]));
+    }
+
+    /// The title over a background that brings its own bar: the close button and the title only.
+    pub fn draw_bare_title<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome, title: &str, cursor: [f32; 2]) {
+        let place = self.close_button();
+        let image = chrome.button(2, contains(self.at(place), BUTTON_SIZE, cursor));
+        layer.sprites.push((image, self.at(place), image.size));
+        layer.texts.push((title.to_owned(), self.at(offset(TITLE_TEXT, [1.0, 1.0])), [255, 255, 255]));
+        layer.texts.push((title.to_owned(), self.at(TITLE_TEXT), [0, 0, 0]));
+    }
+}
+
+/// A cut text shown whole while the pointer is on it: the speech balloon's look with a darker fill, its words starting
+/// on the cut text's own `spot`, kept on screen.
+pub fn whole_text<'a>(layer: &mut Layer<'a>, chrome: &'a Chrome, font: &Font, text: &str, spot: [f32; 2]) {
+    let size = crate::overhead::size(font.width(text), 1);
+    let corner = crate::overhead::over_text_corner(spot, size, screen());
+    layer.sprites.push((&chrome.whole_fill, corner, size));
+    for (edge, piece) in crate::overhead::border(size) {
+        layer.sprites.push((&chrome.balloon_border, offset(corner, edge), piece));
+    }
+    let place = offset(corner, crate::overhead::TEXT_AT);
+    layer.texts.push((text.to_owned(), offset(place, [1.0, 1.0]), [0, 0, 0]));
+    layer.texts.push((text.to_owned(), place, [255; 3]));
+}
+
+/// A tooltip's corner kept on screen: up to 3 px past each edge.
+pub fn tooltip_corner([x, y]: [f32; 2], [width, height]: [f32; 2], [screen_width, screen_height]: [f32; 2]) -> [f32; 2] {
+    [x.min(screen_width - width + 3.0).max(-3.0), y.min(screen_height - height + 3.0).max(-3.0)]
+}
+
+/// The client's tooltip: white text with a black shadow on a translucent black box.
+pub fn tooltip<'a>(layer: &mut Layer<'a>, chrome: &'a Chrome, font: &Font, text: &str, corner: [f32; 2], color: [u8; 3]) {
+    let size = [font.width(text).ceil() + 8.0, 23.0];
+    let corner = tooltip_corner(corner, size, screen());
+    layer.sprites.push((&chrome.tooltip, corner, size));
+    layer.texts.push((text.to_owned(), offset(corner, [5.0, 5.0]), [0, 0, 0]));
+    layer.texts.push((text.to_owned(), offset(corner, [4.0, 4.0]), color));
+}
+
+/// The tooltip box with lines of coloured pieces, each line a line height under the last.
+pub fn tooltip_lines<'a>(layer: &mut Layer<'a>, chrome: &'a Chrome, font: &Font, lines: &[Vec<([u8; 3], String)>], corner: [f32; 2]) {
+    let width = lines.iter().map(|line| line.iter().map(|(_, piece)| font.width(piece)).sum::<f32>()).fold(0.0, f32::max);
+    let size = [width.ceil() + 8.0, 8.0 + lines.len() as f32 * font.line_height()];
+    let corner = tooltip_corner(corner, size, screen());
+    layer.sprites.push((&chrome.tooltip, corner, size));
+    for (row, line) in lines.iter().enumerate() {
+        let mut x = 4.0;
+        for (color, piece) in line {
+            let place = offset(corner, [x, 4.0 + row as f32 * font.line_height()]);
+            layer.texts.push((piece.clone(), offset(place, [1.0, 1.0]), [0, 0, 0]));
+            layer.texts.push((piece.clone(), place, *color));
+            x += font.width(piece);
+        }
+    }
+}
+
+/// The text cut short with "..." to fit `width`.
+pub fn fit(font: &Font, text: &str, width: f32) -> String {
+    if font.width(text) <= width {
+        return text.to_owned();
+    }
+    let mut cut = text.to_owned();
+    while !cut.is_empty() && font.width(&format!("{cut}...")) > width {
+        cut.pop();
+    }
+    format!("{cut}...")
+}
+
+/// Splits text into lines no wider than `width`, keeping at most `lines` of them. Lines break after their last space
+/// so words stay whole; text without spaces (Korean) breaks anywhere.
+pub fn wrap(font: &Font, text: &str, width: f32, lines: usize) -> Vec<String> {
+    let mut wrapped = vec![String::new()];
+    for character in text.chars() {
+        let line = wrapped.last_mut().unwrap();
+        if !line.is_empty() && font.width(&format!("{line}{character}")) > width {
+            // The word goes down whole; Thai (no spaces between its words) breaks at its last letter that fits, and
+            // right here when the next letter may start a line.
+            let here = character == ' ' || line.chars().last().is_some_and(|last| rustnarok_client::text::breaks_between(last, character));
+            let carried = match line.rfind(' ').map(|space| space + 1).max(rustnarok_client::text::last_break(line, line.len())) {
+                Some(at) if !here => line.split_off(at),
+                _ => String::new(),
+            };
+            line.truncate(line.trim_end().len());
+            wrapped.push(carried);
+            if character == ' ' {
+                continue;
+            }
+        }
+        wrapped.last_mut().unwrap().push(character);
+    }
+    wrapped.truncate(lines);
+    wrapped
+}
+
+/// The game's 1 px box line with rounded corners, as rectangles [x, y, w, h] for a box `size` big at (0, 0): the four
+/// sides stop 3 px short of each corner, and three pixels turn it.
+pub fn rounded_outline([w, h]: [f32; 2]) -> [[f32; 4]; 12] {
+    [
+        [3.0, 0.0, w - 6.0, 1.0],
+        [3.0, h - 1.0, w - 6.0, 1.0],
+        [0.0, 3.0, 1.0, h - 6.0],
+        [w - 1.0, 3.0, 1.0, h - 6.0],
+        [1.0, 1.0, 2.0, 1.0],
+        [1.0, h - 2.0, 2.0, 1.0],
+        [w - 3.0, 1.0, 2.0, 1.0],
+        [w - 3.0, h - 2.0, 2.0, 1.0],
+        [1.0, 2.0, 1.0, 1.0],
+        [1.0, h - 3.0, 1.0, 1.0],
+        [w - 2.0, 2.0, 1.0, 1.0],
+        [w - 2.0, h - 3.0, 1.0, 1.0],
+    ]
+}
+
+/// The same box filled: that line and all inside it.
+pub fn rounded_fill([w, h]: [f32; 2]) -> [[f32; 4]; 4] {
+    [[3.0, 0.0, w - 6.0, 1.0], [1.0, 1.0, w - 2.0, h - 2.0], [0.0, 3.0, w, h - 6.0], [3.0, h - 1.0, w - 6.0, 1.0]]
+}
+
+/// A window's corner grip: the 15×15 corner inside the window takes the press (its 16×16 bitmap hangs 1 px out).
+pub const GRIP: f32 = 15.0;
+
+/// Whether `local` (window-local) is on the corner grip of a window `size` big.
+pub fn on_grip(size: [f32; 2], local: [f32; 2]) -> bool {
+    contains([size[0] - GRIP, size[1] - GRIP], [GRIP; 2], local)
+}
+
+/// A corner grip being held: where the press was and the window's size then. The corner follows the pointer from
+/// the press (moving back undoes it); each window clamps and snaps what it's asked for.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Grip(Option<([f32; 2], [f32; 2])>);
+
+impl Grip {
+    pub fn start(&mut self, cursor: [f32; 2], size: [f32; 2]) {
+        self.0 = Some((cursor, size));
+    }
+
+    /// The size the pointer asks for while held.
+    pub fn asked(&self, cursor: [f32; 2]) -> Option<[f32; 2]> {
+        let (from, size) = self.0?;
+        Some([size[0] + cursor[0] - from[0], size[1] + cursor[1] - from[1]])
+    }
+
+    /// Lets go; whether it was held.
+    pub fn stop(&mut self) -> bool {
+        self.0.take().is_some()
+    }
+}
+
+/// A list's scroll bar, 13 px wide: an arrow at each end, a track between them, and a thumb on the track. `at` is its
+/// top-left on screen; the list shows `shown` of its `rows`, from row `first`. A list where every row fits has none.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ScrollBar {
+    pub at: [f32; 2],
+    pub height: f32,
+    pub shown: usize,
+    pub rows: usize,
+    pub first: usize,
+}
+
+/// Where a press lands on a scroll bar.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BarHit {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Thumb,
+}
+
+impl ScrollBar {
+    pub const WIDTH: f32 = 13.0;
+    const ARROW: f32 = 13.0;
+    /// The thumb's caps, and so its least length with a middle piece between them.
+    const CAP: f32 = 4.0;
+
+    /// How far the list scrolls: the rows that don't fit.
+    pub fn range(&self) -> usize {
+        self.rows.saturating_sub(self.shown)
+    }
+
+    fn track(&self) -> f32 {
+        self.height - 2.0 * Self::ARROW
+    }
+
+    /// The thumb: its top (from the bar's) and its length. As long as the share of the rows shown, 12 px at least.
+    fn thumb(&self) -> [f32; 2] {
+        let (track, range) = (self.track(), self.range());
+        let length = (track * self.shown as f32 / self.rows.max(1) as f32).floor().clamp(3.0 * Self::CAP, track.max(3.0 * Self::CAP));
+        let top = if range == 0 { 0.0 } else { ((track - length) * self.first.min(range) as f32 / range as f32).floor() };
+        [Self::ARROW + top, length]
+    }
+
+    /// What `cursor` is on: nothing while every row fits.
+    pub fn hit(&self, cursor: [f32; 2]) -> Option<BarHit> {
+        if self.range() == 0 || !contains(self.at, [Self::WIDTH, self.height], cursor) {
+            return None;
+        }
+        let y = cursor[1] - self.at[1];
+        let [top, length] = self.thumb();
+        Some(if y < Self::ARROW {
+            BarHit::Up
+        } else if y >= self.height - Self::ARROW {
+            BarHit::Down
+        } else if y < top {
+            BarHit::PageUp
+        } else if y < top + length {
+            BarHit::Thumb
+        } else {
+            BarHit::PageDown
+        })
+    }
+
+    /// A press at `cursor`: the list's first row after it, when it lands on the bar. An arrow steps a row, the track
+    /// pages by the wheel's step (3 rows, one less than shown at most), and the thumb is held: `thumb` then follows
+    /// the pointer. One press, one step: holding repeats nothing.
+    pub fn press(&self, cursor: [f32; 2], thumb: &mut Thumb) -> Option<usize> {
+        let page = self.shown.saturating_sub(1).clamp(1, 3);
+        let first = match self.hit(cursor)? {
+            BarHit::Up => self.first.saturating_sub(1),
+            BarHit::Down => self.first + 1,
+            BarHit::PageUp => self.first.saturating_sub(page),
+            BarHit::PageDown => self.first + page,
+            BarHit::Thumb => {
+                thumb.0 = Some((*self, cursor[1]));
+                self.first
+            }
+        };
+        Some(first.min(self.range()))
+    }
+
+    /// The first row with the thumb held since the pointer was at `from`, now at `y`: whole rows, the track's length
+    /// standing for one more row than the list scrolls.
+    fn dragged(&self, from: f32, y: f32) -> usize {
+        let rows = ((y - from) * (self.range() + 1) as f32 / self.track()).trunc() as i64;
+        (self.first as i64 + rows).clamp(0, self.range() as i64) as usize
+    }
+
+    /// The up arrow, the down arrow and the thumb on screen, while the bar shows (for the test driver).
+    pub fn boxes(&self) -> Option<[[f32; 4]; 3]> {
+        let [x, y] = self.at;
+        let [top, length] = self.thumb();
+        let arrow = |y| [x, y, Self::WIDTH, Self::ARROW];
+        (self.range() > 0).then(|| [arrow(y), arrow(y + self.height - Self::ARROW), [x, y + top, Self::WIDTH, length]])
+    }
+
+    /// The track's piece down the bar, the arrows over its ends, and the thumb: two caps around a stretched middle.
+    pub fn draw<'a>(&self, layer: &mut Layer<'a>, chrome: &'a Chrome) {
+        if self.range() == 0 {
+            return;
+        }
+        let [x, y] = self.at;
+        let mut down = 0.0;
+        while down < self.height {
+            let piece = Self::ARROW.min(self.height - down);
+            layer.sprites.push((&chrome.scroll_track, [x, y + down], [Self::WIDTH, piece]));
+            down += piece;
+        }
+        layer.sprites.push((&chrome.scroll_arrows[0], [x, y], [Self::WIDTH, Self::ARROW]));
+        layer.sprites.push((&chrome.scroll_arrows[1], [x, y + self.height - Self::ARROW], [Self::WIDTH, Self::ARROW]));
+        let [top, length] = self.thumb();
+        let [up, middle, bottom] = &chrome.scroll_thumb;
+        layer.sprites.push((up, [x, y + top], [Self::WIDTH, Self::CAP]));
+        layer.sprites.push((middle, [x, y + top + Self::CAP], [Self::WIDTH, length - 2.0 * Self::CAP]));
+        layer.sprites.push((bottom, [x, y + top + length - Self::CAP], [Self::WIDTH, Self::CAP]));
+    }
+}
+
+/// A scroll bar's thumb while held: the bar as it was at the press, and the pointer's height then.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Thumb(Option<(ScrollBar, f32)>);
+
+impl Thumb {
+    /// The list's first row for the pointer at `y`, while held.
+    pub fn first(&self, y: f32) -> Option<usize> {
+        self.0.map(|(bar, from)| bar.dragged(from, y))
+    }
+
+    /// Lets go; whether it was held.
+    pub fn stop(&mut self) -> bool {
+        self.0.take().is_some()
+    }
+}
+
+/// The steps (0, 1, 2...) a size `asked` makes past `least`, `step` apart, clamped to `most` steps: the game's
+/// least + step·trunc((clamp(asked) − least)/step), rounding toward the least.
+pub fn steps(asked: f32, least: f32, step: f32, most: usize) -> usize {
+    (((asked - least) / step).max(0.0) as usize).min(most)
+}
+
+/// Notices double clicks on the same thing (an item index).
+#[derive(Default)]
+pub struct Clicks(Option<(u16, std::time::Instant)>);
+
+impl Clicks {
+    const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
+
+    /// Records a click; returns whether it completes a double click.
+    pub fn double(&mut self, index: u16) -> bool {
+        let now = std::time::Instant::now();
+        let double = self.0.is_some_and(|(last, at)| last == index && now.duration_since(at) < Self::DOUBLE_CLICK);
+        self.0 = (!double).then_some((index, now));
+        double
+    }
+}
+
+/// The client's box asking how many (or for a name), in the middle of the screen: what's typed, OK and cancel.
+pub struct Amount<T> {
+    /// What the answer is for.
+    pub what: T,
+    pub typed: String,
+    /// The question (a message number).
+    message: usize,
+    /// A custom label (the item's name for a shop).
+    label: Option<String>,
+    /// OK only (no Cancel).
+    ok_only: bool,
+    /// How many digits go in; 0 takes a name instead.
+    max_digits: usize,
+}
+
+impl<T> Amount<T> {
+    /// A name's 23 bytes, about as many characters.
+    const NAME: usize = 23;
+
+    /// Asks how many ("Input Number"), with `start` already typed in.
+    pub fn new(what: T, start: Option<u32>) -> Self {
+        Self { what, typed: start.map(|amount| amount.to_string()).unwrap_or_default(), message: 1259, label: None, ok_only: false, max_digits: 5 }
+    }
+
+    /// Asks how many of a shop item to buy or sell: the item's name as its label, with OK only.
+    pub fn shop(what: T, label: String, start: Option<u32>) -> Self {
+        Self { what, typed: start.map(|amount| amount.to_string()).unwrap_or_default(), message: 1259, label: Some(label), ok_only: true, max_digits: 5 }
+    }
+
+    /// Asks for a buying-store price ("Price: "), up to 8 digits (the most is 99,990,000).
+    pub fn price(what: T) -> Self {
+        Self { what, typed: String::new(), message: 1721, label: None, ok_only: false, max_digits: 8 }
+    }
+
+    /// Asks for a name, under that message.
+    pub fn name(what: T, message: usize) -> Self {
+        Self { what, typed: String::new(), message, label: None, ok_only: false, max_digits: 0 }
+    }
+
+    /// The number typed; one too big for 32 bits is the most there is.
+    pub fn value(&self) -> u32 {
+        self.typed.parse::<u64>().map_or(0, |value| value.min(u64::from(u32::MAX)) as u32)
+    }
+
+    pub fn type_text(&mut self, text: &str) {
+        let digits = self.max_digits > 0;
+        let (limit, typed) = if digits { (self.max_digits, self.typed.len()) } else { (Self::NAME, self.typed.chars().count()) };
+        self.typed.extend(
+            text.chars().filter(|character| if digits { character.is_ascii_digit() } else { !character.is_control() }).take(limit.saturating_sub(typed)),
+        );
+    }
+
+    /// The box's buttons and whether each answers yes (true for OK, false for Cancel):
+    /// OK and Cancel, or OK alone where Cancel would be.
+    pub fn buttons(&self) -> Vec<([f32; 2], bool)> {
+        if self.ok_only { vec![(crate::RIGHT_BUTTON, true)] } else { vec![(crate::LEFT_BUTTON, true), (crate::RIGHT_BUTTON, false)] }
+    }
+
+    /// The question's label: the item's name when set, else the message.
+    pub fn label<'a>(&'a self, messages: &'a [String]) -> &'a str {
+        self.label.as_deref().unwrap_or_else(|| messages.get(self.message).map_or("", String::as_str))
+    }
+
+    pub fn corner(message_box: [f32; 2]) -> [f32; 2] {
+        [((screen()[0] - message_box[0]) / 2.0).floor(), ((screen()[1] - message_box[1]) / 2.0).floor()]
+    }
+
+    /// Over the box: Some(Some(ok)) on its buttons, Some(None) elsewhere on it.
+    pub fn hit(&self, cursor: [f32; 2], message_box: [f32; 2], button: [f32; 2]) -> Option<Option<bool>> {
+        let corner = Self::corner(message_box);
+        for (place, ok) in self.buttons() {
+            if contains(offset(corner, place), button, cursor) {
+                return Some(Some(ok));
+            }
+        }
+        contains(corner, message_box, cursor).then_some(None)
+    }
+
+    pub fn draw<'a>(
+        &self,
+        layer: &mut Layer<'a>,
+        chrome: &'a Chrome,
+        message_box: &'a Texture,
+        ok_cancel: [&'a [Texture; 3]; 2],
+        messages: &[String],
+        pointer: ([f32; 2], bool),
+    ) {
+        let corner = Self::corner(message_box.size);
+        layer.sprites.push((message_box, corner, message_box.size));
+        let hit = self.hit(pointer.0, message_box.size, ok_cancel[0][0].size);
+        for (place, ok) in self.buttons() {
+            let images = &ok_cancel[usize::from(!ok)];
+            let look = if hit == Some(Some(ok)) { 1 + usize::from(pointer.1) } else { 0 };
+            layer.sprites.push((&images[look], offset(corner, place), images[look].size));
+        }
+        let text = self.label(messages);
+        layer.texts.push((text.to_owned(), offset(corner, [20.0, 30.0]), [0, 0, 0]));
+        let field = offset(corner, [20.0, 55.0]);
+        layer.sprites.push((&chrome.border, offset(field, [-1.0, -1.0]), [242.0, 20.0]));
+        layer.sprites.push((&chrome.white, field, [240.0, 18.0]));
+        layer.texts.push((format!("{}_", self.typed), offset(field, [3.0, 2.0]), [0, 0, 0]));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 100 px bar at (50, 20) for a list showing 4 of 10 rows: a 74 px track, a 29 px thumb.
+    fn bar(first: usize) -> ScrollBar {
+        ScrollBar { at: [50.0, 20.0], height: 100.0, shown: 4, rows: 10, first }
+    }
+
+    #[test]
+    fn a_list_that_fits_has_no_scroll_bar() {
+        let mut thumb = Thumb::default();
+        for rows in [0, 3, 4] {
+            let bar = ScrollBar { rows, ..bar(0) };
+            assert_eq!((bar.range(), bar.hit([55.0, 25.0]), bar.boxes(), bar.press([55.0, 25.0], &mut thumb)), (0, None, None, None));
+        }
+        assert_eq!(bar(0).range(), 6);
+    }
+
+    #[test]
+    fn a_scroll_bar_press_lands_on_an_arrow_the_track_or_the_thumb() {
+        // At row 3 of 6 the thumb is 29 long, half way down the track's free 45 px: y 35 to 64 of the bar.
+        let bar = bar(3);
+        assert_eq!(bar.boxes(), Some([[50.0, 20.0, 13.0, 13.0], [50.0, 107.0, 13.0, 13.0], [50.0, 55.0, 13.0, 29.0]]));
+        let at = |y: f32| bar.hit([55.0, 20.0 + y]);
+        assert_eq!([0.0, 12.9, 13.0, 34.9].map(at), [Some(BarHit::Up), Some(BarHit::Up), Some(BarHit::PageUp), Some(BarHit::PageUp)]);
+        assert_eq!([35.0, 63.9, 64.0, 86.9].map(at), [Some(BarHit::Thumb), Some(BarHit::Thumb), Some(BarHit::PageDown), Some(BarHit::PageDown)]);
+        assert_eq!([87.0, 99.9, 100.0].map(at), [Some(BarHit::Down), Some(BarHit::Down), None]);
+        assert_eq!([bar.hit([49.9, 30.0]), bar.hit([63.0, 30.0])], [None, None]);
+    }
+
+    #[test]
+    fn scroll_bar_arrows_step_a_row_and_the_track_pages() {
+        let mut thumb = Thumb::default();
+        let press = |first: usize, y: f32, thumb: &mut Thumb| bar(first).press([55.0, 20.0 + y], thumb);
+        // The arrows: one row, stopping at the ends.
+        assert_eq!([0, 1, 6].map(|first| press(first, 5.0, &mut thumb)), [Some(0), Some(0), Some(5)]);
+        assert_eq!([0, 5, 6].map(|first| press(first, 95.0, &mut thumb)), [Some(1), Some(6), Some(6)]);
+        // The track pages by the wheel's step: 3 rows with 4 showing, kept within the list.
+        assert_eq!([press(6, 20.0, &mut thumb), press(2, 20.0, &mut thumb)], [Some(3), Some(0)]);
+        assert_eq!([press(0, 80.0, &mut thumb), press(4, 80.0, &mut thumb)], [Some(3), Some(6)]);
+        // With 2 rows showing a page is 1 row.
+        assert_eq!(ScrollBar { shown: 2, ..bar(0) }.press([55.0, 100.0], &mut thumb), Some(1));
+        // None of those held the thumb; a press on it does, and moves nothing.
+        assert!(!thumb.stop());
+        assert_eq!(press(3, 40.0, &mut thumb), Some(3));
+        assert!(thumb.stop() && !thumb.stop());
+    }
+
+    #[test]
+    fn a_held_thumb_scrolls_whole_rows_with_the_pointer() {
+        let mut thumb = Thumb::default();
+        assert_eq!(thumb.first(60.0), None);
+        bar(3).press([55.0, 60.0], &mut thumb);
+        // (range + 1) rows over the 74 px track: 7 / 74 a pixel, cut toward the press, kept in 0..=6.
+        assert_eq!([60.0, 70.0, 71.0, 81.5, 300.0].map(|y| thumb.first(y)), [Some(3), Some(3), Some(4), Some(5), Some(6)]);
+        assert_eq!([50.0, 49.0, 28.0, -300.0].map(|y| thumb.first(y)), [Some(3), Some(2), Some(0), Some(0)]);
+        // A long list's thumb is never under 12 px.
+        let long = ScrollBar { rows: 1000, ..bar(0) };
+        assert_eq!(long.boxes().unwrap()[2], [50.0, 33.0, 13.0, 12.0]);
+        assert_eq!(ScrollBar { first: 996, ..long }.boxes().unwrap()[2], [50.0, 95.0, 13.0, 12.0]);
+    }
+
+    /// The Extras' UI scale turns the screen from one size to another under the windows.
+    #[test]
+    fn windows_keep_to_their_edges_when_the_screen_changes() {
+        let (big, small) = ([1728.0, 1117.0], [1188.0, 768.0]);
+        // By the left and the top: where it was. By the right and the bottom: as far from them as it was.
+        assert_eq!(refitted([0.0, 0.0], 220.0, big, small), [0.0, 0.0]);
+        assert_eq!(refitted([10.0, 130.0], 280.0, big, small), [10.0, 130.0]);
+        assert_eq!(refitted([1728.0 - 280.0, 1117.0 - 34.0], 280.0, big, small), [1188.0 - 280.0, 768.0 - 34.0]);
+        assert_eq!(refitted([1500.0, 20.0], 128.0, big, small), [960.0, 20.0]);
+        // And back, when the screen grows again.
+        assert_eq!(refitted([1188.0 - 280.0, 768.0 - 34.0], 280.0, small, big), [1728.0 - 280.0, 1117.0 - 34.0]);
+        assert_eq!(refitted([10.0, 130.0], 280.0, small, big), [10.0, 130.0]);
+        // One from the middle of a far bigger screen stays whole across, its title bar in reach.
+        let [x, y] = refitted([1720.0, 905.0], 400.0, [3840.0, 2160.0], [1365.0, 768.0]);
+        assert_eq!([x, y], [965.0, 768.0 - TITLE_HEIGHT]);
+        assert_eq!(refitted([2000.0, 1200.0], 280.0, [3840.0, 2160.0], [1365.0, 768.0]), [0.0, 0.0], "never past the left or the top");
+        // The same screen: nothing moves.
+        assert_eq!(refitted([500.0, 300.0], 280.0, small, small), [500.0, 300.0]);
+    }
+
+    #[test]
+    fn tooltips_stay_on_screen_but_for_3_px() {
+        let screen = [1024.0, 768.0];
+        assert_eq!(tooltip_corner([100.0, 50.0], [80.0, 23.0], screen), [100.0, 50.0]);
+        assert_eq!(tooltip_corner([1000.0, 760.0], [80.0, 23.0], screen), [947.0, 748.0]);
+        assert_eq!(tooltip_corner([-20.0, -16.0], [80.0, 23.0], screen), [-3.0, -3.0]);
+    }
+
+    #[test]
+    fn rounded_boxes_cut_their_corners() {
+        // A filled box covers its line, and neither reaches the corner pixels: (0, 0), (1, 0), (2, 0), (0, 1), (0, 2).
+        let size = [10.0, 8.0];
+        let covers = |rects: &[[f32; 4]], x: f32, y: f32| rects.iter().any(|&[rx, ry, rw, rh]| contains([rx, ry], [rw, rh], [x, y]));
+        let (line, fill) = (rounded_outline(size), rounded_fill(size));
+        for y in 0..8 {
+            for x in 0..10 {
+                let [fx, fy] = [x.min(9 - x), y.min(7 - y)];
+                let (cut, edge) = (matches!((fx, fy), (0..=2, 0) | (0, 1 | 2)), matches!((fx, fy), (3.., 0) | (1 | 2, 1) | (1, 2) | (0, 3..)));
+                let at = [x as f32, y as f32];
+                assert_eq!((covers(&line, at[0], at[1]), covers(&fill, at[0], at[1])), (edge, !cut), "{at:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn grips_follow_the_pointer_from_the_press() {
+        let size = [280.0, 300.0];
+        assert!(on_grip(size, [266.0, 286.0]) && on_grip(size, [279.0, 299.0]));
+        assert!(!on_grip(size, [264.0, 290.0]) && !on_grip(size, [280.0, 290.0]));
+        let mut grip = Grip::default();
+        assert_eq!(grip.asked([0.0, 0.0]), None);
+        grip.start([500.0, 400.0], size);
+        assert_eq!(grip.asked([540.0, 380.0]), Some([320.0, 280.0]));
+        assert_eq!(grip.asked([500.0, 400.0]), Some(size), "moving back undoes it");
+        assert!(grip.stop() && !grip.stop());
+        // Steps round toward the least, and stop at the most.
+        assert_eq!([100.0, 120.0, 151.0, 152.0, 1000.0].map(|asked| steps(asked, 120.0, 32.0, 6)), [0, 0, 0, 1, 6]);
+    }
+
+    #[test]
+    fn dragged_windows_snap_to_the_edges_and_stay_in_reach() {
+        let size = [280.0, 300.0];
+        // Within 10 px of an edge: flush. Farther: where it was put.
+        assert_eq!(dragged_to([7.0, 9.0], size), [0.0, 0.0]);
+        assert_eq!(dragged_to([1024.0 - 280.0 - 10.0, 768.0 - 300.0 + 4.0], size), [744.0, 468.0]);
+        assert_eq!(dragged_to([11.0, 12.0], size), [11.0, 12.0]);
+        // Off screen it keeps 40 px showing and its title bar.
+        assert_eq!(dragged_to([-500.0, -50.0], size), [-240.0, 0.0]);
+        assert_eq!(dragged_to([2000.0, 2000.0], size), [984.0, 768.0 - TITLE_HEIGHT]);
+    }
+
+    #[test]
+    fn held_windows_fade_to_half_and_back() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        assert_eq!(hold_fade(None, None, start), 0.0);
+        assert!((hold_fade(Some(start), None, at(267)) - HELD_FADED).abs() < 1e-4);
+        assert!((hold_fade(Some(start), None, at(133)) - HELD_FADED / 2.0).abs() < 0.01);
+        // Let go halfway faded: back to opaque over the same time.
+        assert!((hold_fade(None, Some((at(0), 0.25)), at(133)) - 0.125).abs() < 0.01);
+        assert_eq!(hold_fade(None, Some((at(0), 0.25)), at(400)), 0.0);
+    }
+
+    #[test]
+    fn a_double_click_on_the_title_collapses_a_window_that_does_that() {
+        let mut inventory = Frame::new([0.0, 0.0], 280.0).collapsing();
+        inventory.start_drag([5.0, 5.0]);
+        inventory.drop_drag();
+        assert!(!inventory.minimized);
+        inventory.start_drag([5.0, 5.0]);
+        inventory.drop_drag();
+        assert!(inventory.minimized);
+        let mut storage = Frame::new([0.0, 0.0], 280.0);
+        storage.start_drag([5.0, 5.0]);
+        storage.start_drag([5.0, 5.0]);
+        assert!(!storage.minimized);
+    }
+
+    #[test]
+    fn wraps_thai_between_letters() {
+        let font = Font::load();
+        let phrase = "ที่นี่ที่นี่ที่นี่ที่นี่ที่นี่ที่นี่";
+        let width = font.width("ที่นี่ที่นี่ที่นี่") + 1.0;
+        let wrapped = wrap(&font, &format!("abc {phrase}"), width, 9);
+        // The phrase goes on in the first line (it didn't jump down whole) and no line starts with a mark.
+        assert!(wrapped[0].len() > "abc ".len(), "{wrapped:?}");
+        assert!(wrapped.iter().all(|line| !line.starts_with(rustnarok_client::text::is_thai_mark) && font.width(line) <= width), "{wrapped:?}");
+        assert_eq!(wrapped.concat().replace(' ', ""), format!("abc{phrase}"));
+    }
+
+    #[test]
+    fn wraps_whole_words() {
+        let font = Font::load();
+        let width = font.width("Remove the target at");
+        assert_eq!(wrap(&font, "Remove the target at the back space", width, 9), ["Remove the target at", "the back space"]);
+        assert_eq!(wrap(&font, "Remove the targetted", font.width("Remove the tar"), 9), ["Remove the", "targetted"]);
+        let korean = "타나토스타워하층부";
+        assert!(wrap(&font, korean, font.width("타나토스"), 9).len() > 1, "no spaces: anywhere");
+    }
+
+    #[test]
+    fn limits_what_goes_in_each_prompt() {
+        let mut amount = Amount::new((), None);
+        amount.type_text("12a345678");
+        assert_eq!(amount.typed, "12345");
+        let mut price = Amount::price(());
+        price.type_text("999999999");
+        assert_eq!(price.typed, "99999999");
+        let mut name = Amount::name((), 0);
+        name.type_text("A name longer than twenty-three");
+        assert_eq!(name.typed, "A name longer than twen");
+    }
+
+    #[test]
+    fn amount_box_shows_item_name_and_ok_only() {
+        let messages = vec!["".to_owned(); 2000];
+        let generic = Amount::new((), Some(5));
+        assert_eq!(generic.label(&messages), "");
+        assert_eq!(generic.buttons(), vec![(crate::LEFT_BUTTON, true), (crate::RIGHT_BUTTON, false)]);
+
+        let shop_box = Amount::shop((), "Red Potion".to_owned(), Some(1));
+        assert_eq!(shop_box.label(&messages), "Red Potion");
+        assert_eq!(shop_box.buttons(), vec![(crate::RIGHT_BUTTON, true)]);
+
+        let msg_size = [280.0, 120.0];
+        let btn_size = [42.0, 20.0];
+        let corner = Amount::<()>::corner(msg_size);
+        let right_btn = offset(corner, crate::RIGHT_BUTTON);
+        let left_btn = offset(corner, crate::LEFT_BUTTON);
+        // Generic has Cancel on right, OK on left:
+        assert_eq!(generic.hit(right_btn, msg_size, btn_size), Some(Some(false)));
+        assert_eq!(generic.hit(left_btn, msg_size, btn_size), Some(Some(true)));
+        // Shop box has OK on right, body on left:
+        assert_eq!(shop_box.hit(right_btn, msg_size, btn_size), Some(Some(true)));
+        assert_eq!(shop_box.hit(left_btn, msg_size, btn_size), Some(None));
+    }
+}

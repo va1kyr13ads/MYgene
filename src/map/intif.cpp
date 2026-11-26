@@ -2215,6 +2215,7 @@ void intif_parse_achievements(int32 fd)
 	}
 
 	achievement_level(sd, false); // Calculate level info but don't give any AG_GOAL_ACHIEVE achievements
+	mygene_spacebox_sync_achievement(sd);
 	achievement_get_titles(sd->status.char_id); // Populate the title list for completed achievements
 	clif_achievement_update(sd, nullptr, 0);
 	clif_achievement_list_all(sd);
@@ -3442,6 +3443,18 @@ static bool intif_parse_StorageReceived(int32 fd)
 
 	p = (struct s_storage *)RFIFOP(fd,10);
 
+    if (RFIFOW(fd,2)-10 != sz_stor)
+        return false;
+
+    if (type == TABLE_STORAGE && p->stor_id == 90) {
+        if (!sd->mygene_spacebox_pending ||
+            p->id != sd->status.account_id ||
+            p->max_amount != MAX_STORAGE)
+            return false;
+
+        sd->mygene_spacebox_pending = false;
+    }
+
 	switch (type) { 
 		case TABLE_INVENTORY:
 			stor = &sd->inventory;
@@ -3525,7 +3538,7 @@ static bool intif_parse_StorageReceived(int32 fd)
 			break;
 
 		case TABLE_STORAGE:
-			if (stor->stor_id)
+			if (stor->stor_id == 90 && (sd->state.storage_flag || sd->state.trading || sd->npc_id || sd->state.vending || sd->state.buyingstore)) { break; } else if (stor->stor_id)
 				storage_premiumStorage_open(sd);
 			else {
 #ifdef VIP_ENABLE
@@ -3571,7 +3584,7 @@ static void intif_parse_StorageSaved(int32 fd)
 					}
 
 					if( stor ){
-						stor->dirty = false;
+						if (stor->stor_id != 90) stor->dirty = false;
 					}
 				}
 				break;

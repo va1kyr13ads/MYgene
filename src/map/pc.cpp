@@ -1197,6 +1197,467 @@ void pc_inventory_rental_clear(map_session_data *sd)
  * Check for items in the player's inventory that are rental type
  * @param sd: Player data
  */
+// MYGENE_AWAKENING_V1071
+
+// MYGENE_PUBLIC_AWAKENING_V108
+static constexpr uint32 MYGENE_TEST_LEASE = 604800;
+static constexpr int32 MYGENE_AWAKEN_COST = 100;
+static constexpr int32 MYGENE_RENEW_COST = 50;
+static constexpr uint32 MYGENE_TEST_LEASE_MAX = 1209600;
+
+static t_itemid mygene_perfect_id(t_itemid id) {
+    switch (id) {
+        case 31001: return 31004;
+        case 31006: return 31008;
+        case 60010: return 60012;
+        case 60013: return 60015;
+        case 60016: return 60018;
+        case 60019: return 60021;
+        default: return 0;
+    }
+}
+
+static t_itemid mygene_base_id(t_itemid id) {
+    switch (id) {
+        case 31004: return 31001;
+        case 31008: return 31006;
+        case 60012: return 60010;
+        case 60015: return 60013;
+        case 60018: return 60016;
+        case 60021: return 60019;
+        default: return 0;
+    }
+}
+
+bool pc_mygene_is_awakened(const struct item* it) {
+    return it &&
+        it->expire_time != 0 &&
+        mygene_base_id(it->nameid) != 0;
+}
+
+static bool mygene_transform_weapon(
+    map_session_data* sd,
+    int32 index,
+    t_itemid new_id,
+    uint32 expires,
+    bool reverting
+) {
+    if (!sd || index < 0 || index >= MAX_INVENTORY)
+        return false;
+
+    struct item& it =
+        sd->inventory.u.items_inventory[index];
+
+    if (it.amount != 1 ||
+        !sd->inventory_data[index] ||
+        !item_db.exists(new_id))
+        return false;
+
+    const t_itemid old_id = it.nameid;
+    const uint64 old_uid = it.unique_id;
+
+    if (reverting) {
+        if (!pc_mygene_is_awakened(&it) ||
+            mygene_base_id(old_id) != new_id ||
+            expires != 0)
+            return false;
+    } else {
+        if (!old_uid)
+            return false;
+
+        if (old_id != new_id &&
+            mygene_perfect_id(old_id) != new_id)
+            return false;
+    }
+
+    struct item_data* new_data =
+        itemdb_search(new_id);
+
+    if (!new_data ||
+        new_data->type != IT_WEAPON)
+        return false;
+
+    const int64 weight_delta =
+        static_cast<int64>(new_data->weight) -
+        sd->inventory_data[index]->weight;
+
+    if (!reverting &&
+        static_cast<int64>(sd->weight) +
+            weight_delta > sd->max_weight) {
+
+        clif_displaymessage(
+            sd->fd,
+            "Not enough carrying capacity."
+        );
+
+        return false;
+    }
+
+    unit_stop_attack(sd);
+
+    // Unequip before changing the item definition.
+    // Expiration may force unequip.
+    if (it.equip &&
+        !pc_unequipitem(
+            sd, index, reverting ? 3 : 1
+        ))
+        return false;
+
+    if (it.equipSwitch)
+        pc_equipswitch_remove(sd, index);
+
+    // Revalidate after equipment scripts.
+    if (it.nameid != old_id ||
+        it.unique_id != old_uid ||
+        it.amount != 1 ||
+        it.equip != 0)
+        return false;
+
+    // Remove old visual entry only.
+    // The actual inventory item is not deleted.
+    clif_delitem(*sd, index, 1, 0);
+
+    // Preserve the original item structure.
+    // Cards, unique ID, binding, favorite,
+    // options and other attributes remain intact.
+    it.nameid = new_id;
+    it.expire_time = expires;
+
+    sd->inventory_data[index] = new_data;
+
+    const int64 new_weight =
+        static_cast<int64>(sd->weight) +
+        weight_delta;
+
+    sd->weight = static_cast<decltype(sd->weight)>(
+        new_weight > 0 ? new_weight : 0
+    );
+
+    clif_additem(sd, index, 1, 0);
+    clif_updatestatus(*sd, SP_WEIGHT);
+
+    if (expires > time(nullptr)) {
+        clif_rental_time(
+            sd, new_id,
+            static_cast<int32>(
+                expires - time(nullptr)
+            )
+        );
+    }
+
+    ShowInfo(
+        "[MYGENE-AWAKENING] CID=%u Slot=%d Old=%u New=%u UID=%llu Card=%u Expiry=%u\n",
+        static_cast<unsigned int>(sd->status.char_id),
+        index,
+        static_cast<unsigned int>(old_id),
+        static_cast<unsigned int>(new_id),
+        static_cast<unsigned long long>(it.unique_id),
+        static_cast<unsigned int>(it.card[0]),
+        expires
+    );
+
+    return true;
+}
+
+// Standard Red, Blue and Yellow Gemstones.
+static bool mygene_awakening_gem(
+    const struct item& it
+) {
+    return
+        (it.nameid == 715 ||
+         it.nameid == 716 ||
+         it.nameid == 717) &&
+        it.expire_time == 0 &&
+        it.amount > 0 &&
+        it.equip == 0 &&
+        it.equipSwitch == 0;
+}
+
+static int64 mygene_awakening_gem_count(
+    map_session_data* sd
+) {
+    int64 count = 0;
+
+    for (int32 i = 0; i < MAX_INVENTORY; ++i) {
+        const auto& it =
+            sd->inventory.u.items_inventory[i];
+
+        if (sd->inventory_data[i] &&
+            mygene_awakening_gem(it)) {
+            count += it.amount;
+        }
+    }
+
+    return count;
+}
+
+static bool mygene_awakening_pay(
+    map_session_data* sd,
+    int32 cost
+) {
+    if (mygene_awakening_gem_count(sd) < cost)
+        return false;
+
+    // No dialog, timer or script yield during payment.
+    for (int32 i = 0;
+         i < MAX_INVENTORY && cost > 0;
+         ++i) {
+
+        const auto& it =
+            sd->inventory.u.items_inventory[i];
+
+        if (!sd->inventory_data[i] ||
+            !mygene_awakening_gem(it))
+            continue;
+
+        const int32 take =
+            std::min<int32>(it.amount, cost);
+
+        if (pc_delitem(
+            sd, i, take, 0, 0, LOG_TYPE_OTHER
+        ) != 0) {
+            ShowError(
+                "[MYGENE-AWAKENING] Gem payment failure.\n"
+            );
+            return false;
+        }
+
+        cost -= take;
+    }
+
+    return cost == 0;
+}
+
+// MYGENE_AWAKENING_SOUL_V1010
+static bool mygene_matching_slayer_card(
+    const struct item& it
+) {
+    switch (it.nameid) {
+    case 31001:
+    case 31004:
+        return it.card[0] == 31002;
+
+    case 31006:
+    case 31008:
+        return it.card[0] == 31007;
+
+    case 60010:
+    case 60012:
+        return it.card[0] == 60011;
+
+    case 60013:
+    case 60015:
+        return it.card[0] == 60014;
+
+    case 60016:
+    case 60018:
+        return it.card[0] == 60017;
+
+    case 60019:
+    case 60021:
+        return it.card[0] == 60020;
+
+    default:
+        return false;
+    }
+}
+
+bool pc_mygene_awakening_test(
+    map_session_data* sd,
+    bool renew
+) {
+    // Development test only.
+    if (!sd ||
+        sd->status.base_level < 40 ||
+        pc_isdead(sd) ||
+        sd->state.trading ||
+        sd->state.vending ||
+        sd->state.buyingstore ||
+        sd->state.prevend ||
+        sd->state.storage_flag)
+        return false;
+
+    const int32 index =
+        sd->equip_index[EQI_HAND_R];
+
+    if (index < 0 || index >= MAX_INVENTORY)
+        return false;
+
+    struct item& it =
+        sd->inventory.u.items_inventory[index];
+
+    const uint32 now =
+        static_cast<uint32>(time(nullptr));
+
+    t_itemid new_id = 0;
+    uint32 expires = 0;
+
+    if (renew) {
+        // Permanent GM-test Perfect weapons
+        // must never be converted into rentals.
+        if (!pc_mygene_is_awakened(&it) ||
+            it.expire_time <= now)
+            return false;
+
+        const uint32 remaining =
+            it.expire_time - now;
+
+        if (remaining >
+            MYGENE_TEST_LEASE_MAX -
+            MYGENE_TEST_LEASE) {
+
+            clif_displaymessage(
+                sd->fd,
+                "Renewal would exceed the duration limit."
+            );
+
+            return false;
+        }
+
+        new_id = it.nameid;
+        expires =
+            it.expire_time + MYGENE_TEST_LEASE;
+
+    } else {
+        new_id = mygene_perfect_id(it.nameid);
+
+        if (!new_id ||
+            it.expire_time != 0 ||
+            it.identify != 1 ||
+            it.attribute != 0)
+            return false;
+
+        expires = now + MYGENE_TEST_LEASE;
+    }
+
+    if (!mygene_matching_slayer_card(it)) {
+        clif_displaymessage(
+            sd->fd,
+            "Matching Slayer Card required (90% execution)."
+        );
+        return false;
+    }
+
+    constexpr int64 soul_cost = 500;
+
+    if (renew &&
+        pc_readreg2(
+            sd, "MYGENE_SLAYED_SOULS"
+        ) < soul_cost) {
+
+        clif_displaymessage(
+            sd->fd,
+            "Renewal requires 500 Slayed Souls."
+        );
+
+        return false;
+    }
+
+    const int32 gem_cost = renew
+        ? MYGENE_RENEW_COST
+        : MYGENE_AWAKEN_COST;
+
+    const t_itemid previous_id = it.nameid;
+    const uint32 previous_expiry = it.expire_time;
+
+    if (mygene_awakening_gem_count(sd) < gem_cost) {
+        clif_displaymessage(
+            sd->fd,
+            "Not enough gemstones for Awakening."
+        );
+        return false;
+    }
+
+    // Perform the previously tested transformation.
+    // A declined transformation costs nothing.
+    if (!mygene_transform_weapon(
+        sd, index, new_id, expires, false
+    ))
+        return false;
+
+    // Recheck materials after equipment scripts.
+    if (mygene_awakening_gem_count(sd) < gem_cost ||
+        (renew &&
+            pc_readreg2(
+                sd, "MYGENE_SLAYED_SOULS"
+            ) < soul_cost)) {
+        if (!mygene_transform_weapon(
+            sd,
+            index,
+            previous_id,
+            previous_expiry,
+            !renew
+        )) {
+            ShowError(
+                "[MYGENE-AWAKENING] Payment rollback failed.\n"
+            );
+            pc_inventory_rental_add(sd, 1);
+        }
+        return false;
+    }
+
+    if (!mygene_awakening_pay(sd, gem_cost)) {
+        if (!mygene_transform_weapon(
+            sd,
+            index,
+            previous_id,
+            previous_expiry,
+            !renew
+        )) {
+            ShowError(
+                "[MYGENE-AWAKENING] Payment rollback failed.\n"
+            );
+            pc_inventory_rental_add(sd, 1);
+        }
+        return false;
+    }
+
+    ShowInfo(
+        "[MYGENE-AWAKENING-PAYMENT] CID=%u Cost=%d Mode=%s\n",
+        static_cast<unsigned int>(
+            sd->status.char_id
+        ),
+        gem_cost,
+        renew ? "Renewal" : "Awakening"
+    );
+
+    if (renew) {
+        const int64 balance =
+            pc_readreg2(
+                sd, "MYGENE_SLAYED_SOULS"
+            );
+
+        pc_setreg2(
+            sd,
+            "MYGENE_SLAYED_SOULS",
+            balance - soul_cost
+        );
+
+        ShowInfo(
+            "[MYGENE-SOUL-PAYMENT] CID=%u Cost=500 Balance=%lld\n",
+            static_cast<unsigned int>(
+                sd->status.char_id
+            ),
+            static_cast<long long>(
+                balance - soul_cost
+            )
+        );
+    }
+
+    pc_inventory_rental_add(sd, expires - now);
+
+    chrif_save(sd, CSAVE_INVENTORY);
+
+    clif_displaymessage(
+        sd->fd,
+        renew
+            ? "Slayer Awakening renewed."
+            : "Slayer Awakening activated."
+    );
+
+    return true;
+}
+
 void pc_inventory_rentals(map_session_data *sd)
 {
 	int32 i, c = 0;
@@ -1208,6 +1669,39 @@ void pc_inventory_rentals(map_session_data *sd)
 		if( sd->inventory.u.items_inventory[i].expire_time == 0 )
 			continue;
 		if( sd->inventory.u.items_inventory[i].expire_time <= time(nullptr) ) {
+
+            struct item& relic =
+                sd->inventory.u.items_inventory[i];
+
+            if (pc_mygene_is_awakened(&relic)) {
+                const t_itemid original =
+                    mygene_base_id(relic.nameid);
+
+                if (mygene_transform_weapon(
+                    sd, i, original, 0, true
+                )) {
+                    clif_displaymessage(
+                        sd->fd,
+                        "Your Perfect Slayer has returned to its original form."
+                    );
+
+                    if (sd->state.pc_loaded)
+                        chrif_save(sd, CSAVE_INVENTORY);
+                } else {
+                    // Preserve the weapon rather
+                    // than falling through to deletion.
+                    ShowError(
+                        "[MYGENE-AWAKENING] Reversion failed. Item retained; retrying.\n"
+                    );
+
+                    c++;
+                    next_tick = umin(
+                        1000U, next_tick
+                    );
+                }
+
+                continue;
+            }
 			if (sd->inventory_data[i]->unequip_script)
 				run_script(sd->inventory_data[i]->unequip_script, 0, sd->id, fake_nd->id);
 			clif_rental_expired(sd, i, sd->inventory.u.items_inventory[i].nameid);
@@ -1271,7 +1765,10 @@ bool pc_can_sell_item( const map_session_data* sd, const item* item, enum npc_su
 	if (battle_config.hide_fav_sell && item->favorite != 0)
 		return false; //Cannot sell favs (optional config)
 
-	if (!battle_config.rental_transaction && item->expire_time)
+	if (pc_mygene_is_awakened(item))
+        return false;
+
+    if (!battle_config.rental_transaction && item->expire_time)
 		return false; // Cannot Sell Rental Items
 
 	if( item->equipSwitch ){
@@ -2174,6 +2671,8 @@ bool pc_authok(map_session_data *sd, uint32 login_id2, time_t expiration_time, i
 	memset(&sd->cart, 0, sizeof(struct s_storage));
 	memset(&sd->storage, 0, sizeof(struct s_storage));
 	memset(&sd->premiumStorage, 0, sizeof(struct s_storage));
+	sd->mygene_spacebox_loot = false;
+	sd->mygene_spacebox_pending = false;
 	memset(&sd->equip_index, -1, sizeof(sd->equip_index));
 	memset(&sd->equip_switch_index, -1, sizeof(sd->equip_switch_index));
 
@@ -6074,9 +6573,27 @@ enum e_additem_result pc_additem(map_session_data *sd,struct item *item,int32 am
 
 	/* rental item check */
 	if( item->expire_time ) {
-		if( time(nullptr) > item->expire_time ) {
-			clif_rental_expired(sd, i, sd->inventory.u.items_inventory[i].nameid);
-			pc_delitem(sd, i, sd->inventory.u.items_inventory[i].amount, 1, 0, LOG_TYPE_OTHER);
+		if (time(nullptr) > item->expire_time) {
+            struct item& relic =
+                sd->inventory.u.items_inventory[i];
+
+            if (pc_mygene_is_awakened(&relic)) {
+                if (!mygene_transform_weapon(
+                    sd, i,
+                    mygene_base_id(relic.nameid),
+                    0, true
+                )) {
+                    pc_inventory_rental_add(sd, 1);
+                }
+            } else {
+                clif_rental_expired(
+                    sd, i, relic.nameid
+                );
+                pc_delitem(
+                    sd, i, relic.amount,
+                    1, 0, LOG_TYPE_OTHER
+                );
+            }
 		} else {
 			uint32 seconds = (uint32)( item->expire_time - time(nullptr) );
 			clif_rental_time(sd, sd->inventory.u.items_inventory[i].nameid, seconds);
@@ -6555,7 +7072,10 @@ int32 pc_useitem(map_session_data *sd,int32 n)
 		script_detach_rid( previous_st );
 	}
 
-	run_script( script, 0, sd->id, fake_nd->id );
+	// MYGENE_SURVIVAL_POTION_V2
+    const auto mygene_hp_before = sd->battle_status.hp;
+
+    run_script( script, 0, sd->id, fake_nd->id );
 
 	if( sd->st != nullptr ){
 		script_free_state( sd->st );
@@ -6572,7 +7092,33 @@ int32 pc_useitem(map_session_data *sd,int32 n)
 	}
 
 	potion_flag = 0;
-	return 1;
+
+    const auto mygene_stage = pc_readreg2(
+        sd, "@MYGENE_NT_SV_STEP"
+    );
+
+    if (nameid == 569 &&
+        item.expire_time == 0 &&
+        sd->battle_status.hp > mygene_hp_before &&
+        pc_readreg2(sd, "@MYGENE_NT_SV_ACTIVE") &&
+        (mygene_stage == 3 || mygene_stage == 5)) {
+
+        pc_setreg2(
+            sd, "@MYGENE_NT_SV_HEALED", 1
+        );
+
+        ShowInfo(
+            "[SURVIVAL] Real potion recovery verified. CID=%u Stage=%lld\n",
+            static_cast<unsigned int>(
+                sd->status.char_id
+            ),
+            static_cast<long long>(
+                mygene_stage
+            )
+        );
+    }
+
+    return 1;
 }
 
 /**
@@ -6604,7 +7150,15 @@ enum e_additem_result pc_cart_additem(map_session_data *sd,struct item *item,int
 		return ADDITEM_STACKLIMIT;
 	}
 
-	if( !itemdb_cancartstore(item, pc_get_group_level(sd)) || (item->bound > BOUND_ACCOUNT && !pc_can_give_bounded_items(sd)))
+	if (pc_mygene_is_awakened(item)) {
+        clif_displaymessage(
+            sd->fd,
+            "Awakened Slayer weapons cannot enter carts."
+        );
+        return ADDITEM_INVALID;
+    }
+
+    if( !itemdb_cancartstore(item, pc_get_group_level(sd)) || (item->bound > BOUND_ACCOUNT && !pc_can_give_bounded_items(sd)))
 	{ // Check item trade restrictions	[Skotlex]
 		clif_displaymessage (sd->fd, msg_txt(sd,264));
 		return ADDITEM_INVALID;

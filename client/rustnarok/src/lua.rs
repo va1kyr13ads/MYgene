@@ -1,0 +1,3697 @@
+//! The client's Lua data tables (compiled Lua 5.1 in data.grf), run in an embedded Lua 5.1.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::io;
+
+use mlua::Lua;
+
+use crate::grf::Grf;
+
+const NPC_IDENTITY: &str = "data\\luafiles514\\lua files\\datainfo\\npcidentity.lub";
+const JOB_NAME: &str = "data\\luafiles514\\lua files\\datainfo\\jobname.lub";
+const PET_INFO: &str = "data\\luafiles514\\lua files\\datainfo\\petinfo.lub";
+const DRESS_LIST: &str = "data\\luafiles514\\lua files\\dressroom\\jobdresslist.lub";
+const DRESS_F: &str = "data\\luafiles514\\lua files\\dressroom\\dress_f.lub";
+const TITLE_TABLE: &str = "data\\luafiles514\\lua files\\datainfo\\titletable.lub";
+const ENUM_VAR: &str = "data\\luafiles514\\lua files\\datainfo\\enumvar.lub";
+const RANDOM_OPTION_NAMES: &str = "data\\luafiles514\\lua files\\datainfo\\addrandomoptionnametable.lub";
+/// Not in data.grf: the translation's System folder has it.
+const ACHIEVEMENTS: &str = "system\\achievements.lub";
+/// The styling shop's functions, then its lists. They fill `StylingShop`.
+const STYLING_SHOP_F: &str = "data\\luafiles514\\lua files\\stylingshop\\stylingshopinfo_f.lub";
+const STYLING_SHOP: &str = "data\\luafiles514\\lua files\\stylingshop\\stylingshopinfo.lub";
+/// The same table under the name older data (kRO 2022, its translations) gives it.
+const ACHIEVEMENT_LIST: &str = "system\\achievement_list.lub";
+const ITEM_INFO: &str = "data\\luafiles514\\lua files\\datainfo\\iteminfo.lub";
+/// A translation's item table: the file the game runs, `System\itemInfo.lua` (an older translation's table itself, or a loader
+/// that `dofile`s the table under LuaFiles514 and merges a server's custom tables over it); else that table alone.
+const TRANSLATED_ITEM_INFO: [&str; 2] = ["system\\iteminfo.lua", "system\\luafiles514\\iteminfo.lua"];
+const ACCESSORY_ID: &str = "data\\luafiles514\\lua files\\datainfo\\accessoryid.lub";
+const ACCESSORY_NAME: &str = "data\\luafiles514\\lua files\\datainfo\\accname.lub";
+const WEAPON_TABLE: &str = "data\\luafiles514\\lua files\\datainfo\\weapontable.lub";
+const ROBE_ID: &str = "data\\luafiles514\\lua files\\datainfo\\spriterobeid.lub";
+const ROBE_NAME: &str = "data\\luafiles514\\lua files\\datainfo\\spriterobename.lub";
+const AGIT_CONFIG: [&str; 2] = ["data\\luafiles514\\lua files\\agit\\agitconfig.lub", "data\\luafiles514\\lua files\\agit\\agitconfig_f.lub"];
+/// What decides where garments and headgear go among a character's layers: the garment tables (by job, action and
+/// frame), the garments worn over the headgear, the headgear priorities, and the headgear Doram wear moved.
+const LAYER_RULES: [&str; 14] = [
+    JOB_INHERIT,
+    ROBE_ID,
+    ROBE_NAME,
+    "data\\luafiles514\\lua files\\datainfo\\spriterobename_f.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\2dlayerdir_f.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\_new_biglayerdir_male.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\_new_biglayerdir_female.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\_new_smalllayerdir_male.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\_new_smalllayerdir_female.lub",
+    "data\\luafiles514\\lua files\\spreditinfo\\_new_2dlayerdir_f.lub",
+    ACCESSORY_ID,
+    "data\\luafiles514\\lua files\\datainfo\\tb_layer_priority.lub",
+    "data\\luafiles514\\lua files\\offsetitempos\\offsetitempos_f.lub",
+    "data\\luafiles514\\lua files\\offsetitempos\\offsetitempos.lub",
+];
+/// Defines JOBID, which the job name and skill tables use.
+const JOB_INHERIT: &str = "data\\luafiles514\\lua files\\skillinfoz\\jobinheritlist.lub";
+const PC_JOB_NAME: &str = "data\\luafiles514\\lua files\\datainfo\\pcjobname.lub";
+/// Where newer data keeps the job names instead: `PCJobNameTableMan`, with the job IDs (`pcJobTbl2`) in the women's file.
+const PC_JOB_NAME_GENDER: [&str; 2] =
+    ["data\\luafiles514\\lua files\\datainfo\\pcjobnamegender_f.lub", "data\\luafiles514\\lua files\\datainfo\\pcjobnamegender.lub"];
+const SKILL_ID: &str = "data\\luafiles514\\lua files\\skillinfoz\\skillid.lub";
+const SKILL_INFO: &str = "data\\luafiles514\\lua files\\skillinfoz\\skillinfolist.lub";
+/// Each skill's description, line by line (`SKILL_DESCRIPT`).
+const SKILL_DESCRIPT: &str = "data\\luafiles514\\lua files\\skillinfoz\\skilldescript.lub";
+/// Defines JobSkillTab, which the skill tree needs.
+const SKILL_INFO_F: &str = "data\\luafiles514\\lua files\\skillinfoz\\skillinfo_f.lub";
+const SKILL_TREE: &str = "data\\luafiles514\\lua files\\skillinfoz\\skilltreeview.lub";
+const EFST_IDS: &str = "data\\luafiles514\\lua files\\stateicon\\efstids.lub";
+const STATE_ICON_IMAGES: &str = "data\\luafiles514\\lua files\\stateicon\\stateiconimginfo.lub";
+/// What each status icon says when pointed at (`StateIconList`).
+const STATE_ICON_INFO: &str = "data\\luafiles514\\lua files\\stateicon\\stateiconinfo.lub";
+/// Laphine synthesis boxes (`tblLapineDdukddakBox`).
+const SYNTHESIS_TABLE: &str = "data\\luafiles514\\lua files\\datainfo\\lapineddukddakbox.lub";
+/// Laphine upgrade boxes (`tblLapineUpgradeBox`).
+const UPGRADE_TABLE: &str = "data\\luafiles514\\lua files\\datainfo\\lapineupgradebox.lub";
+/// The world maps: their names (the language file first, which the others use), list, colors and areas.
+const WORLD_VIEW: [&str; 4] = [
+    "data\\luafiles514\\lua files\\worldviewdata\\worldviewdata_language.lub",
+    "data\\luafiles514\\lua files\\worldviewdata\\worldviewdata_list.lub",
+    "data\\luafiles514\\lua files\\worldviewdata\\worldviewdata_info.lub",
+    "data\\luafiles514\\lua files\\worldviewdata\\worldviewdata_table.lub",
+];
+
+/// The battlegrounds the queue window lists (`EntryQueueList`); a translation's copy in the data folder has rathena's
+/// names.
+const ENTRY_QUEUE: &str = "data\\luafiles514\\lua files\\entryqueue\\entryqueuelist.lub";
+/// Per monster job, how big its sprite is drawn (`tbl[job].MonsterSize`). The new file is read second and wins.
+const JOB_IDENTITY: &str = "data\\luafiles514\\lua files\\datainfo\\jobidentity.lub";
+const SHADOW_TABLE: &str = "data\\luafiles514\\lua files\\datainfo\\shadowtable.lub";
+const NPC_LOCATION_RADIUS: &str = "data\\luafiles514\\lua files\\datainfo\\npclocationradius.lub";
+const MONSTER_SIZE: &str = "system\\monster_size_effect.lub";
+const MONSTER_SIZE_NEW: &str = "system\\monster_size_effect_new.lub";
+
+/// A battleground the queue window lists.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Battleground {
+    /// Sent to the server; rathena's `Name` in battleground_db.
+    pub name: String,
+    pub display: String,
+    /// Team sizes: ours and theirs.
+    pub sizes: [u16; 2],
+    /// Applying alone, as a party, as a guild.
+    pub applies: [bool; 3],
+    /// Who may enter: 1 up to a level, 2 from a level, 3 a range; the levels.
+    pub condition: (u8, [u32; 2]),
+    /// What a win, a draw and a loss bring.
+    pub rewards: [String; 3],
+    pub goal: String,
+    /// Its picture (battle_field\bat_a01.bmp).
+    pub picture: String,
+}
+
+/// The client's navigation tables (navigation\navi_*_krpri.lub).
+const NAVI_MAP: &str = "data\\luafiles514\\lua files\\navigation\\navi_map_krpri.lub";
+const NAVI_LINK: &str = "data\\luafiles514\\lua files\\navigation\\navi_link_krpri.lub";
+const NAVI_NPC: &str = "data\\luafiles514\\lua files\\navigation\\navi_npc_krpri.lub";
+const NAVI_MOB: &str = "data\\luafiles514\\lua files\\navigation\\navi_mob_krpri.lub";
+const NAVI_DISTANCE: &str = "data\\luafiles514\\lua files\\navigation\\navi_linkdistance_krpri.lub";
+
+/// The navigation tables: maps with their shown names, the ways between maps, NPCs and monsters by map.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct NaviTables {
+    pub maps: HashMap<String, String>,
+    /// Each map's width and height in cells.
+    pub sizes: HashMap<String, [u16; 2]>,
+    pub links: Vec<NaviLink>,
+    pub npcs: Vec<NaviNpc>,
+    pub monsters: Vec<NaviMonster>,
+    /// From a way (its id): the ways that can be walked to from where it arrives, in the table's order, and how many
+    /// cells off each is. Empty when the data has no distance table.
+    pub passes: HashMap<u32, Vec<(u32, u32)>>,
+}
+
+/// A way from one map to another: a warp (kind 200), an NPC that sends you (201), or a service (204, 205).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NaviLink {
+    pub id: u32,
+    pub map: String,
+    pub kind: u32,
+    pub name: String,
+    pub cell: [u16; 2],
+    pub to: String,
+    pub to_cell: [u16; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NaviNpc {
+    pub map: String,
+    pub name: String,
+    pub cell: [u16; 2],
+    /// The job its sprite is drawn by.
+    pub job: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct NaviMonster {
+    pub map: String,
+    pub id: u16,
+    pub name: String,
+    /// How many of it the map spawns.
+    pub spawns: u32,
+    /// Its sprite's file name, its level, its element (20 a level, plus the element), size and race, and whether
+    /// the table lists it as a boss.
+    pub sprite: String,
+    pub level: u16,
+    pub element: u8,
+    pub size: u8,
+    pub race: u8,
+    pub boss: bool,
+}
+
+pub fn navigation(grf: &Grf) -> io::Result<NaviTables> {
+    let lua = run(grf, &[NAVI_MAP, NAVI_LINK, NAVI_NPC, NAVI_MOB])?;
+    // Older data has no distance table: routes then take every way of a map as one that can be walked to.
+    let _ = exec(&lua, grf, &[NAVI_DISTANCE]);
+    navi_tables(&lua)
+}
+
+/// `Navi_Map` { name, shown name, type, width, height }, `Navi_Link` { map, id, kind, .., name, .., x, y, to map, to x, to y },
+/// `Navi_Npc` { map, id, kind, sprite, name, .., x, y }, `Navi_Mob` { map, id, kind (301 a boss), spawns << 16 | monster,
+/// name, sprite, level, element << 16 | size << 8 | race },
+/// and `Navi_Distance` (when there): map, how many ways, { { a way's id, { "E", id, cells }.., { "NULL", 0, 0 } }.. },
+/// one after the other in one flat list.
+fn navi_tables(lua: &Lua) -> io::Result<NaviTables> {
+    let rows = |name: &str| -> io::Result<Vec<mlua::Table>> {
+        let table: mlua::Table = lua.globals().get(name).map_err(lua_error)?;
+        table.pairs::<mlua::Value, mlua::Table>().map(|pair| pair.map(|(_, row)| row).map_err(lua_error)).collect()
+    };
+    let text = |row: &mlua::Table, index: i64| row.get::<mlua::LuaString>(index).map(|text| decode(&text)).unwrap_or_default();
+    let number = |row: &mlua::Table, index: i64| row.get::<i64>(index).unwrap_or(0);
+    let cell = |row: &mlua::Table, x: i64| [number(row, x) as u16, number(row, x + 1) as u16];
+    let mut tables = NaviTables::default();
+    for row in rows("Navi_Map")? {
+        tables.maps.insert(text(&row, 1), text(&row, 2));
+        tables.sizes.insert(text(&row, 1), cell(&row, 4));
+    }
+    for row in rows("Navi_Link")? {
+        tables.links.push(NaviLink {
+            id: number(&row, 2) as u32,
+            map: text(&row, 1),
+            kind: number(&row, 3) as u32,
+            name: text(&row, 5),
+            cell: cell(&row, 7),
+            to: text(&row, 9),
+            to_cell: cell(&row, 10),
+        });
+    }
+    for row in rows("Navi_Npc")? {
+        tables.npcs.push(NaviNpc { map: text(&row, 1), name: text(&row, 5), cell: cell(&row, 7), job: number(&row, 4) as u16 });
+    }
+    for row in rows("Navi_Mob")? {
+        tables.monsters.push(NaviMonster {
+            map: text(&row, 1),
+            id: (number(&row, 4) & 0xFFFF) as u16,
+            name: text(&row, 5),
+            spawns: (number(&row, 4) >> 16) as u32,
+            sprite: text(&row, 6),
+            level: number(&row, 7) as u16,
+            element: (number(&row, 8) >> 16) as u8,
+            size: (number(&row, 8) >> 8) as u8,
+            race: number(&row, 8) as u8,
+            boss: number(&row, 3) == 301,
+        });
+    }
+    // Every third entry of the flat list is a map's ways; "E" names a way that can be walked to from where this one
+    // arrives, and anything else ends a way's list.
+    if let Ok(distances) = lua.globals().get::<mlua::Table>("Navi_Distance") {
+        for ways in distances.sequence_values::<mlua::Value>().flatten().skip(2).step_by(3).filter_map(|ways| ways.as_table().cloned()) {
+            for way in ways.sequence_values::<mlua::Table>().flatten() {
+                let passes = way.sequence_values::<mlua::Value>().flatten().skip(1).filter_map(|pass| pass.as_table().cloned());
+                let passes = passes.take_while(|pass| text(pass, 1) == "E").map(|pass| (number(&pass, 2) as u32, number(&pass, 3) as u32));
+                tables.passes.insert(number(&way, 1) as u32, passes.collect());
+            }
+        }
+    }
+    Ok(tables)
+}
+
+pub fn entry_queue(grf: &Grf) -> io::Result<Vec<Battleground>> {
+    battlegrounds(&run(grf, &[ENTRY_QUEUE])?)
+}
+
+/// `EntryQueueList` in order.
+fn battlegrounds(lua: &Lua) -> io::Result<Vec<Battleground>> {
+    let list: mlua::Table = lua.globals().get("EntryQueueList").map_err(lua_error)?;
+    let mut entries: Vec<(i64, Battleground)> = Vec::new();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let (index, entry) = pair.map_err(lua_error)?;
+        let text = |key: &str| entry.get::<mlua::LuaString>(key).map(|text| decode(&text)).unwrap_or_default();
+        let number = |key: &str| entry.get::<u32>(key).unwrap_or(0);
+        entries.push((
+            index,
+            Battleground {
+                name: text("BattleFieldName"),
+                display: text("DisplayBattleFieldName"),
+                sizes: [number("AllianceNum") as u16, number("EnemyNum") as u16],
+                applies: [number("PrivateApply") == 1, number("PartyApply") == 1, number("GuildApply") == 1],
+                condition: (number("EnterCondType") as u8, [number("EnterCondValue1"), number("EnterCondValue2")]),
+                rewards: [text("RewardWin"), text("RewardDraw"), text("RewardLose")],
+                goal: text("VictoryCond"),
+                picture: entry.get::<mlua::LuaString>("MiniMapFile").map(|text| decode_name(&text)).unwrap_or_default(),
+            },
+        ));
+    }
+    entries.sort_by_key(|(index, _)| *index);
+    Ok(entries.into_iter().map(|(_, battleground)| battleground).collect())
+}
+
+/// Runs client Lua files in order; precompiled ones are converted from the client's 32-bit bytecode first.
+fn run(grf: &Grf, files: &[&str]) -> io::Result<Lua> {
+    let lua = new_lua()?;
+    exec(&lua, grf, files)?;
+    Ok(lua)
+}
+
+/// `time` (Unix seconds) as a local date and time by a strftime pattern, as Lua's `os.date` writes it ("!" first: UTC);
+/// at most 127 bytes.
+pub fn local_date(pattern: &str, time: i64) -> String {
+    let Ok(lua) = Lua::new_with(mlua::StdLib::OS, mlua::LuaOptions::default()) else { return String::new() };
+    let date = lua.globals().get::<mlua::Table>("os").and_then(|os| os.get::<mlua::Function>("date")).and_then(|date| date.call::<String>((pattern, time)));
+    let mut date = date.unwrap_or_default();
+    while date.len() > 127 {
+        date.pop();
+    }
+    date
+}
+
+fn new_lua() -> io::Result<Lua> {
+    // Data tables only need these; no file or OS access for files that may come from a translation pack.
+    let lua = Lua::new_with(mlua::StdLib::TABLE | mlua::StdLib::STRING | mlua::StdLib::MATH, mlua::LuaOptions::default()).map_err(lua_error)?;
+    // Some tables are source that loadstrings the official file's bytecode, which is 32-bit: converted like a .lub.
+    let loadstring = lua
+        .create_function(|lua, (chunk, name): (mlua::LuaString, Option<String>)| {
+            let name = name.unwrap_or_else(|| "=(loadstring)".into());
+            let loaded = unified(chunk.as_bytes().to_vec())
+                .map_err(|error| format!("{error:?}"))
+                .and_then(|bytes| lua.load(&bytes).set_name(&name).into_function().map_err(|error| error.to_string()));
+            // Lua's own way: the function, or nil and the error.
+            Ok(match loaded {
+                Ok(function) => (Some(function), None),
+                Err(error) => (None, Some(error)),
+            })
+        })
+        .map_err(lua_error)?;
+    lua.globals().set("loadstring", loadstring).map_err(lua_error)?;
+    Ok(lua)
+}
+
+/// Bytecode converted to this Lua's format; plain source as it is.
+fn unified(bytes: Vec<u8>) -> Result<Vec<u8>, lunify::LunifyError> {
+    match lunify::unify(&bytes, &lunify::Format::default(), &lunify::Settings::default()) {
+        Ok(converted) => Ok(converted),
+        Err(lunify::LunifyError::IncorrectSignature) => Ok(bytes),
+        Err(error) => Err(error),
+    }
+}
+
+/// Runs more client Lua files in `lua`.
+fn exec(lua: &Lua, grf: &Grf, files: &[&str]) -> io::Result<()> {
+    for file in files {
+        exec_bytes(lua, file, grf.read(file)?)?;
+    }
+    Ok(())
+}
+
+/// Runs one file's bytes, bytecode or plain source.
+fn exec_bytes(lua: &Lua, file: &str, bytes: Vec<u8>) -> io::Result<()> {
+    let bytes = unified(bytes).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{file}: {error:?}")))?;
+    lua.load(&bytes).set_name(file).exec().map_err(|error| io::Error::other(format!("{file}: {error}")))
+}
+
+/// Dev aid: runs `files`, evaluates `expression` and lists the result (tables nested up to `depth`, `limit` entries
+/// a table, keys sorted) with strings decoded.
+pub fn dump(grf: &Grf, files: &[&str], expression: &str, depth: usize, limit: usize) -> io::Result<String> {
+    fn show(value: &mlua::Value, depth: usize, limit: usize, indent: usize, out: &mut String) {
+        match value {
+            mlua::Value::String(text) => out.push_str(&format!("{:?}", decode(text))),
+            mlua::Value::Table(table) if depth > 0 => {
+                let mut pairs: Vec<(String, mlua::Value)> =
+                    table.pairs::<mlua::Value, mlua::Value>().flatten().map(|(key, value)| (key_text(&key), value)).collect();
+                pairs.sort_by(|a, b| (a.0.len(), &a.0).cmp(&(b.0.len(), &b.0)));
+                out.push_str(&format!("{{ ({} entries)\n", pairs.len()));
+                for (key, value) in pairs.iter().take(limit) {
+                    out.push_str(&format!("{}{key} = ", "  ".repeat(indent + 1)));
+                    show(value, depth - 1, limit, indent + 1, out);
+                    out.push('\n');
+                }
+                out.push_str(&format!("{}}}", "  ".repeat(indent)));
+            }
+            other => out.push_str(&format!("{other:?}")),
+        }
+    }
+    fn key_text(key: &mlua::Value) -> String {
+        match key {
+            mlua::Value::String(text) => decode(text),
+            other => format!("{other:?}").trim_start_matches("Integer(").trim_end_matches(')').to_owned(),
+        }
+    }
+    let lua = run(grf, files)?;
+    let value: mlua::Value = lua.load(format!("return {expression}")).eval().map_err(lua_error)?;
+    let mut out = String::new();
+    show(&value, depth, limit, 0, &mut out);
+    Ok(out)
+}
+
+fn lua_error(error: mlua::Error) -> io::Error {
+    io::Error::other(error.to_string())
+}
+
+/// The sky table (`lua files\mapskydata\mapskydata`): functions first, then the rows, when the file is split.
+const MAP_SKY: [&str; 2] = ["data\\luafiles514\\lua files\\mapskydata\\mapskydata_f.lub", "data\\luafiles514\\lua files\\mapskydata\\mapskydata.lub"];
+
+/// One map's sky row. `color` is missing on the entries that stay black.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SkyRow {
+    pub color: Option<[u8; 3]>,
+    pub fog: bool,
+}
+
+/// The sky row for `map` (a name, or `name.rsw`), or none when the map is not in the table.
+pub fn sky_for(grf: &Grf, map: &str) -> Option<SkyRow> {
+    let lua = load_sky(grf).ok()?;
+    let key = sky_key(map);
+    sky_from_lua(&lua, &key)
+}
+
+/// The colour the frame is cleared to. A map with no row, or a row with no BG_Color, is black. With BG_Fog and a fog
+/// colour, the background is mixed toward the fog by the fog colour's alpha.
+pub fn clear_color(row: Option<SkyRow>, fog: Option<([u8; 3], u8)>) -> [f32; 3] {
+    let Some(SkyRow { color: Some(background), fog: blends }) = row else { return [0.0; 3] };
+    let background = background.map(|channel| f32::from(channel) / 255.0);
+    if blends && let Some((rgb, alpha)) = fog {
+        let cover = f32::from(alpha) / 255.0;
+        let fog = rgb.map(|channel| f32::from(channel) / 255.0);
+        return [0, 1, 2].map(|index| background[index] * (1.0 - cover) + fog[index] * cover);
+    }
+    background
+}
+
+fn sky_key(map: &str) -> String {
+    let name = map.trim_end_matches(".gat").trim_end_matches(".rsw");
+    format!("{name}.rsw")
+}
+
+fn load_sky(grf: &Grf) -> io::Result<Lua> {
+    let lua = new_lua()?;
+    let mut loaded = false;
+    for file in MAP_SKY {
+        if let Ok(bytes) = grf.read(file) {
+            exec_bytes(&lua, file, bytes)?;
+            loaded = true;
+        }
+    }
+    loaded.then_some(lua).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "map sky"))
+}
+
+/// `IsExistMapSkyData`, `GetBackgroundColor` and `IsBackGroundFog`. A file that only has the `MapSkyData` table is
+/// read from that instead.
+fn sky_from_lua(lua: &Lua, key: &str) -> Option<SkyRow> {
+    if lua.globals().contains_key("IsExistMapSkyData").unwrap_or(false) {
+        let exists = call_value(lua, "IsExistMapSkyData", key)?;
+        if !lua_truth(&exists) {
+            return None;
+        }
+        let color = call_value(lua, "GetBackgroundColor", key).and_then(lua_rgb);
+        let fog = call_value(lua, "IsBackGroundFog", key).is_some_and(|value| lua_truth(&value));
+        return Some(SkyRow { color, fog });
+    }
+    let table: mlua::Table = lua.globals().get("MapSkyData").ok()?;
+    let entry: mlua::Table = table.get(key).ok()?;
+    let color = entry.get::<mlua::Value>("BG_Color").ok().and_then(lua_rgb);
+    let fog = entry.get::<mlua::Value>("BG_Fog").ok().is_some_and(|value| lua_truth(&value));
+    Some(SkyRow { color, fog })
+}
+
+/// A map's sky effects (`MapSkyData`): stars (`Star_Effect`), the sky types of `Old_Cloud_Effect` in order, and the
+/// cloud fields of `Cloud_Effect`. Empty for a map not in the table.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkyEffects {
+    pub stars: bool,
+    pub types: Vec<u32>,
+    pub fields: Vec<CloudField>,
+}
+
+/// A `Cloud_Effect` entry: `num` clouds over the whole map, at `height` plus rand % `height_extra` (GAT units), of
+/// `size` plus rand % `size_extra` pulsing by `expand_rate`, in `color`. They gain `alpha_inc_speed` a tick while young
+/// (`alpha_inc_time` plus rand % `alpha_dec_time_extra`) and lose `alpha_dec_speed` a tick from `alpha_dec_time` plus
+/// rand % `alpha_dec_time_extra`; drawn within `cull_dist` of the player.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CloudField {
+    pub num: u32,
+    pub height: f32,
+    pub height_extra: u32,
+    pub size: f32,
+    pub size_extra: u32,
+    pub expand_rate: f32,
+    pub color: [u8; 3],
+    pub alpha_inc_time: u32,
+    pub alpha_inc_speed: f32,
+    pub alpha_dec_time: u32,
+    pub alpha_dec_time_extra: u32,
+    pub alpha_dec_speed: f32,
+    pub cull_dist: f32,
+}
+
+/// The sky effects of `map` (a name, or `name.rsw`).
+pub fn sky_effects(grf: &Grf, map: &str) -> SkyEffects {
+    load_sky(grf).ok().map(|lua| sky_effects_from_lua(&lua, &sky_key(map))).unwrap_or_default()
+}
+
+fn sky_effects_from_lua(lua: &Lua, key: &str) -> SkyEffects {
+    let Some(entry) = lua.globals().get::<mlua::Table>("MapSkyData").ok().and_then(|table| table.get::<mlua::Table>(key).ok()) else {
+        return SkyEffects::default();
+    };
+    let stars = entry.get::<mlua::Value>("Star_Effect").ok().is_some_and(|value| lua_truth(&value));
+    let types = entry.get::<mlua::Table>("Old_Cloud_Effect").map(|list| list.sequence_values::<u32>().flatten().collect()).unwrap_or_default();
+    let fields = entry
+        .get::<mlua::Table>("Cloud_Effect")
+        .map(|list| {
+            list.sequence_values::<mlua::Table>()
+                .flatten()
+                .map(|field| {
+                    let number = |name: &str| field.get::<f32>(name).unwrap_or(0.0);
+                    let whole = |name: &str| number(name).max(0.0) as u32;
+                    CloudField {
+                        num: whole("Num"),
+                        height: number("Height"),
+                        height_extra: whole("Height_Extra"),
+                        size: number("Size"),
+                        size_extra: whole("Size_Extra"),
+                        expand_rate: number("Expand_Rate"),
+                        color: field
+                            .get::<mlua::Table>("Color")
+                            .map(|color| [1, 2, 3].map(|index| color.get::<f32>(index).unwrap_or(255.0) as u8))
+                            .unwrap_or([255; 3]),
+                        alpha_inc_time: whole("Alpha_Inc_Time"),
+                        alpha_inc_speed: number("Alpha_Inc_Speed"),
+                        alpha_dec_time: whole("Alpha_Dec_Time"),
+                        alpha_dec_time_extra: whole("Alpha_Dec_Time_Extra"),
+                        alpha_dec_speed: number("Alpha_Dec_Speed"),
+                        cull_dist: number("CullDist"),
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    SkyEffects { stars, types, fields }
+}
+
+fn call_value(lua: &Lua, name: &str, key: &str) -> Option<mlua::Value> {
+    lua.globals().get::<mlua::Function>(name).ok()?.call(key).ok()
+}
+
+fn lua_truth(value: &mlua::Value) -> bool {
+    match value {
+        mlua::Value::Boolean(flag) => *flag,
+        mlua::Value::Integer(number) => *number != 0,
+        mlua::Value::Number(number) => *number != 0.0,
+        mlua::Value::String(text) => {
+            let text = decode(text);
+            !text.is_empty() && text != "0"
+        }
+        _ => false,
+    }
+}
+
+/// `#RRGGBB`, `0xRRGGBB`, or `0xAARRGGBB`.
+fn lua_rgb(value: mlua::Value) -> Option<[u8; 3]> {
+    match value {
+        mlua::Value::String(text) => rgb_text(&decode(&text)),
+        mlua::Value::Integer(number) => rgb_number(number as u32),
+        mlua::Value::Number(number) => rgb_number(number as u32),
+        _ => None,
+    }
+}
+
+fn rgb_text(text: &str) -> Option<[u8; 3]> {
+    let text = text.trim().trim_start_matches('#');
+    let text = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")).unwrap_or(text);
+    let number = u32::from_str_radix(text, 16).ok()?;
+    if text.len() >= 8 { rgb_number(number) } else { Some([((number >> 16) & 0xFF) as u8, ((number >> 8) & 0xFF) as u8, (number & 0xFF) as u8]) }
+}
+
+fn rgb_number(number: u32) -> Option<[u8; 3]> {
+    if number > 0x00FF_FFFF {
+        let [_, red, green, blue] = number.to_be_bytes();
+        Some([red, green, blue])
+    } else {
+        Some([((number >> 16) & 0xFF) as u8, ((number >> 8) & 0xFF) as u8, (number & 0xFF) as u8])
+    }
+}
+
+/// Words to show: the data's code page (Thai in a Thai client's tables, else EUC-KR).
+fn decode(text: &mlua::LuaString) -> String {
+    decode_in(&text.as_bytes(), crate::net::data_codepage())
+}
+
+/// A file name: EUC-KR whatever the langtype, as the archives name their files.
+fn decode_name(text: &mlua::LuaString) -> String {
+    decode_in(&text.as_bytes(), encoding_rs::EUC_KR)
+}
+
+/// Lua strings are in `codepage`; in the newer tables those bytes were read as Windows-1252 and saved as UTF-8, which
+/// this undoes.
+fn decode_in(bytes: &[u8], codepage: &'static encoding_rs::Encoding) -> String {
+    if let Ok(utf8) = std::str::from_utf8(bytes)
+        && !utf8.is_ascii()
+    {
+        let (original, _, unmappable) = encoding_rs::WINDOWS_1252.encode(utf8);
+        return if unmappable { utf8.to_owned() } else { codepage.decode_without_bom_handling(&original).0.into_owned() };
+    }
+    codepage.decode_without_bom_handling(bytes).0.into_owned()
+}
+
+/// A Lua table of numbers to names.
+fn names<K: TryFrom<i64> + std::hash::Hash + Eq>(table: &mlua::Table) -> io::Result<HashMap<K, String>> {
+    decoded(table, decode)
+}
+
+/// A Lua table of numbers to file names (sprites, pictures).
+fn file_names<K: TryFrom<i64> + std::hash::Hash + Eq>(table: &mlua::Table) -> io::Result<HashMap<K, String>> {
+    decoded(table, decode_name)
+}
+
+fn decoded<K: TryFrom<i64> + std::hash::Hash + Eq>(table: &mlua::Table, decode: fn(&mlua::LuaString) -> String) -> io::Result<HashMap<K, String>> {
+    let mut names = HashMap::new();
+    for pair in table.pairs::<i64, mlua::LuaString>() {
+        let (id, name) = pair.map_err(lua_error)?;
+        if let Ok(id) = K::try_from(id) {
+            names.insert(id, decode(&name));
+        }
+    }
+    Ok(names)
+}
+
+/// The dress room's lists for a character of `sex` (0 female), as the data's getters give them: hairstyles
+/// (`_get_Headstylelist`), hair colours (`_get_DressHeadPaletteList`), clothes colours (`_get_DressBodyPaletteList`),
+/// each row a label and a value. Some data keeps one table per list, some one per sex: the getters hide which.
+pub fn dress_lists(grf: &Grf, sex: u8) -> io::Result<[Vec<(String, u16)>; 3]> {
+    read_dress_lists(&run(grf, &[DRESS_LIST, DRESS_F])?, sex)
+}
+
+fn read_dress_lists(lua: &Lua, sex: u8) -> io::Result<[Vec<(String, u16)>; 3]> {
+    let rows = |getter: &str| -> io::Result<Vec<(String, u16)>> {
+        let function: mlua::Function = lua.globals().get(getter).map_err(lua_error)?;
+        let mut rows = Vec::new();
+        // ponytail: a getter that never ends its list stops at 1000 rows.
+        for index in 1..=1000 {
+            let (label, value): (Option<mlua::LuaString>, Option<u16>) = function.call((sex, index)).map_err(lua_error)?;
+            let (Some(label), Some(value)) = (label, value) else { break };
+            rows.push((decode(&label), value));
+        }
+        Ok(rows)
+    };
+    Ok([rows("_get_Headstylelist")?, rows("_get_DressHeadPaletteList")?, rows("_get_DressBodyPaletteList")?])
+}
+
+/// Sprite names of NPCs and monsters by job ID (`JobNameTable`), e.g. 45 → "1_ETC_01".
+pub fn job_names(grf: &Grf) -> io::Result<HashMap<u16, String>> {
+    let lua = run(grf, &[NPC_IDENTITY, JOB_NAME])?;
+    let table: mlua::Table = lua.globals().get("JobNameTable").map_err(lua_error)?;
+    file_names(&table)
+}
+
+/// The pet tables (petinfo.lub), by monster ID or (accessories) item ID.
+#[derive(Debug, Default)]
+pub struct PetTables {
+    /// Its talk table's name, e.g. 1002 → "poring".
+    pub names: HashMap<u16, String>,
+    /// Its picture in `유저인터페이스\illust\`, e.g. "펫_포링.bmp".
+    pub illustrations: HashMap<u16, String>,
+    /// The ACT an accessory moves its pet by, e.g. 10013 → "poring_책가방.act".
+    pub accessory_acts: HashMap<u16, String>,
+    /// What it eats (`PetFoodTable`): an item ID, e.g. 1002 → 531.
+    pub food: HashMap<u16, u32>,
+}
+
+pub fn pet_tables(grf: &Grf) -> io::Result<PetTables> {
+    let lua = run(grf, &[NPC_IDENTITY])?;
+    // A translated petinfo may name monsters this npcidentity doesn't know: they all go under one unused key.
+    lua.load("setmetatable(jobtbl, { __index = function() return -1 end })").exec().map_err(lua_error)?;
+    exec(&lua, grf, &[PET_INFO])?;
+    let table = |name: &str| file_names(&lua.globals().get::<mlua::Table>(name).map_err(lua_error)?);
+    // A translation may leave the food table out.
+    let food = lua
+        .globals()
+        .get::<mlua::Table>("PetFoodTable")
+        .map(|table| {
+            table.pairs::<i64, i64>().flatten().filter_map(|(monster, item)| Some((u16::try_from(monster).ok()?, u32::try_from(item).ok()?))).collect()
+        })
+        .unwrap_or_default();
+    Ok(PetTables { names: table("PetNameTable")?, illustrations: table("PetIllustNameTable")?, accessory_acts: table("PetAccActNameTable")?, food })
+}
+
+/// The client's pet evolution list (it may be missing).
+const PET_EVOLUTION: &str = "system\\PetEvolutionCln_true.lub";
+
+/// The eggs whose pets may eat by themselves: the list's `InsertPetAutoFeeding(egg)` calls.
+pub fn pet_auto_feeding(grf: &Grf) -> io::Result<HashSet<u32>> {
+    auto_feeding(grf.read(PET_EVOLUTION)?)
+}
+
+/// Runs the pet evolution list with `InsertPetAutoFeeding` collecting its eggs (the list's other calls do nothing).
+pub fn auto_feeding(source: Vec<u8>) -> io::Result<HashSet<u32>> {
+    let lua = new_lua()?;
+    let eggs = std::rc::Rc::new(std::cell::RefCell::new(HashSet::new()));
+    let found = eggs.clone();
+    let insert = lua
+        .create_function(move |_, egg: i64| {
+            if let Ok(egg) = u32::try_from(egg) {
+                found.borrow_mut().insert(egg);
+            }
+            Ok(())
+        })
+        .map_err(lua_error)?;
+    lua.globals().set("InsertPetAutoFeeding", insert).map_err(lua_error)?;
+    lua.load("setmetatable(_G, { __index = function() return function() end end })").exec().map_err(lua_error)?;
+    exec_bytes(&lua, PET_EVOLUTION, source)?;
+    let eggs = eggs.borrow().clone();
+    Ok(eggs)
+}
+
+/// The attendance check's event, from the System folder's CheckAttendance.lub: the days it runs (YYYYMMDD, both
+/// included) and each day's reward (an item and how many), day 1 first.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Attendance {
+    pub start: u32,
+    pub end: u32,
+    pub rewards: Vec<(u32, u32)>,
+}
+
+const ATTENDANCE: &str = "system\\CheckAttendance.lub";
+
+/// The attendance event (the file may be missing: a server without one ships none).
+pub fn attendance(grf: &Grf) -> io::Result<Attendance> {
+    attendance_table(grf.read(ATTENDANCE)?)
+}
+
+/// The attendance event once character server `name` is picked: its own `System\CheckAttendance_<name>.lub`, when
+/// the data (`read`) has one and it runs, over the base file's event; else the base file's.
+pub fn server_attendance(read: &dyn Fn(&str) -> io::Result<Vec<u8>>, name: &str) -> Attendance {
+    let base = read(ATTENDANCE).and_then(attendance_table).unwrap_or_default();
+    match read(&format!("system\\CheckAttendance_{name}.lub")) {
+        Ok(source) => attendance_over(base.clone(), source).unwrap_or(base),
+        Err(_) => base,
+    }
+}
+
+/// Runs the file's `main()` as the game does: its `InsertCheckAttendanceConfig(_, start, end)` and
+/// `InsertCheckAttendanceReward(day, item, amount)` calls make the event. Only the calls count: kRO's tables are a global
+/// `Reward` of {day, item, amount} rows, other servers keep `Config.Reward[day] = {item, amount}`.
+// ponytail: the game's checks (item 0, amount 0, a day twice) aren't made; no data seen breaks them.
+pub fn attendance_table(source: Vec<u8>) -> io::Result<Attendance> {
+    attendance_over(Attendance::default(), source)
+}
+
+/// A file run over an event already read: its rewards replace the event's, and its dates (if it gives them) are the
+/// event's.
+fn attendance_over(base: Attendance, source: Vec<u8>) -> io::Result<Attendance> {
+    let lua = new_lua()?;
+    let event = std::rc::Rc::new(std::cell::RefCell::new((Attendance { rewards: Vec::new(), ..base }, BTreeMap::new())));
+    let (dated, rewarded) = (event.clone(), event.clone());
+    let config = lua
+        .create_function(move |_, (_, start, end): (mlua::Value, f64, f64)| {
+            let event = &mut dated.borrow_mut().0;
+            (event.start, event.end) = (start as u32, end as u32);
+            Ok((true, "good"))
+        })
+        .map_err(lua_error)?;
+    let reward = lua
+        .create_function(move |_, (day, item, amount): (i64, f64, f64)| {
+            rewarded.borrow_mut().1.insert(day, (item as u32, amount as u32));
+            Ok((true, "good"))
+        })
+        .map_err(lua_error)?;
+    lua.globals().set("InsertCheckAttendanceConfig", config).map_err(lua_error)?;
+    lua.globals().set("InsertCheckAttendanceReward", reward).map_err(lua_error)?;
+    exec_bytes(&lua, ATTENDANCE, source)?;
+    let main: mlua::Function = lua.globals().get("main").map_err(lua_error)?;
+    let (done, message): (bool, Option<String>) = main.call(()).map_err(lua_error)?;
+    if !done {
+        return Err(io::Error::other(format!("{ATTENDANCE}: {}", message.unwrap_or_default())));
+    }
+    let (mut attendance, rewards) = event.take();
+    attendance.rewards = rewards.into_values().collect();
+    Ok(attendance)
+}
+
+/// One item a package's set gives.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageItem {
+    pub item: u32,
+    pub count: u32,
+    /// Rental hours, 0 for a lasting item.
+    pub hours: u32,
+    pub refine: u8,
+    pub random_option: bool,
+    pub grade: u8,
+}
+
+/// A set a package box lets the player pick: its number (what CZ_USE_PACKAGEITEM sends), name and items.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageSet {
+    pub number: u32,
+    pub name: String,
+    pub items: Vec<PackageItem>,
+}
+
+/// Each package box's sets, in set-number order.
+pub type Packages = HashMap<u32, Vec<PackageSet>>;
+
+const SELECT_PACKAGE: &str = "data\\luafiles514\\lua files\\selectpackage\\selectpackageitem_cln.lub";
+
+/// The package boxes (the data may have none).
+pub fn packages(grf: &Grf) -> io::Result<Packages> {
+    package_table(grf.read(SELECT_PACKAGE)?)
+}
+
+/// Runs the file's `LoadTable()` as the game does: `AddTab(box, set, name, _)` names a set and
+/// `AddItem(box, set, slot, item, count, hours, refine, randomOption, grade, type)` puts an item in it.
+pub fn package_table(source: Vec<u8>) -> io::Result<Packages> {
+    let lua = new_lua()?;
+    let boxes = std::rc::Rc::new(std::cell::RefCell::new(HashMap::<u32, BTreeMap<u32, PackageSet>>::new()));
+    let set = |boxes: &mut HashMap<u32, BTreeMap<u32, PackageSet>>, id: f64, number: f64| -> PackageSet {
+        boxes.entry(id as u32).or_default().remove(&(number as u32)).unwrap_or(PackageSet { number: number as u32, name: String::new(), items: Vec::new() })
+    };
+    let (named, filled) = (boxes.clone(), boxes.clone());
+    let add_tab = lua
+        .create_function(move |_, (id, number, name, _): (f64, f64, mlua::LuaString, mlua::Value)| {
+            let mut boxes = named.borrow_mut();
+            let mut entry = set(&mut boxes, id, number);
+            entry.name = decode(&name);
+            boxes.entry(id as u32).or_default().insert(number as u32, entry);
+            Ok(true)
+        })
+        .map_err(lua_error)?;
+    #[allow(clippy::type_complexity)]
+    let add_item = lua
+        .create_function(move |_, (id, number, _slot, item, count, hours, refine, random_option, grade): (f64, f64, f64, f64, f64, f64, f64, bool, f64)| {
+            let mut boxes = filled.borrow_mut();
+            let mut entry = set(&mut boxes, id, number);
+            entry.items.push(PackageItem {
+                item: item as u32,
+                count: count as u32,
+                hours: hours as u32,
+                refine: refine as u8,
+                random_option,
+                grade: grade as u8,
+            });
+            boxes.entry(id as u32).or_default().insert(number as u32, entry);
+            Ok(true)
+        })
+        .map_err(lua_error)?;
+    lua.globals().set("AddTab", add_tab).map_err(lua_error)?;
+    lua.globals().set("AddItem", add_item).map_err(lua_error)?;
+    exec_bytes(&lua, SELECT_PACKAGE, source)?;
+    let load: mlua::Function = lua.globals().get("LoadTable").map_err(lua_error)?;
+    let (done, _): (bool, mlua::Value) = load.call(()).map_err(lua_error)?;
+    if !done {
+        return Err(io::Error::other(format!("{SELECT_PACKAGE}: LoadTable failed")));
+    }
+    drop(lua);
+    let boxes = std::rc::Rc::try_unwrap(boxes).map_err(|_| io::Error::other("package table still borrowed"))?.into_inner();
+    Ok(boxes.into_iter().map(|(id, sets)| (id, sets.into_values().collect())).collect())
+}
+
+/// An achievement as the client's table (achievements.lub) describes it.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct AchievementInfo {
+    /// The objectives have targets the server's counts go toward; otherwise they're a checklist.
+    pub counted: bool,
+    /// Its icon's name: `achievement_re\icon_<group>.bmp`, lowercase.
+    pub group: String,
+    /// Its tab and sub-tab.
+    pub major: u8,
+    pub minor: u8,
+    pub title: String,
+    pub summary: String,
+    pub details: String,
+    /// Each objective's text and target (0 for a checklist's).
+    pub objectives: Vec<(String, u32)>,
+    /// The reward: an item, a title and a buff (0 for none of each).
+    pub reward_item: u32,
+    pub reward_title: u32,
+    pub reward_buff: u32,
+    pub score: u32,
+}
+
+/// The achievements by ID, from the System folder's achievements.lub (or achievement_list.lub).
+pub fn achievements(grf: &Grf) -> io::Result<HashMap<u32, AchievementInfo>> {
+    achievement_table(achievement_source(|path| grf.read(path))?)
+}
+
+/// The achievement table's source: achievements.lub, else achievement_list.lub.
+fn achievement_source(read: impl Fn(&str) -> io::Result<Vec<u8>>) -> io::Result<Vec<u8>> {
+    read(ACHIEVEMENTS).or_else(|_| read(ACHIEVEMENT_LIST))
+}
+
+/// Reads `achievement_tbl` from the file's source; its `main()` (which calls the official client's functions) isn't run.
+pub fn achievement_table(source: Vec<u8>) -> io::Result<HashMap<u32, AchievementInfo>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, ACHIEVEMENTS, source)?;
+    let table: mlua::Table = lua.globals().get("achievement_tbl").map_err(lua_error)?;
+    let text = |table: &mlua::Table, key: &str| table.get::<Option<mlua::LuaString>>(key).ok().flatten().map(|text| decode(&text)).unwrap_or_default();
+    let number = |table: &mlua::Table, key: &str| table.get::<Option<u32>>(key).ok().flatten().unwrap_or(0);
+    let mut achievements = HashMap::new();
+    for pair in table.pairs::<u32, mlua::Table>() {
+        let (id, entry) = pair.map_err(lua_error)?;
+        let content: Option<mlua::Table> = entry.get("content").ok().flatten();
+        let reward: Option<mlua::Table> = entry.get("reward").ok().flatten();
+        let mut objectives = Vec::new();
+        if let Ok(Some(resource)) = entry.get::<Option<mlua::Table>>("resource") {
+            for index in 1..=resource.raw_len() {
+                if let Ok(objective) = resource.get::<mlua::Table>(index) {
+                    objectives.push((text(&objective, "text"), number(&objective, "count")));
+                }
+            }
+        }
+        let info = AchievementInfo {
+            counted: number(&entry, "UI_Type") == 1,
+            group: text(&entry, "group").to_lowercase(),
+            major: number(&entry, "major") as u8,
+            minor: number(&entry, "minor") as u8,
+            title: text(&entry, "title"),
+            summary: content.as_ref().map(|content| text(content, "summary")).unwrap_or_default(),
+            details: content.as_ref().map(|content| text(content, "details")).unwrap_or_default(),
+            objectives,
+            reward_item: reward.as_ref().map_or(0, |reward| number(reward, "item")),
+            reward_title: reward.as_ref().map_or(0, |reward| number(reward, "title")),
+            reward_buff: reward.as_ref().map_or(0, |reward| number(reward, "buff")),
+            score: number(&entry, "score"),
+        };
+        achievements.insert(id, info);
+    }
+    Ok(achievements)
+}
+
+/// One row of the styling shop. `goods` is the look it gives (a color, a style, or a headgear's item id). The row's
+/// number in its table is what the buy request sends; 0 in the request means that part stays.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StyleRow {
+    pub goods: u32,
+    /// Zeny, when the row costs some.
+    pub zeny: u32,
+    /// The coupon it uses up, and the box that holds one. Either is enough; 0 is none.
+    pub item: u32,
+    pub box_item: u32,
+    pub is_doram: Option<bool>,
+    /// A hair style that can be dyed. Absent means the table doesn't say; false refuses a hair color.
+    pub is_coloring: Option<bool>,
+}
+
+/// The styling shop's lists, by row number. Costume change is left out.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StylingShop {
+    pub head_palette: BTreeMap<u16, StyleRow>,
+    pub head_style: BTreeMap<u16, StyleRow>,
+    pub doram_head_style: BTreeMap<u16, StyleRow>,
+    pub body_palette: BTreeMap<u16, StyleRow>,
+    pub doram_body_palette: BTreeMap<u16, StyleRow>,
+    pub top_accessory: BTreeMap<u16, StyleRow>,
+    pub mid_accessory: BTreeMap<u16, StyleRow>,
+    pub bottom_accessory: BTreeMap<u16, StyleRow>,
+    pub body_style: BTreeMap<u16, StyleRow>,
+}
+
+/// `StylingShop` after running the files' bytes in order (the framework, then the lists).
+pub fn styling_shop(sources: &[Vec<u8>]) -> io::Result<StylingShop> {
+    let lua = new_lua()?;
+    for (index, source) in sources.iter().enumerate() {
+        exec_bytes(&lua, &format!("stylingshop{index}"), source.clone())?;
+    }
+    let shop: mlua::Table = lua.globals().get("StylingShop").map_err(lua_error)?;
+    let rows = |name: &str| style_rows(&shop, name);
+    Ok(StylingShop {
+        head_palette: rows("HeadPalette")?,
+        head_style: rows("HeadStyle")?,
+        doram_head_style: rows("DoramHeadStyle")?,
+        body_palette: rows("BodyPalette")?,
+        doram_body_palette: rows("DoramBodyPalette")?,
+        top_accessory: rows("TopAccessory")?,
+        mid_accessory: rows("MidAccessory")?,
+        bottom_accessory: rows("BottomAccessory")?,
+        body_style: rows("BodyStyle")?,
+    })
+}
+
+/// The styling shop from data.grf (framework, then the lists).
+pub fn load_styling_shop(grf: &Grf) -> io::Result<StylingShop> {
+    styling_shop(&[grf.read(STYLING_SHOP_F)?, grf.read(STYLING_SHOP)?])
+}
+
+fn style_rows(shop: &mlua::Table, name: &str) -> io::Result<BTreeMap<u16, StyleRow>> {
+    let Ok(Some(table)) = shop.get::<Option<mlua::Table>>(name) else { return Ok(BTreeMap::new()) };
+    let number = |entry: &mlua::Table, key: &str| entry.get::<Option<u32>>(key).ok().flatten().unwrap_or(0);
+    let flag = |entry: &mlua::Table, key: &str| entry.get::<Option<bool>>(key).ok().flatten();
+    let mut rows = BTreeMap::new();
+    for pair in table.pairs::<i64, mlua::Table>() {
+        let (index, entry) = pair.map_err(lua_error)?;
+        let Ok(index) = u16::try_from(index) else { continue };
+        if index == 0 {
+            continue;
+        }
+        let payment: Option<mlua::Table> = entry.get("payment").ok().flatten();
+        rows.insert(
+            index,
+            StyleRow {
+                goods: number(&entry, "goods"),
+                zeny: payment.as_ref().map(|payment| number(payment, "zeny")).unwrap_or(0),
+                item: payment.as_ref().map(|payment| number(payment, "itid")).unwrap_or(0),
+                box_item: payment.as_ref().map(|payment| number(payment, "boxitid")).unwrap_or(0),
+                is_doram: flag(&entry, "isDoram"),
+                is_coloring: flag(&entry, "isColoring"),
+            },
+        );
+    }
+    Ok(rows)
+}
+
+/// The titles achievements give (`title_tbl`), e.g. 1000 → "Junction of life".
+/// Castle names by the id the server sends, as the guild window asks `get_agit_name` (1 → "Kriemhild"); ids it names
+/// nothing are left out.
+pub fn agit_names(grf: &Grf) -> io::Result<HashMap<u8, String>> {
+    let lua = run(grf, &AGIT_CONFIG)?;
+    let name: mlua::Function = lua.globals().get("get_agit_name").map_err(lua_error)?;
+    Ok((1..=u8::MAX).filter_map(|id| Some((id, decode(&name.call::<mlua::LuaString>(id).ok()?)))).filter(|(_, name)| !name.is_empty()).collect())
+}
+
+pub fn titles(grf: &Grf) -> io::Result<HashMap<u32, String>> {
+    names(&run(grf, &[TITLE_TABLE])?.globals().get::<mlua::Table>("title_tbl").map_err(lua_error)?)
+}
+
+/// The text of each random option (`NameTable_VAR`, keyed by `EnumVAR`), e.g. 3 → "STR +%d". A translation's table
+/// can name options its data's `EnumVAR` doesn't have; those are left out.
+pub fn random_options(grf: &Grf) -> io::Result<HashMap<u16, String>> {
+    random_option_names(&run(grf, &[ENUM_VAR])?, grf.read(RANDOM_OPTION_NAMES)?)
+}
+
+/// `NameTable_VAR` from its file's bytes, run after `EnumVAR`; a name `EnumVAR` lacks becomes -1, which no option has.
+fn random_option_names(lua: &Lua, table: Vec<u8>) -> io::Result<HashMap<u16, String>> {
+    lua.load("setmetatable(EnumVAR, { __index = function() return { -1 } end })").exec().map_err(lua_error)?;
+    exec_bytes(lua, RANDOM_OPTION_NAMES, table)?;
+    names(&lua.globals().get::<mlua::Table>("NameTable_VAR").map_err(lua_error)?)
+}
+
+/// Job names the client shows players (`PCJobNameTable`), e.g. 0 → "Novice". Data without `datainfo\pcjobname.lub`
+/// (its copy under `admin\` has capitals only) has them by gender; ponytail: the men's names, whoever the character is.
+pub fn pc_job_names(grf: &Grf) -> io::Result<HashMap<u16, String>> {
+    if !grf.contains(PC_JOB_NAME) && PC_JOB_NAME_GENDER.iter().all(|file| grf.contains(file)) {
+        let lua = new_lua()?;
+        exec(&lua, grf, &PC_JOB_NAME_GENDER[..1])?;
+        // Some names are of jobs the ID table lacks; they get -1, which `names` leaves out.
+        lua.load("setmetatable(pcJobTbl2, { __index = function() return -1 end })").exec().map_err(lua_error)?;
+        exec(&lua, grf, &PC_JOB_NAME_GENDER[1..])?;
+        return names(&lua.globals().get::<mlua::Table>("PCJobNameTableMan").map_err(lua_error)?);
+    }
+    let lua = run(grf, &[JOB_INHERIT, PC_JOB_NAME])?;
+    names(&lua.globals().get::<mlua::Table>("PCJobNameTable").map_err(lua_error)?)
+}
+
+/// Sprite names for what characters wear, by view ID.
+#[derive(Debug, Default)]
+pub struct LookTables {
+    /// Headgear sprite name endings (data\sprite\악세사리\<sex>\<sex><name>).
+    pub headgears: HashMap<u16, String>,
+    /// Weapon sprite name endings (data\sprite\인간족\<class>\<class>_<sex><name>).
+    pub weapons: HashMap<u32, String>,
+    /// Weapon view IDs beyond the basic types, and the type each one is.
+    pub weapon_types: HashMap<u32, u32>,
+    /// Garment folders (data\sprite\로브\<name>\<sex>\<class>_<sex>).
+    pub robes: HashMap<u16, String>,
+    /// Item IDs to the view they show as (iteminfo's ClassNum): weapons and shields arrive as item IDs.
+    pub item_views: HashMap<u32, u32>,
+    /// Where garments and headgear go among a character's layers; None without the tables.
+    pub layers: Option<LayerRules>,
+}
+
+/// The data's own rules for layering what a character wears, run in a Lua VM of their own.
+pub struct LayerRules(Lua);
+
+impl std::fmt::Debug for LayerRules {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("LayerRules")
+    }
+}
+
+impl LayerRules {
+    pub fn load(grf: &Grf) -> io::Result<Self> {
+        run(grf, &LAYER_RULES).map(Self)
+    }
+
+    fn call<R: mlua::FromLuaMulti>(&self, function: &str, arguments: impl mlua::IntoLuaMulti) -> Option<R> {
+        self.0.globals().get::<mlua::Function>(function).ok()?.call(arguments).ok()
+    }
+
+    /// Whether garment `robe` goes over the body (else behind everything) on a character of `job` and `sex` (0
+    /// female) in action `action` (direction included, 0 to 103) at body frame `frame`.
+    pub fn robe_over_body(&self, robe: u16, sex: u8, job: u16, action: usize, frame: usize) -> Option<bool> {
+        self.call::<(bool, mlua::Value)>("_New_DrawOnTop", (robe, sex, job, action, frame)).map(|(over, _)| over)
+    }
+
+    /// Headgear (by view) that sits by the unmounted body on a mounted rider: the data's `isIgnoreRiding` items.
+    pub fn ignores_riding(&self, view: u16) -> bool {
+        let items = self.0.globals().get::<mlua::Table>("TB_Layer_Priority").and_then(|table| table.get::<mlua::Table>("Items_List"));
+        items.and_then(|items| items.get::<mlua::Table>(view)).and_then(|item| item.get::<Option<bool>>("isIgnoreRiding")).ok().flatten().unwrap_or(false)
+    }
+
+    /// Garments that, when over the body, go over the headgear too (bags).
+    pub fn robe_over_headgear(&self, robe: u16) -> bool {
+        self.call("IsTopLayer", robe).unwrap_or(false)
+    }
+
+    /// Where headgear `view` in `slot` (2 lower, 3 upper, 4 middle) goes facing `direction`: layers are drawn in order
+    /// of these numbers, the body's numbered from 1; -1 hides it.
+    pub fn headgear_priority(&self, direction: usize, slot: u8, view: u16) -> Option<i32> {
+        self.call("GetLayerPriority", (direction, slot, view))
+    }
+
+    /// How far a Doram of `sex` has headgear `view` moved facing `direction` (sprite pixels), if at all.
+    pub fn doram_headgear_offset(&self, view: u16, direction: usize, sex: u8) -> Option<[i32; 2]> {
+        let (x, y) = self.call::<(Option<i32>, Option<i32>)>("OffsetItemPos_GetOffsetForDoram", (view, direction, sex))?;
+        Some([x?, y?])
+    }
+}
+
+/// Looks below this are view IDs; from here on they're item IDs.
+const FIRST_ITEM_ID: u32 = 500;
+
+impl LookTables {
+    /// The view ID of a weapon or shield look.
+    pub fn view(&self, look: u32) -> u32 {
+        if look < FIRST_ITEM_ID { look } else { self.item_views.get(&look).copied().filter(|&view| view > 0).unwrap_or(look) }
+    }
+
+    /// A weapon look's iteminfo ClassNum: the look itself below the item ids, 0 for an item iteminfo doesn't know.
+    pub fn class_num(&self, look: u32) -> u32 {
+        if look < FIRST_ITEM_ID { look } else { self.item_views.get(&look).copied().unwrap_or(0) }
+    }
+
+    /// A weapon name ending (`_단검`): WeaponNameTable's 105 entries, entry 0 past them, "" when nil.
+    pub fn weapon_name(&self, index: u32) -> &str {
+        self.weapons.get(&if index < 105 { index } else { 0 }).map_or("", String::as_str)
+    }
+
+    /// A weapon look's basic type (dagger, sword, bow, ...), which decides the attack motion.
+    pub fn weapon_type(&self, look: u32) -> u32 {
+        let view = self.view(look);
+        self.weapon_types.get(&view).copied().unwrap_or(view)
+    }
+}
+
+pub fn look_tables(grf: &Grf) -> io::Result<LookTables> {
+    let table = |lua: &Lua, name: &str| -> io::Result<mlua::Table> { lua.globals().get(name).map_err(lua_error) };
+    let accessories = run(grf, &[ACCESSORY_ID, ACCESSORY_NAME])?;
+    let weapons = run(grf, &[WEAPON_TABLE])?;
+    let robes = run(grf, &[ROBE_ID, ROBE_NAME])?;
+    let mut weapon_types = HashMap::new();
+    for pair in table(&weapons, "Expansion_Weapon_IDs")?.pairs::<u32, u32>() {
+        let (view, kind) = pair.map_err(lua_error)?;
+        weapon_types.insert(view, kind);
+    }
+    Ok(LookTables {
+        headgears: file_names(&table(&accessories, "AccNameTable")?)?,
+        weapons: file_names(&table(&weapons, "WeaponNameTable")?)?,
+        weapon_types,
+        robes: file_names(&table(&robes, "RobeNameTable")?)?,
+        item_views: HashMap::new(),
+        layers: LayerRules::load(grf).ok(),
+    })
+}
+
+/// What the client shows for an item, identified and not.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ItemInfo {
+    pub name: String,
+    pub unidentified_name: String,
+    /// File name of the ground sprite (data\sprite\아이템\) and the icon (data\texture\유저인터페이스\item\).
+    pub resource: String,
+    pub unidentified_resource: String,
+    /// Card slots.
+    pub slots: u8,
+    /// The view the item shows as when worn (weapon type, shield view, ...).
+    pub class_num: u32,
+    /// What the item info window says about it (lines with ^RRGGBB colors), known and unknown.
+    pub description: Vec<String>,
+    pub unidentified_description: Vec<String>,
+    /// A costume (iteminfo's `costume`): the storage lists it on its Costumes tab only.
+    pub costume: bool,
+    /// The item's own effect number (iteminfo's `EffectID`), None when absent or negative: a dropped item stands under its
+    /// light pillar.
+    pub effect_id: Option<u32>,
+}
+
+impl ItemInfo {
+    pub fn name(&self, identified: bool) -> &str {
+        if identified { &self.name } else { &self.unidentified_name }
+    }
+
+    pub fn resource(&self, identified: bool) -> &str {
+        if identified { &self.resource } else { &self.unidentified_resource }
+    }
+
+    // MYGENE_SLAYER456_ART: UI-only resource, leaving ground and equipped sprites native.
+    pub fn mygene_ui_resource(&self, identified: bool) -> &str {
+        match self.name.as_str() {
+            "Willow Slayer Rod" => "mygene_willow_slayer",
+            "P.W.S.R" => "mygene_perfect_willow_slayer",
+            "Rideword Slayer Book" => "mygene_rideword_slayer",
+            "P.R.S.B" => "mygene_perfect_rideword_slayer",
+            "Orc Slayer Axe" => "mygene_orc_slayer",
+            "P.O.S.A" => "mygene_perfect_orc_slayer",
+            _ => self.resource(identified),
+        }
+    }
+
+    pub fn description(&self, identified: bool) -> &[String] {
+        if identified { &self.description } else { &self.unidentified_description }
+    }
+}
+
+/// Every item the client knows, by item ID (`tbl` in iteminfo): the client's own table, with a translation's entries
+/// over it (a translation older than the data lacks the newer items, which keep the client's names).
+pub fn item_info(grf: &Grf) -> io::Result<HashMap<u32, ItemInfo>> {
+    let own = run(grf, &[ITEM_INFO]).and_then(|lua| items_in(&lua));
+    let translated = TRANSLATED_ITEM_INFO.iter().find_map(|path| run_loader(&|file| grf.read(file), path).and_then(|lua| items_in(&lua)).ok());
+    let mut items = layered(own, translated)?;
+
+    // MYgene custom equipment metadata. The borrowed resource names use
+    // existing Knife/Fabre Card/Concentration Potion art in the user's GRF.
+    // The server owns item logic; this adds accurate names, tooltips, and slots.
+    let knife = items.get(&1201).cloned().unwrap_or_default();
+    items.insert(
+        31001,
+        ItemInfo {
+            name: "Fabre Slayer Knife".into(),
+            unidentified_name: "Dagger".into(),
+            resource: "MYGENE_FABRE_SLAYER".into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                "Fabre hunting dagger".into(),
+                "".into(),
+                "ATK: 17".into(),
+                "Weapon Level: 1".into(),
+                "Required Level: 1".into(),
+                "Weight: 40".into(),
+                "".into(),
+                "Effect".into(),
+                "50% chance to defeat".into(),
+                "Fabre family on normal hit.".into(),
+                "".into(),
+                "Targets".into(),
+                "Fabre, Pupa, Creamy".into(),
+                "and Yellow Fabre".into(),
+                "".into(),
+                "Yellow Fabre Card".into(),
+                "increases chance to 90%.".into(),
+                "Cannot be refined.".into(),
+            ],
+            ..knife.clone()
+        },
+    );
+    // Separate server-side weapon variant: true item level/weight/range/ATK,
+    // not just a display prefix on the old dagger. Its sole slot holds card 31002.
+    items.insert(
+        31004,
+        ItemInfo {
+            name: "P.F.S.K".into(),
+            unidentified_name: "Dagger".into(),
+            resource: "MYGENE_PERFECT_FABRE_SLAYER".into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                "World Relic".into(),
+                "Perfect Fabre Slayer Knife".into(),
+                "".into(),
+                "Crafted from Fabre Slayer".into(),
+                "Knife and Yellow Fabre Card.".into(),
+                "".into(),
+                "ATK: 25".into(),
+                "Weapon Level: 4".into(),
+                "Required Level: 40".into(),
+                "Weight: 100".into(),
+                "".into(),
+                "Effect".into(),
+                "90% chance to defeat".into(),
+                "Fabre family on normal hit.".into(),
+                "".into(),
+                "Targets".into(),
+                "Fabre, Pupa, Creamy".into(),
+                "and Yellow Fabre".into(),
+                "".into(),
+                "Indestructible".into(),
+                "Cannot be refined.".into(),
+                "".into(),
+                "World lease not yet live.".into(),
+            ],
+            ..knife
+        },
+    );
+    let fabre_card = items.get(&4002).cloned().unwrap_or_default();
+    items.insert(
+        31002,
+        ItemInfo {
+            name: "Yellow Fabre Card".into(),
+            unidentified_name: "Card".into(),
+            slots: 0,
+            description: vec![
+                "MYgene Exclusive Card".into(),
+                "Golden Fabre essence.".into(),
+                "".into(),
+                "Fabre Slayer Knife [1]".into(),
+                "is its intended weapon.".into(),
+                "Adds 90% Fabre execution".into(),
+                "on successful normal hits.".into(),
+                "Perfect upgrade: Lv. 40".into(),
+                "at World Relic Keeper.".into(),
+            ],
+            ..fabre_card
+        },
+    );
+    // MYgene Red Thief Bug weapon line: names, slots and readable English
+    // description are client metadata. Combat is server-authoritative.
+    let sword = items.get(&1101).cloned().unwrap_or_default();
+    items.insert(
+        31006,
+        ItemInfo {
+            name: "Thief Bug Slayer Sword".into(),
+            unidentified_name: "Sword".into(),
+            resource: "MYGENE_THIEF_BUG_SLAYER".into(),
+            unidentified_resource: "MYGENE_THIEF_BUG_SLAYER".into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                "Thief Bug Slayer Sword".into(),
+                "".into(),
+                "ATK: 17".into(),
+                "Weapon Level: 1".into(),
+                "Required Level: 1".into(),
+                "Weight: 40".into(),
+                "".into(),
+                "Effect".into(),
+                "50% chance to defeat".into(),
+                "Thief Bug family on normal hit.".into(),
+                "".into(),
+                "Targets".into(),
+                "Thief Bug Egg, Thief Bug,".into(),
+                "Female and Male Thief Bug,".into(),
+                "and Red Thief Bug.".into(),
+                "".into(),
+                "Red Thief Bug Card raises".into(),
+                "the chance to 90%.".into(),
+                "Does not affect bosses.".into(),
+                "Cannot be refined.".into(),
+            ],
+            ..sword.clone()
+        },
+    );
+    items.insert(
+        31008,
+        ItemInfo {
+            name: "P.T.B.S".into(),
+            unidentified_name: "Sword".into(),
+            resource: "MYGENE_PERFECT_THIEF_BUG_SLAYER".into(),
+            unidentified_resource: "MYGENE_PERFECT_THIEF_BUG_SLAYER".into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                "World Relic".into(),
+                "Perfect Thief Bug Slayer Sword".into(),
+                "".into(),
+                "Crafted from Thief Bug".into(),
+                "Slayer Sword and Red".into(),
+                "Thief Bug Card.".into(),
+                "".into(),
+                "ATK: 25".into(),
+                "Weapon Level: 4".into(),
+                "Required Level: 40".into(),
+                "Weight: 100".into(),
+                "".into(),
+                "Effect".into(),
+                "90% chance to defeat".into(),
+                "Thief Bug family on normal hit.".into(),
+                "Requires Red Thief Bug Card.".into(),
+                "Does not affect bosses.".into(),
+                "".into(),
+                "Indestructible".into(),
+                "Cannot be refined.".into(),
+                "World lease not yet live.".into(),
+            ],
+            ..sword
+        },
+    );
+    // Use the usual Ragnarok Thief Bug Card icon (4016) in inventory
+    // and item-description collection thumbnail. Only the full-size
+    // View cardbmp illustration is custom for Red Thief Bug Card.
+    let bug_card = items.get(&4016).cloned().unwrap_or_default();
+    items.insert(
+        31007,
+        ItemInfo {
+            name: "Red Thief Bug Card".into(),
+            unidentified_name: "Red Thief Bug Card".into(),
+            slots: 0,
+            description: vec![
+                "MYgene Exclusive Card".into(),
+                "Crimson Thief Bug essence.".into(),
+                "".into(),
+                "Compounded in Thief Bug".into(),
+                "Slayer Sword [1], raises".into(),
+                "execution chance to 90%.".into(),
+                "Targets Thief Bug family.".into(),
+                "Does not affect bosses.".into(),
+                "".into(),
+                "Perfect crafting is not".into(),
+                "yet available to players.".into(),
+            ],
+            ..bug_card
+        },
+    );
+    // MYGENE_BLUE_CHON_CARD_METADATA
+    // Reuse existing official Chonchon Card resources.
+    let chonchon_card = items.get(&4009).cloned().unwrap_or_default();
+    items.insert(
+        60011,
+        ItemInfo {
+            name: "Blue Chon Chon Card".into(),
+            unidentified_name: "Blue Chon Chon Card".into(),
+            slots: 0,
+            description: vec![
+                "MYgene Exclusive Card".into(),
+                "Blue Chon Chon essence.".into(),
+                "".into(),
+                "Chonchon Slayer Bow [1]".into(),
+                "Execution: 50% to 90%".into(),
+                "on successful normal hits.".into(),
+                "".into(),
+                "Targets:".into(),
+                "Chonchon, Steel Chonchon,".into(),
+                "Hunter Fly, Blue Chon Chon.".into(),
+                "".into(),
+                "Excludes bosses, MVPs,".into(),
+                "mini-bosses and elites.".into(),
+            ],
+            ..chonchon_card
+        },
+    );
+
+    // MYGENE_PCSB_METADATA
+    let perfect_source = items.get(&60010)
+        .or_else(|| items.get(&1701))
+        .cloned()
+        .unwrap_or_default();
+
+    items.insert(
+        60012,
+        ItemInfo {
+            name: "P.C.S.B".into(),
+            resource: "mygene_pcsb".into(),
+            unidentified_resource: "mygene_pcsb".into(),
+            unidentified_name: "Bow".into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                "World Relic".into(),
+                "Perfect Chonchon Slayer Bow".into(),
+                "".into(),
+                "ATK: 25".into(),
+                "Weapon Level: 4".into(),
+                "Required Level: 40".into(),
+                "Weight: 100".into(),
+                "Range: 5".into(),
+                "".into(),
+                "Effect".into(),
+                "90% chance to defeat".into(),
+                "Chonchon family on hit.".into(),
+                "Requires Blue Chon Chon Card.".into(),
+                "".into(),
+                "Indestructible".into(),
+                "Cannot be refined.".into(),
+            ],
+            ..perfect_source
+        },
+    );
+
+    // MYGENE_SLAYER456: inherit native weapon and card graphics and view metadata.
+    for (base, card, perfect, vanilla_weapon, vanilla_card, weapon_name, card_name,
+         perfect_name, kind, family, targets) in [
+        (60013, 60014, 60015, 1601, 4010, "Willow Slayer Rod",
+         "Purple Willow Card", "P.W.S.R", "Rod", "Willow", "Willow, Elder Willow, Purple Willow"),
+        (60016, 60017, 60018, 1550, 4185, "Rideword Slayer Book",
+         "Orange Rideword Card", "P.R.S.B", "Book", "Rideword", "Rideword, Death Word, Orange Rideword"),
+        (60019, 60020, 60021, 1301, 4066, "Orc Slayer Axe",
+         "Dark Orc Card", "P.O.S.A", "Axe", "Orc", "Orc Warrior, Orc Lady, Orc Baby, Orc Archer, High Orc, Zenorc, Orc Skeleton, Orc Zombie, Dark Orc"),
+    ] {
+        let weapon = items.get(&vanilla_weapon).cloned().unwrap_or_default();
+        let card_source = items.get(&vanilla_card).cloned().unwrap_or_default();
+        items.insert(base, ItemInfo {
+            name: weapon_name.into(),
+            unidentified_name: kind.into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive".into(),
+                format!("ID: {base}"),
+                "ATK: 17 | Weapon Lv: 1".into(),
+                "Required Lv: 1 | Weight: 40".into(),
+                "50% execution on normal hit.".into(),
+                "Matching card: 90%.".into(),
+                format!("Targets: {family} family."),
+                targets.into(),
+                "Bosses excluded. No refine.".into(),
+            ],
+            unidentified_description: vec![format!("Unidentified {kind}.")],
+            ..weapon.clone()
+        });
+        items.insert(card, ItemInfo {
+            name: card_name.into(),
+            unidentified_name: card_name.into(),
+            slots: 0,
+            description: vec![
+                "MYgene Exclusive Card".into(),
+                format!("ID: {card}"),
+                format!("For {weapon_name} [1]."),
+                "Execution: 50% to 90%.".into(),
+                "Successful normal hits only.".into(),
+                "Perfect conversion: GM test.".into(),
+            ],
+            ..card_source
+        });
+        items.insert(perfect, ItemInfo {
+            name: perfect_name.into(),
+            unidentified_name: kind.into(),
+            slots: 1,
+            description: vec![
+                "MYgene Exclusive | World Relic".into(),
+                format!("ID: {perfect}"),
+                "ATK: 25 | Weapon Lv: 4".into(),
+                "Required Lv: 40 | Weight: 100".into(),
+                "90% execution on normal hit.".into(),
+                format!("Requires {card_name}."),
+                format!("Targets: {family} family."),
+                targets.into(),
+                "Indestructible. No refine.".into(),
+                "GM test relic; no lease yet.".into(),
+            ],
+            unidentified_description: vec![format!("Unidentified {kind}.")],
+            ..weapon
+        });
+    }
+
+    // MYGENE_ARCANE_DESCRIPTIONS_V7
+    for (id, range, matk, sp, family, perfect, splash) in [
+        (60010, 5, 5, "0.1", "Chonchon", false, "Single target"),
+        (60012, 7, 10, "0.1", "Chonchon", true, "Single target"),
+        (60013, 4, 15, "0.1", "Willow", false, "Single target"),
+        (60015, 6, 30, "0.2", "Willow", true, "25% splash; max 3 monsters"),
+        (60016, 3, 10, "0.1", "Rideword", false, "Single target"),
+        (60018, 5, 20, "0.3", "Rideword", true, "15% splash; max 5 monsters"),
+    ] {
+        if let Some(info) = items.get_mut(&id) {
+            let level = if perfect { 40 } else if id == 60010 { 4 } else { 1 };
+
+            let mut desc = vec![
+                "MYgene Exclusive".to_string(),
+                if perfect {
+                    "World Relic".to_string()
+                } else {
+                    "Slayer Series".to_string()
+                },
+                format!("Item ID: {}", id),
+                String::new(),
+                format!("ATK: {}", if perfect {25} else {17}),
+                format!("Weapon Lv: {}", if perfect {4} else {1}),
+                format!("Required Lv: {}", level),
+                format!("Weight: {}", if perfect {100} else {40}),
+                format!("Range: {} cells", range),
+                String::new(),
+                format!("MATK scaling: {}%", matk),
+                format!("SP/attack: {}", sp),
+                splash.to_string(),
+                String::new(),
+            ];
+
+            if perfect {
+                desc.push(format!("90% {} family execution", family));
+                desc.push("Requires matching family card.".to_string());
+                desc.push("Indestructible".to_string());
+            } else {
+                desc.push(format!("50% {} family execution", family));
+                desc.push("90% with matching family card.".to_string());
+            }
+
+            desc.push("Primary target only.".to_string());
+            desc.push("Normal attacks only.".to_string());
+            desc.push("Excludes boss execution.".to_string());
+            desc.push("Cannot be refined.".to_string());
+
+            info.description = desc;
+        }
+    }
+
+
+    let potion = items.get(&645).cloned().unwrap_or_default();
+    items.insert(
+        31003,
+        ItemInfo {
+            name: "Attraction Potion".into(),
+            unidentified_name: "Potion".into(),
+            description: vec![
+                "For 5 minutes, nearby passive monsters on field maps".into(),
+                "have a 70% chance per AI search to become aggressive toward you.".into(),
+                "Does not affect bosses, towns, dungeons, or PvP maps.".into(),
+            ],
+            ..potion
+        },
+    );
+    // Reuse the official Bubble Gum's icon and collection resources so the
+    // new consumable is immediately visible without requiring new BMPs.
+    let bubble_gum = items.get(&12210).cloned().unwrap_or_default();
+    items.insert(
+        31009,
+        ItemInfo {
+            name: "Legendary Bubble Gum".into(),
+            unidentified_name: "Legendary Bubble Gum".into(),
+            description: vec![
+                "MYgene Exclusive".into(),
+                "Legendary Bubble Gum".into(),
+                "".into(),
+                "Effect".into(),
+                "100% guaranteed monster drops".into(),
+                "for 15 seconds.".into(),
+                "".into(),
+                "Every eligible listed drop".into(),
+                "is guaranteed per kill.".into(),
+                "Includes normal, bonus, MVP".into(),
+                "and MYgene scripted rewards.".into(),
+                "".into(),
+                "Only applies to kills credited".into(),
+                "to the buffed character.".into(),
+            ],
+            ..bubble_gum
+        },
+    );
+    Ok(items)
+}
+
+/// Runs a Lua file that loads others the way the game runs it from its folder: its `dofile` and `require` read through
+/// `read`, with `System/...` and a translation's `SystemEN/...` as `system\...` and `require` adding `.lua` (or `.lub`).
+fn run_loader(read: &dyn Fn(&str) -> io::Result<Vec<u8>>, file: &str) -> io::Result<Lua> {
+    let lua = new_lua()?;
+    let load = |lua: &Lua, path: String, module: bool| -> mlua::Result<()> {
+        let path = path.replace('/', "\\").to_lowercase();
+        let path = path.strip_prefix("systemen\\").map_or(path.clone(), |rest| format!("system\\{rest}"));
+        let tries = if module && !path.ends_with(".lua") && !path.ends_with(".lub") { vec![format!("{path}.lua"), format!("{path}.lub")] } else { vec![path] };
+        let (name, bytes) = tries
+            .iter()
+            .find_map(|name| read(name).ok().map(|bytes| (name, bytes)))
+            .ok_or_else(|| mlua::Error::RuntimeError(format!("{} not found", tries[0])))?;
+        exec_bytes(lua, name, bytes).map_err(mlua::Error::external)
+    };
+    lua.scope(|scope| {
+        lua.globals().set("dofile", scope.create_function(move |lua, path: String| load(lua, path, false))?)?;
+        lua.globals().set("require", scope.create_function(move |lua, path: String| load(lua, path, true))?)?;
+        exec_bytes(&lua, file, read(file).map_err(mlua::Error::external)?).map_err(mlua::Error::external)
+    })
+    .map_err(lua_error)?;
+    Ok(lua)
+}
+
+/// The client's items with a translation's over them; either alone when the other is missing.
+fn layered(own: io::Result<HashMap<u32, ItemInfo>>, translated: Option<HashMap<u32, ItemInfo>>) -> io::Result<HashMap<u32, ItemInfo>> {
+    match (own, translated) {
+        (Ok(mut items), Some(translated)) => {
+            items.extend(translated);
+            Ok(items)
+        }
+        (Ok(items), None) => Ok(items),
+        (Err(_), Some(translated)) => Ok(translated),
+        (Err(error), None) => Err(error),
+    }
+}
+
+/// The items of a run iteminfo (`tbl`).
+fn items_in(lua: &Lua) -> io::Result<HashMap<u32, ItemInfo>> {
+    let table: mlua::Table = lua.globals().get("tbl").map_err(lua_error)?;
+    let text = |entry: &mlua::Table, key: &str| entry.get::<mlua::LuaString>(key).map(|text| decode(&text)).unwrap_or_default();
+    let file = |entry: &mlua::Table, key: &str| entry.get::<mlua::LuaString>(key).map(|text| decode_name(&text)).unwrap_or_default();
+    let lines = |entry: &mlua::Table, key: &str| -> Vec<String> {
+        entry.get::<mlua::Table>(key).map(|lines| lines.sequence_values::<mlua::LuaString>().flatten().map(|line| decode(&line)).collect()).unwrap_or_default()
+    };
+    let mut items = HashMap::new();
+    for pair in table.pairs::<i64, mlua::Table>() {
+        let (id, entry) = pair.map_err(lua_error)?;
+        if let Ok(id) = u32::try_from(id) {
+            items.insert(
+                id,
+                ItemInfo {
+                    name: text(&entry, "identifiedDisplayName"),
+                    unidentified_name: text(&entry, "unidentifiedDisplayName"),
+                    resource: file(&entry, "identifiedResourceName"),
+                    unidentified_resource: file(&entry, "unidentifiedResourceName"),
+                    slots: entry.get::<u8>("slotCount").unwrap_or(0),
+                    class_num: entry.get::<u32>("ClassNum").unwrap_or(0),
+                    description: lines(&entry, "identifiedDescriptionName"),
+                    unidentified_description: lines(&entry, "unidentifiedDescriptionName"),
+                    costume: entry.get::<bool>("costume").unwrap_or(false),
+                    effect_id: entry.get::<i64>("EffectID").ok().and_then(|id| u32::try_from(id).ok()),
+                },
+            );
+        }
+    }
+    Ok(items)
+}
+
+/// A skill as the client describes it (`SKILL_INFO_LIST`).
+#[derive(Debug, Clone, Default)]
+pub struct SkillInfo {
+    /// The skill's code name, which also names its icon (AL_HEAL → item\al_heal.bmp).
+    pub resource: String,
+    pub name: String,
+    pub max_level: u16,
+    /// `MaxLv` as given: None when the entry has none (no limit on the range's learned level), apart from 0.
+    pub max_lv: Option<u16>,
+    /// The level to use can be picked (`bSeperateLv`): the skill window's arrows, the wheel while aiming.
+    pub separate_level: bool,
+    /// The SP each level costs (`SpAmount`), from level 1.
+    pub sp_amount: Vec<i32>,
+    /// Its range in cells by level (`AttackRange`), from level 1.
+    pub attack_range: Vec<u16>,
+    /// The skills it needs first, each at a level (`_NeedSkillList`); some jobs have their own (`NeedSkillList`).
+    pub needs: Vec<(u16, u16)>,
+    pub job_needs: HashMap<u16, Vec<(u16, u16)>>,
+    /// The cells a cast's area covers around the caster by level (`SkillScale`: x by y), where the data gives one.
+    /// The data skips levels, so it's by level, not a list.
+    pub scale: HashMap<u16, [u16; 2]>,
+}
+
+impl SkillInfo {
+    /// The skills it needs first for a job's line (the first job first): the own list of the latest job that has one,
+    /// else the usual.
+    pub fn needs_for(&self, line: &[u16]) -> &[(u16, u16)] {
+        line.iter().rev().find_map(|job| self.job_needs.get(job)).unwrap_or(&self.needs)
+    }
+}
+
+/// A `{ {skill, level}, ... }` list.
+fn skill_levels(list: &mlua::Table) -> Vec<(u16, u16)> {
+    list.sequence_values::<mlua::Table>().flatten().filter_map(|pair| Some((pair.get::<u16>(1).ok()?, pair.get::<u16>(2).ok()?))).collect()
+}
+
+/// The quests' titles, descriptions and summaries (`QuestInfoList`), from the translation's System folder.
+const QUEST_INFO: &str = "system\\OngoingQuestInfoList_True.lub";
+/// The same list as an English translation names it.
+const QUEST_INFO_TRANSLATED: &str = "system\\OngoingQuests.lub";
+
+/// A quest's words, and the NPC cell the big minimap marks when the table gives one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestInfo {
+    pub title: String,
+    /// `Description`, a line an entry.
+    pub description: Vec<String>,
+    pub summary: String,
+    /// ponytail: `NpcPosX`/`NpcPosY` on the quest itself. The real list can nest several NPCs, each with a sprite.
+    pub npc: Option<[i32; 2]>,
+    /// Only a cooldown timer (`CoolTimeQuest = 1`).
+    pub cooldown: bool,
+    /// Its type icon (`IconName`, under renew_questui), when it names one.
+    pub icon: String,
+    /// Its NPC's sprite (`NpcSpr`, under npc\\) and the map to find it on (`NpcNavi`).
+    pub npc_sprite: String,
+    pub npc_map: String,
+    /// What it rewards: base and job exp as written (`RewardEXP`, `RewardJEXP`), and items with how many
+    /// (`RewardItemList`).
+    pub reward_exp: String,
+    pub reward_job_exp: String,
+    pub reward_items: Vec<(u32, u32)>,
+}
+
+/// A quest's words: title, description lines, summary, its NPC (cell, sprite, map) when listed, whether it's a cooldown
+/// timer, its rewards. From both lists when there are both: a translation can hold only some quests (a server's own).
+pub fn quest_info(grf: &Grf) -> io::Result<HashMap<u32, QuestInfo>> {
+    merge_quests([QUEST_INFO, QUEST_INFO_TRANSLATED].map(|file| run(grf, &[file]).and_then(|lua| quest_infos(&lua))))
+}
+
+/// The original list with the translation's quests over it, or whichever of them there is.
+fn merge_quests([original, translated]: [io::Result<HashMap<u32, QuestInfo>>; 2]) -> io::Result<HashMap<u32, QuestInfo>> {
+    match (original, translated) {
+        (Ok(mut quests), Ok(translated)) => {
+            quests.extend(translated);
+            Ok(quests)
+        }
+        (Ok(quests), Err(_)) | (Err(_), Ok(quests)) => Ok(quests),
+        (Err(_), Err(error)) => Err(error),
+    }
+}
+
+fn quest_infos(lua: &Lua) -> io::Result<HashMap<u32, QuestInfo>> {
+    let list: mlua::Table = lua.globals().get("QuestInfoList").map_err(lua_error)?;
+    let mut quests = HashMap::new();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let Ok((id, entry)) = pair else { continue };
+        let text = |key: &str| entry.get::<mlua::LuaString>(key).map(|text| decode(&text)).unwrap_or_default();
+        let file = |key: &str| entry.get::<mlua::LuaString>(key).map(|text| decode_name(&text)).unwrap_or_default();
+        let description = entry
+            .get::<mlua::Table>("Description")
+            .map(|lines| lines.sequence_values::<mlua::LuaString>().flatten().map(|line| decode(&line)).collect())
+            .unwrap_or_default();
+        // Numbers or strings alike.
+        let written = |key: &str| match entry.get::<mlua::Value>(key) {
+            Ok(mlua::Value::String(text)) => decode(&text),
+            Ok(mlua::Value::Integer(number)) => number.to_string(),
+            Ok(mlua::Value::Number(number)) => number.to_string(),
+            _ => String::new(),
+        };
+        let reward_items = entry
+            .get::<mlua::Table>("RewardItemList")
+            .map(|list| {
+                list.sequence_values::<mlua::Table>()
+                    .flatten()
+                    .filter_map(|item| {
+                        Some((u32::try_from(item.get::<i64>("ItemID").ok()?).ok()?, u32::try_from(item.get::<i64>("ItemNum").unwrap_or(1)).ok()?))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let npc = match (entry.get::<i64>("NpcPosX"), entry.get::<i64>("NpcPosY")) {
+            (Ok(x), Ok(y)) => Some([x as i32, y as i32]),
+            _ => None,
+        };
+        if let Ok(id) = u32::try_from(id) {
+            let cooldown = entry.get::<i64>("CoolTimeQuest").unwrap_or(0) == 1;
+            quests.insert(
+                id,
+                QuestInfo {
+                    title: text("Title"),
+                    description,
+                    summary: text("Summary"),
+                    npc,
+                    cooldown,
+                    icon: file("IconName"),
+                    npc_sprite: file("NpcSpr"),
+                    npc_map: text("NpcNavi"),
+                    reward_exp: written("RewardEXP"),
+                    reward_job_exp: written("RewardJEXP"),
+                    reward_items,
+                },
+            );
+        }
+    }
+    Ok(quests)
+}
+
+/// The quest window's filters (`QuestFilterTable`): each id's tooltip and quest icons.
+const QUEST_CLASSIFICATION: &str = "system\\QuestClassificationInfo.lub";
+
+pub fn quest_filters(grf: &Grf) -> io::Result<HashMap<i64, (String, Vec<String>)>> {
+    quest_filter_table(&run(grf, &[QUEST_CLASSIFICATION])?)
+}
+
+fn quest_filter_table(lua: &Lua) -> io::Result<HashMap<i64, (String, Vec<String>)>> {
+    let table: mlua::Table = lua.globals().get("QuestFilterTable").map_err(lua_error)?;
+    let mut filters = HashMap::new();
+    for pair in table.pairs::<i64, mlua::Table>() {
+        let Ok((id, entry)) = pair else { continue };
+        let tooltip = entry.get::<mlua::LuaString>("Tooltip").map(|text| decode(&text)).unwrap_or_default();
+        let icons = entry
+            .get::<mlua::Table>("QuestIcons")
+            .map(|icons| icons.sequence_values::<mlua::LuaString>().flatten().map(|icon| decode_name(&icon)).collect())
+            .unwrap_or_default();
+        filters.insert(id, (tooltip, icons));
+    }
+    Ok(filters)
+}
+
+/// Skills' descriptions by ID, line by line as the data has them.
+pub fn skill_descriptions(grf: &Grf) -> io::Result<HashMap<u16, Vec<String>>> {
+    skill_descripts(&run(grf, &[SKILL_ID, SKILL_DESCRIPT])?)
+}
+
+fn skill_descripts(lua: &Lua) -> io::Result<HashMap<u16, Vec<String>>> {
+    let list: mlua::Table = lua.globals().get("SKILL_DESCRIPT").map_err(lua_error)?;
+    let mut descriptions = HashMap::new();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let Ok((id, lines)) = pair else { continue };
+        if let Ok(id) = u16::try_from(id) {
+            descriptions.insert(id, lines.sequence_values::<mlua::LuaString>().flatten().map(|line| decode(&line)).collect());
+        }
+    }
+    Ok(descriptions)
+}
+
+pub fn skill_info(grf: &Grf) -> io::Result<HashMap<u16, SkillInfo>> {
+    skill_infos(&run(grf, &[JOB_INHERIT, SKILL_ID, SKILL_INFO])?)
+}
+
+fn skill_infos(lua: &Lua) -> io::Result<HashMap<u16, SkillInfo>> {
+    let list: mlua::Table = lua.globals().get("SKILL_INFO_LIST").map_err(lua_error)?;
+    let mut skills = HashMap::new();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let Ok((id, entry)) = pair else { continue };
+        let text = |value: mlua::Result<mlua::LuaString>| value.map(|text| decode(&text)).unwrap_or_default();
+        let info = SkillInfo {
+            resource: entry.get::<mlua::LuaString>(1).map(|text| decode_name(&text)).unwrap_or_default(),
+            name: text(entry.get("SkillName")),
+            max_level: entry.get("MaxLv").unwrap_or(0),
+            max_lv: entry.get::<Option<u16>>("MaxLv").ok().flatten(),
+            separate_level: entry.get("bSeperateLv").unwrap_or(false),
+            sp_amount: entry.get::<mlua::Table>("SpAmount").map(|costs| costs.sequence_values::<i32>().flatten().collect()).unwrap_or_default(),
+            attack_range: entry.get::<mlua::Table>("AttackRange").map(|ranges| ranges.sequence_values::<u16>().flatten().collect()).unwrap_or_default(),
+            needs: entry.get::<mlua::Table>("_NeedSkillList").map(|list| skill_levels(&list)).unwrap_or_default(),
+            job_needs: entry
+                .get::<mlua::Table>("NeedSkillList")
+                .map(|jobs| {
+                    jobs.pairs::<i64, mlua::Table>().flatten().filter_map(|(job, list)| Some((u16::try_from(job).ok()?, skill_levels(&list)))).collect()
+                })
+                .unwrap_or_default(),
+            scale: entry
+                .get::<mlua::Table>("SkillScale")
+                .map(|levels| {
+                    levels.pairs::<u16, mlua::Table>().flatten().filter_map(|(level, size)| Some((level, [size.get("x").ok()?, size.get("y").ok()?]))).collect()
+                })
+                .unwrap_or_default(),
+        };
+        if let Ok(id) = u16::try_from(id) {
+            skills.insert(id, info);
+        }
+    }
+    // A transcendent third job counts as its third job (`JOB_INHERIT_LIST2`) for the jobs' own lists, as the data's
+    // lookup maps it.
+    let same = job_pairs(&lua.globals(), "JOB_INHERIT_LIST2");
+    for info in skills.values_mut() {
+        for &(job, third) in &same {
+            if let Some(needs) = info.job_needs.get(&third).cloned() {
+                info.job_needs.entry(job).or_insert(needs);
+            }
+        }
+    }
+    Ok(skills)
+}
+
+/// Where each job's skills sit in the skill window (`SKILL_TREEVIEW_FOR_JOB`: places in a 7-wide grid, from 0) and
+/// which job each job comes from (`JOB_INHERIT_LIST`).
+#[derive(Debug, Default)]
+pub struct SkillTrees {
+    pub trees: HashMap<u16, Vec<(usize, u16)>>,
+    pub parents: HashMap<u16, u16>,
+}
+
+impl SkillTrees {
+    /// A job and the jobs it came from, the first first (Novice, or Summoner for a Doram): the skill window's tabs.
+    pub fn lineage(&self, job: u16) -> Vec<u16> {
+        let mut jobs = vec![job];
+        while let Some(&parent) = self.parents.get(jobs.last().unwrap()) {
+            if jobs.contains(&parent) {
+                break;
+            }
+            jobs.push(parent);
+        }
+        jobs.reverse();
+        jobs
+    }
+}
+
+pub fn skill_trees(grf: &Grf) -> io::Result<SkillTrees> {
+    skill_trees_from(&run(grf, &[JOB_INHERIT, SKILL_ID, SKILL_INFO_F, SKILL_TREE])?)
+}
+
+fn skill_trees_from(lua: &Lua) -> io::Result<SkillTrees> {
+    let globals = lua.globals();
+    let mut trees = SkillTrees::default();
+    let views: mlua::Table = globals.get("SKILL_TREEVIEW_FOR_JOB").map_err(lua_error)?;
+    for pair in views.pairs::<i64, mlua::Table>() {
+        let Ok((job, places)) = pair else { continue };
+        let mut tree: Vec<(usize, u16)> =
+            places.pairs::<i64, i64>().flatten().filter_map(|(place, skill)| Some((usize::try_from(place).ok()?, u16::try_from(skill).ok()?))).collect();
+        tree.sort_unstable();
+        trees.trees.insert(job as u16, tree);
+    }
+    // The line runs through `JOB_INHERIT_LIST` alone, a transcendent third job through its transcendent second job.
+    trees.parents = job_pairs(&globals, "JOB_INHERIT_LIST").into_iter().collect();
+    // `JOB_INHERIT_LIST2` names the third job a transcendent one counts as (the data's prerequisite lookups use it):
+    // its skills, where it has no tree of its own.
+    for (job, same) in job_pairs(&globals, "JOB_INHERIT_LIST2") {
+        if let Some(tree) = trees.trees.get(&same).filter(|_| !trees.trees.contains_key(&job)).cloned() {
+            trees.trees.insert(job, tree);
+        }
+    }
+    Ok(trees)
+}
+
+/// An inherit list's `job → job` pairs. The lists are their own metatables, so a `__newindex` key sits among the jobs;
+/// typed pairs would stop there.
+fn job_pairs(globals: &mlua::Table, list: &str) -> Vec<(u16, u16)> {
+    let Ok(table) = globals.get::<mlua::Table>(list) else { return Vec::new() };
+    let job = |value: &mlua::Value| number(value).and_then(|job| u16::try_from(job).ok());
+    table.pairs::<mlua::Value, mlua::Value>().flatten().filter_map(|(key, parent)| Some((job(&key)?, job(&parent)?))).collect()
+}
+
+/// Status effect icons by EFST id (`StateIconImgList`): the file under data\texture\effect\ and its priority.
+pub fn status_icons(grf: &Grf) -> io::Result<HashMap<u16, (u8, String)>> {
+    let lua = run_with_efst_ids(grf, STATE_ICON_IMAGES)?;
+    let list: mlua::Table = lua.globals().get("StateIconImgList").map_err(lua_error)?;
+    // The effects older than the Lua table, which the client knows by itself.
+    let mut icons: HashMap<u16, (u8, String)> = include_str!("status_icons.txt")
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let (id, file) = line.split_once('\t')?;
+            Some((id.parse().ok()?, (0, file.to_owned())))
+        })
+        .collect();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let Ok((priority, files)) = pair else { continue };
+        for (efst, file) in names::<u16>(&files)? {
+            icons.insert(efst, (priority as u8, file));
+        }
+    }
+    Ok(icons)
+}
+
+/// What a status icon says when pointed at: its lines, each with its colour (none: plain), one of them "%s" for the
+/// time left when the effect has a time limit.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct StateInfo {
+    pub lines: Vec<(String, Option<[u8; 3]>)>,
+    pub time_limit: bool,
+}
+
+pub fn state_info(grf: &Grf) -> io::Result<HashMap<u16, StateInfo>> {
+    state_infos(&run_with_efst_ids(grf, STATE_ICON_INFO)?)
+}
+
+/// A translated table may name effects this efstids doesn't know: they all land on one unused key.
+const UNKNOWN_EFSTS: &str = "setmetatable(EFST_IDs, { __index = function() return -1 end })";
+
+/// Runs efstids.lub, then `file`, a table keyed by its names.
+fn run_with_efst_ids(grf: &Grf, file: &str) -> io::Result<Lua> {
+    let lua = run(grf, &[EFST_IDS])?;
+    lua.load(UNKNOWN_EFSTS).exec().map_err(lua_error)?;
+    exec(&lua, grf, &[file])?;
+    Ok(lua)
+}
+
+/// `StateIconList` by EFST.
+fn state_infos(lua: &Lua) -> io::Result<HashMap<u16, StateInfo>> {
+    let list: mlua::Table = lua.globals().get("StateIconList").map_err(lua_error)?;
+    let mut infos = HashMap::new();
+    for pair in list.pairs::<i64, mlua::Table>() {
+        let Ok((efst, entry)) = pair else { continue };
+        let Ok(descript) = entry.get::<mlua::Table>("descript") else { continue };
+        let lines = descript
+            .sequence_values::<mlua::Table>()
+            .flatten()
+            .map(|line| {
+                let text = line.get::<mlua::LuaString>(1).map(|text| decode(&text)).unwrap_or_default();
+                let color =
+                    line.get::<mlua::Table>(2).ok().and_then(|color| Some([color.get::<u8>(1).ok()?, color.get::<u8>(2).ok()?, color.get::<u8>(3).ok()?]));
+                (text, color)
+            })
+            .collect();
+        if let Ok(efst) = u16::try_from(efst) {
+            infos.insert(efst, StateInfo { lines, time_limit: entry.get::<i64>("haveTimeLimit").unwrap_or(0) == 1 });
+        }
+    }
+    Ok(infos)
+}
+
+/// Sprite scales by monster job. A job in neither file is absent, and drawn at 1×. The new file wins where both
+/// list the job. A file that fails to parse is skipped; the other still counts.
+pub fn monster_sizes(grf: &Grf) -> HashMap<u16, f32> {
+    let mut sizes = HashMap::new();
+    for path in [MONSTER_SIZE, MONSTER_SIZE_NEW] {
+        match grf.read(path) {
+            Ok(bytes) => {
+                if let Err(error) = merge_monster_sizes(&mut sizes, &bytes) {
+                    eprintln!("monster sizes ({path}): {error}");
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => eprintln!("monster sizes ({path}): {error}"),
+        }
+    }
+    sizes
+}
+
+/// How wide each sprite job's shadow is, in cells (1 when the job isn't listed): a unit standing on a radius of r
+/// cells (`NpcLocationRadius`) gets 2r + 1, else the shadow table's factor (`ShadowFactorTable`, 0 for none).
+pub fn shadow_factors(grf: &Grf) -> io::Result<HashMap<u16, f32>> {
+    let read = |path: &str| grf.read(path);
+    shadow_tables(read(NPC_IDENTITY)?, read(JOB_IDENTITY)?, read(SHADOW_TABLE)?, read(NPC_LOCATION_RADIUS).ok())
+}
+
+/// The jobs that stand on a radius of r > 0 cells (`NpcLocationRadius`): a few big bosses.
+pub fn location_radii(grf: &Grf) -> io::Result<HashMap<u16, f32>> {
+    let read = |path: &str| grf.read(path);
+    radius_table(read(NPC_IDENTITY)?, read(JOB_IDENTITY)?, read(NPC_LOCATION_RADIUS)?)
+}
+
+fn radius_table(npc_identity: Vec<u8>, job_identity: Vec<u8>, radius: Vec<u8>) -> io::Result<HashMap<u16, f32>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, NPC_IDENTITY, npc_identity)?;
+    exec_bytes(&lua, JOB_IDENTITY, job_identity)?;
+    lua.load("for _, t in ipairs({jobtbl, JTtbl}) do setmetatable(t, { __index = function() return -1 end }) end").exec().map_err(lua_error)?;
+    exec_bytes(&lua, NPC_LOCATION_RADIUS, radius)?;
+    let mut radii = HashMap::new();
+    for pair in lua.globals().get::<mlua::Table>("NpcLocationRadius").map_err(lua_error)?.pairs::<mlua::Value, mlua::Value>() {
+        let (job, radius) = pair.map_err(lua_error)?;
+        if let (Some(job), Some(radius)) = (number(&job).and_then(|job| u16::try_from(job).ok()), lua_f32(radius))
+            && radius > 0.0
+        {
+            radii.insert(job, radius);
+        }
+    }
+    Ok(radii)
+}
+
+fn shadow_tables(npc_identity: Vec<u8>, job_identity: Vec<u8>, shadows: Vec<u8>, radius: Option<Vec<u8>>) -> io::Result<HashMap<u16, f32>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, NPC_IDENTITY, npc_identity)?;
+    exec_bytes(&lua, JOB_IDENTITY, job_identity)?;
+    // Names these identity tables don't know all land on one unused key.
+    lua.load("for _, t in ipairs({jobtbl, JTtbl}) do setmetatable(t, { __index = function() return -1 end }) end").exec().map_err(lua_error)?;
+    exec_bytes(&lua, SHADOW_TABLE, shadows)?;
+    let mut factors = HashMap::new();
+    let table = |name: &str| lua.globals().get::<mlua::Table>(name).map_err(lua_error);
+    for pair in table("ShadowFactorTable")?.pairs::<mlua::Value, mlua::Value>() {
+        let (job, factor) = pair.map_err(lua_error)?;
+        if let (Some(job), Some(factor)) = (number(&job).and_then(|job| u16::try_from(job).ok()), lua_f32(factor))
+            && factor >= 0.0
+        {
+            factors.insert(job, factor);
+        }
+    }
+    if let Some(radius) = radius {
+        exec_bytes(&lua, NPC_LOCATION_RADIUS, radius)?;
+        for pair in table("NpcLocationRadius")?.pairs::<mlua::Value, mlua::Value>() {
+            let (job, radius) = pair.map_err(lua_error)?;
+            if let (Some(job), Some(radius)) = (number(&job).and_then(|job| u16::try_from(job).ok()), lua_f32(radius))
+                && radius != 0.0
+            {
+                factors.insert(job, 2.0 * radius + 1.0);
+            }
+        }
+    }
+    Ok(factors)
+}
+
+/// The old table, then the new one over it. A missing side is skipped.
+#[cfg(test)]
+fn monster_size_tables(old: Option<&[u8]>, new: Option<&[u8]>) -> io::Result<HashMap<u16, f32>> {
+    let mut sizes = HashMap::new();
+    for bytes in [old, new].into_iter().flatten() {
+        merge_monster_sizes(&mut sizes, bytes)?;
+    }
+    Ok(sizes)
+}
+
+/// `tbl[job].MonsterSize` from one size-effect file, written over `sizes`.
+fn merge_monster_sizes(sizes: &mut HashMap<u16, f32>, bytes: &[u8]) -> io::Result<()> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, "monster_size_effect", bytes.to_vec())?;
+    let tbl: mlua::Table = lua.globals().get("tbl").map_err(lua_error)?;
+    for pair in tbl.pairs::<mlua::Value, mlua::Value>() {
+        let (key, value) = pair.map_err(lua_error)?;
+        let (Some(job), mlua::Value::Table(info)) = (number(&key).and_then(|id| u16::try_from(id).ok()), value) else { continue };
+        let Some(size) = info.get::<mlua::Value>("MonsterSize").ok().and_then(lua_f32) else { continue };
+        sizes.insert(job, size);
+    }
+    Ok(())
+}
+
+fn lua_f32(value: mlua::Value) -> Option<f32> {
+    match value {
+        mlua::Value::Integer(n) => Some(n as f32),
+        mlua::Value::Number(n) => Some(n as f32),
+        _ => None,
+    }
+}
+
+/// How big a unit is drawn: the size table's factor (1 when the job is not listed), times the ChangeSize percent
+/// (100 keeps the table's size) when that status is on.
+pub fn sprite_scale(table_factor: f32, change_percent: Option<i32>) -> f32 {
+    match change_percent {
+        Some(percent) => table_factor * percent as f32 / 100.0,
+        None => table_factor,
+    }
+}
+
+/// A field's box on a world map's picture (in its pixels: left, top, right, bottom), by its map's name (lowercase,
+/// no extension).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorldArea {
+    pub map: String,
+    pub rect: [f32; 4],
+    /// Its region's number: 100 and up for towns and fields, less for dungeons.
+    pub region: u32,
+}
+
+/// A world map: its name, its picture (under the UI texture folder) and its fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct World {
+    pub name: String,
+    pub image: String,
+    pub fields: Vec<WorldArea>,
+}
+
+/// The world maps (`World_List`, each naming its table of fields: region, map, box, monster and level), and the
+/// box colors as red, green, blue and alpha (`worldview_info`): a navigation route's maps (Run), and what's pointed at.
+pub fn worlds(grf: &Grf) -> io::Result<(Vec<World>, [[u8; 4]; 2])> {
+    let lua = run(grf, &WORLD_VIEW)?;
+    let globals = lua.globals();
+    let list: mlua::Table = globals.get("World_List").map_err(lua_error)?;
+    let mut worlds = Vec::new();
+    for entry in list.sequence_values::<mlua::Table>() {
+        let entry = entry.map_err(lua_error)?;
+        let text = |index: usize| entry.get::<mlua::LuaString>(index).map(|text| decode(&text)).unwrap_or_default();
+        let Ok(table) = globals.get::<mlua::Table>(text(2)) else { continue };
+        let fields = table
+            .sequence_values::<mlua::Table>()
+            .flatten()
+            .filter_map(|field| {
+                let map = decode(&field.get::<mlua::LuaString>(2).ok()?).to_lowercase();
+                let rect = [3, 4, 5, 6].map(|index| field.get::<f32>(index).unwrap_or(0.0));
+                Some(WorldArea { map: map.trim_end_matches(".rsw").to_owned(), rect, region: field.get::<u32>(1).unwrap_or(0) })
+            })
+            .collect();
+        let image = entry.get::<mlua::LuaString>(4).map(|text| decode_name(&text)).unwrap_or_default();
+        worlds.push(World { name: text(1), image, fields });
+    }
+    let info: mlua::Table = globals.get("worldview_info").map_err(lua_error)?;
+    let color = |name: &str| ["ColorR", "ColorG", "ColorB", "Alpha"].map(|part| info.get::<u8>(format!("{name}_{part}")).unwrap_or(0));
+    Ok((worlds, [color("Run"), color("SelectBox")]))
+}
+
+/// One material a synthesis box accepts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SynthesisSource {
+    pub name: String,
+    pub amount: u16,
+    pub id: u32,
+}
+
+/// A synthesis box, keyed later by `ItemID`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SynthesisBox {
+    pub need_count: u32,
+    pub refine_min: u32,
+    pub refine_max: u32,
+    /// `NeedSource_String`: the window's line saying what goes in.
+    pub need_text: String,
+    pub sources: Vec<SynthesisSource>,
+}
+
+/// One item an upgrade box accepts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UpgradeTarget {
+    pub name: String,
+    pub id: u32,
+}
+
+/// An upgrade box, keyed later by `ItemID`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UpgradeBox {
+    pub refine_min: u32,
+    pub refine_max: u32,
+    /// Random options the item must have.
+    pub option_min: u32,
+    /// `NotSocketEnchantItem`: no cards allowed.
+    pub no_cards: bool,
+    /// `NeedSource_String`: the window's line saying what goes in.
+    pub need_text: String,
+    pub targets: Vec<UpgradeTarget>,
+}
+
+fn lua_u32(table: &mlua::Table, key: &str) -> u32 {
+    table.get::<Option<u32>>(key).ok().flatten().unwrap_or(0)
+}
+
+fn lua_flag(table: &mlua::Table, key: &str) -> bool {
+    match table.get::<mlua::Value>(key).ok() {
+        Some(mlua::Value::Boolean(value)) => value,
+        Some(mlua::Value::Integer(value)) => value != 0,
+        Some(mlua::Value::Number(value)) => value != 0.0,
+        _ => false,
+    }
+}
+
+fn lua_name(table: &mlua::Table, index: i64) -> String {
+    table.get::<mlua::LuaString>(index).map(|text| decode(&text)).unwrap_or_default()
+}
+
+fn lua_text(table: &mlua::Table, key: &str) -> String {
+    table.get::<mlua::LuaString>(key).map(|text| decode(&text)).unwrap_or_default()
+}
+
+/// `tblLapineDdukddakBox.sources` from the file's bytes. Its functions aren't called.
+pub fn synthesis_table(source: Vec<u8>) -> io::Result<HashMap<u32, SynthesisBox>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, SYNTHESIS_TABLE, source)?;
+    let root: mlua::Table = lua.globals().get("tblLapineDdukddakBox").map_err(lua_error)?;
+    let sources: mlua::Table = root.get("sources").map_err(lua_error)?;
+    let mut boxes = HashMap::new();
+    for pair in sources.pairs::<mlua::Value, mlua::Table>() {
+        let (_, entry) = pair.map_err(lua_error)?;
+        let item_id = lua_u32(&entry, "ItemID");
+        if item_id == 0 {
+            continue;
+        }
+        let mut items = Vec::new();
+        if let Ok(list) = entry.get::<mlua::Table>("SourceItems") {
+            for row in list.sequence_values::<mlua::Table>() {
+                let row = row.map_err(lua_error)?;
+                let id = row.get::<u32>(3).unwrap_or(0);
+                if id == 0 {
+                    continue;
+                }
+                items.push(SynthesisSource { name: lua_name(&row, 1), amount: row.get::<u32>(2).unwrap_or(1) as u16, id });
+            }
+        }
+        let refine_max = entry.get::<Option<u32>>("NeedRefineMax").ok().flatten().unwrap_or(u32::from(u8::MAX));
+        boxes.insert(
+            item_id,
+            SynthesisBox {
+                need_count: lua_u32(&entry, "NeedCount"),
+                refine_min: lua_u32(&entry, "NeedRefineMin"),
+                refine_max,
+                need_text: lua_text(&entry, "NeedSource_String"),
+                sources: items,
+            },
+        );
+    }
+    Ok(boxes)
+}
+
+/// `tblLapineUpgradeBox.targets` from the file's bytes.
+pub fn upgrade_table(source: Vec<u8>) -> io::Result<HashMap<u32, UpgradeBox>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, UPGRADE_TABLE, source)?;
+    let root: mlua::Table = lua.globals().get("tblLapineUpgradeBox").map_err(lua_error)?;
+    let targets: mlua::Table = root.get("targets").map_err(lua_error)?;
+    let mut boxes = HashMap::new();
+    for pair in targets.pairs::<mlua::Value, mlua::Table>() {
+        let (_, entry) = pair.map_err(lua_error)?;
+        let item_id = lua_u32(&entry, "ItemID");
+        if item_id == 0 {
+            continue;
+        }
+        let mut items = Vec::new();
+        if let Ok(list) = entry.get::<mlua::Table>("TargetItems") {
+            for row in list.sequence_values::<mlua::Table>() {
+                let row = row.map_err(lua_error)?;
+                let id = row.get::<u32>(2).unwrap_or(0);
+                if id == 0 {
+                    continue;
+                }
+                items.push(UpgradeTarget { name: lua_name(&row, 1), id });
+            }
+        }
+        let refine_max = entry.get::<Option<u32>>("NeedRefineMax").ok().flatten().unwrap_or(u32::from(u8::MAX));
+        boxes.insert(
+            item_id,
+            UpgradeBox {
+                refine_min: lua_u32(&entry, "NeedRefineMin"),
+                refine_max,
+                option_min: lua_u32(&entry, "NeedOptionNumMin"),
+                no_cards: lua_flag(&entry, "NotSocketEnchantItem"),
+                need_text: lua_text(&entry, "NeedSource_String"),
+                targets: items,
+            },
+        );
+    }
+    Ok(boxes)
+}
+
+/// Synthesis boxes from data.grf, by the box's item ID.
+pub fn synthesis_boxes(grf: &Grf) -> io::Result<HashMap<u32, SynthesisBox>> {
+    synthesis_table(grf.read(SYNTHESIS_TABLE)?)
+}
+
+/// Upgrade boxes from data.grf, by the box's item ID.
+pub fn upgrade_boxes(grf: &Grf) -> io::Result<HashMap<u32, UpgradeBox>> {
+    upgrade_table(grf.read(UPGRADE_TABLE)?)
+}
+
+const ENCHANT_LIST_F: &str = "data\\luafiles514\\lua files\\enchant\\enchantlist_f.lub";
+const ENCHANT_LIST: &str = "data\\luafiles514\\lua files\\enchant\\enchantlist.lub";
+pub const ITEM_DB_NAMES: &str = "data\\luafiles514\\lua files\\itemdbnametbl.lub";
+// ponytail: the official client provides these; the values are what lets every table load. LoadAllData is not called
+// (it hands the tables to the client). The C_Set stubs are there in case a file calls it anyway.
+const ENCHANT_STUBS: &str = r#"
+MAX_SLOT_NUM = 4
+MAX_REFINE_LEVEL = 20
+MAX_GRADE_LEVEL = 4
+MAX_MATERIAL_NUM = 10
+function C_GetSlotCount() return 0 end
+function MessageBox() end
+function C_SetSlotOrder() return true, "" end
+function C_AddTargetItem() return true, "" end
+function C_SetCondition() return true, "" end
+function C_ApproveRandomOption() return true, "" end
+function C_SetReset() return true, "" end
+function C_SetCaution() return true, "" end
+function C_SetRequire() return true, "" end
+function C_SetSuccessRate() return true, "" end
+function C_SetGradeBonus() return true, "" end
+function C_SetEnchant() return true, "" end
+function C_AddPerfectEnchant() return true, "" end
+function C_AddUpgradeEnchant() return true, "" end
+"#;
+
+/// What a random or perfect enchant, an upgrade or a reset costs.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EnchantCost {
+    pub zeny: u32,
+    pub materials: Vec<(u32, u32)>,
+}
+
+/// A perfect enchant: the item it puts in, and what it costs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PerfectEnchant {
+    pub item: u32,
+    pub cost: EnchantCost,
+}
+
+/// An upgrade of an enchant already in a slot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnchantUpgrade {
+    pub result: u32,
+    pub cost: EnchantCost,
+}
+
+/// One card slot of an enchant table.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EnchantSlot {
+    pub cost: EnchantCost,
+    pub success_rate: u32,
+    /// Added to the success rate, by grade.
+    pub grade_bonus: Vec<(u8, u32)>,
+    /// Random enchants at a grade: item id and weight, out of 100000.
+    pub rates: Vec<(u8, Vec<(u32, u32)>)>,
+    pub perfect: Vec<PerfectEnchant>,
+    /// The enchant in the slot, and what it upgrades to.
+    pub upgrades: Vec<(u32, EnchantUpgrade)>,
+}
+
+impl EnchantSlot {
+    pub fn bonus(&self, grade: u8) -> u32 {
+        self.grade_bonus.iter().find(|(listed, _)| *listed == grade).map(|(_, bonus)| *bonus).unwrap_or(0)
+    }
+
+    pub fn rate_list(&self, grade: u8) -> &[(u32, u32)] {
+        self.rates.iter().find(|(listed, _)| *listed == grade).map(|(_, list)| list.as_slice()).unwrap_or(&[])
+    }
+
+    /// Random enchants are offered when the slot has a rate table at all.
+    pub fn random(&self) -> bool {
+        !self.rates.is_empty()
+    }
+}
+
+/// Resetting the enchants on an item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnchantReset {
+    pub enabled: bool,
+    /// Out of 100000. Zero is not offered: rathena takes the cost and then doesn't answer.
+    pub rate: u32,
+    pub cost: EnchantCost,
+}
+
+/// One enchant table (`Table[n]` in the client's enchant list).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnchantTable {
+    pub targets: Vec<u32>,
+    pub slot_order: Vec<u8>,
+    pub min_refine: u8,
+    pub min_grade: u8,
+    /// Whether an item with random options may go in. The client doesn't track those, so this is recorded only.
+    pub approve_random_opt: bool,
+    pub reset: Option<EnchantReset>,
+    /// Card slots 0 to 3.
+    pub slots: [Option<EnchantSlot>; 4],
+}
+
+/// The enchant tables from data.grf (`enchantlist_f`, `enchantlist`, `itemdbnametbl`).
+pub fn enchants(grf: &Grf) -> io::Result<HashMap<u64, EnchantTable>> {
+    let names = grf.read(ITEM_DB_NAMES).unwrap_or_default();
+    let mut lists = Vec::new();
+    if let Ok(bytes) = grf.read(ENCHANT_LIST_F) {
+        lists.push(bytes);
+    }
+    lists.push(grf.read(ENCHANT_LIST)?);
+    enchant_tables(&lists, names)
+}
+
+/// Reads `Table` from the list files' bytes (the `_f` file first, when there is one) and item names from `names`.
+/// A test passes a small Lua source of the same shape. Names are resolved by the raw bytes of the key.
+pub fn enchant_tables(lists: &[Vec<u8>], names: Vec<u8>) -> io::Result<HashMap<u64, EnchantTable>> {
+    let lua = new_lua()?;
+    lua.load(ENCHANT_STUBS).set_name("enchant stubs").exec().map_err(lua_error)?;
+    if !names.is_empty() {
+        exec_bytes(&lua, ITEM_DB_NAMES, names)?;
+    }
+    for (index, bytes) in lists.iter().enumerate() {
+        exec_bytes(&lua, &format!("enchant list {index}"), bytes.clone())?;
+    }
+    let names = loaded_item_names(&lua);
+    let table: mlua::Table = lua.globals().get("Table").map_err(lua_error)?;
+    let mut tables = HashMap::new();
+    for pair in table.pairs::<mlua::Value, mlua::Value>() {
+        let (key, value) = pair.map_err(lua_error)?;
+        let (Some(id), mlua::Value::Table(entry)) = (lua_u64(&key), value) else { continue };
+        tables.insert(id, read_enchant(&entry, &names));
+    }
+    Ok(tables)
+}
+
+/// `ItemDBNameTbl`, keyed by the Lua string's own bytes (Korean names are cp949, not UTF-8).
+fn loaded_item_names(lua: &Lua) -> HashMap<Vec<u8>, u32> {
+    let Ok(table) = lua.globals().get::<mlua::Table>("ItemDBNameTbl") else { return HashMap::new() };
+    let mut names = HashMap::new();
+    for pair in table.pairs::<mlua::Value, mlua::Value>().flatten() {
+        if let (mlua::Value::String(key), Some(id)) = (pair.0, value_u32(&pair.1)) {
+            names.insert(key.as_bytes().as_ref().to_vec(), id);
+        }
+    }
+    names
+}
+
+fn value_u32(value: &mlua::Value) -> Option<u32> {
+    match value {
+        mlua::Value::Integer(id) => u32::try_from(*id).ok(),
+        mlua::Value::Number(id) if id.is_finite() && *id >= 0.0 && *id <= u32::MAX as f64 => Some(*id as u32),
+        _ => None,
+    }
+}
+
+fn lua_u64(value: &mlua::Value) -> Option<u64> {
+    match value {
+        mlua::Value::Integer(id) => u64::try_from(*id).ok(),
+        mlua::Value::Number(id) if id.is_finite() && *id >= 0.0 => Some(*id as u64),
+        _ => None,
+    }
+}
+
+fn named_id(value: &mlua::Value, names: &HashMap<Vec<u8>, u32>) -> Option<u32> {
+    match value {
+        mlua::Value::String(text) => {
+            let bytes = text.as_bytes();
+            names.get(bytes.as_ref()).copied()
+        }
+        _ => value_u32(value),
+    }
+}
+
+fn mat_list(table: &mlua::Table, names: &HashMap<Vec<u8>, u32>) -> Vec<(u32, u32)> {
+    let Ok(mats) = table.get::<mlua::Table>("MatTbl") else { return Vec::new() };
+    let mut list = Vec::new();
+    for (key, amount) in mats.pairs::<mlua::Value, mlua::Value>().flatten() {
+        if let (Some(id), Some(amount)) = (named_id(&key, names), value_u32(&amount)) {
+            list.push((id, amount));
+        }
+    }
+    list.sort();
+    list
+}
+
+fn cost_of(table: &mlua::Table, names: &HashMap<Vec<u8>, u32>) -> EnchantCost {
+    EnchantCost { zeny: table.get::<u32>("Zeny").unwrap_or(0), materials: mat_list(table, names) }
+}
+
+fn read_enchant(entry: &mlua::Table, names: &HashMap<Vec<u8>, u32>) -> EnchantTable {
+    let targets = entry
+        .get::<mlua::Table>("TargetItemTbl")
+        .map(|items| items.sequence_values::<mlua::Value>().flatten().filter_map(|name| named_id(&name, names)).collect())
+        .unwrap_or_default();
+    let slot_order =
+        entry.get::<mlua::Table>("SlotOrder").map(|order| order.sequence_values::<u8>().flatten().filter(|slot| *slot < 4).collect()).unwrap_or_default();
+    let condition = entry.get::<mlua::Table>("Condition").ok();
+    let number = |table: &mlua::Table, key: &str| table.get::<u32>(key).unwrap_or(0);
+    let reset = entry.get::<mlua::Table>("Reset").ok().map(|reset| EnchantReset {
+        enabled: lua_flag(&reset, "bReset"),
+        rate: number(&reset, "Rate"),
+        cost: cost_of(&reset, names),
+    });
+    let mut slots: [Option<EnchantSlot>; 4] = [None, None, None, None];
+    if let Ok(table) = entry.get::<mlua::Table>("Slot") {
+        for (key, slot) in table.pairs::<mlua::Value, mlua::Table>().flatten() {
+            let Some(index) = value_u32(&key).filter(|index| *index < 4) else { continue };
+            slots[index as usize] = Some(read_slot(&slot, names));
+        }
+    }
+    EnchantTable {
+        targets,
+        slot_order,
+        min_refine: condition.as_ref().map(|condition| number(condition, "MinRefine") as u8).unwrap_or(0),
+        min_grade: condition.as_ref().map(|condition| number(condition, "MinGrade") as u8).unwrap_or(0),
+        approve_random_opt: lua_flag(entry, "bApproveRandomOpt"),
+        reset,
+        slots,
+    }
+}
+
+fn read_slot(slot: &mlua::Table, names: &HashMap<Vec<u8>, u32>) -> EnchantSlot {
+    let require = slot.get::<mlua::Table>("RequireTbl").ok();
+    let mut grade_bonus = Vec::new();
+    if let Ok(bonuses) = slot.get::<mlua::Table>("GradeBonusTbl") {
+        for (grade, bonus) in bonuses.pairs::<mlua::Value, mlua::Value>().flatten() {
+            if let (Some(grade), Some(bonus)) = (value_u32(&grade), value_u32(&bonus)) {
+                grade_bonus.push((grade as u8, bonus));
+            }
+        }
+        grade_bonus.sort();
+    }
+    let mut rates = Vec::new();
+    if let Ok(table) = slot.get::<mlua::Table>("EnchantRateTbl") {
+        for (grade, list) in table.pairs::<mlua::Value, mlua::Table>().flatten() {
+            let Some(grade) = value_u32(&grade) else { continue };
+            let mut enchants = Vec::new();
+            for (name, weight) in list.pairs::<mlua::Value, mlua::Value>().flatten() {
+                if let (Some(id), Some(weight)) = (named_id(&name, names), value_u32(&weight)) {
+                    enchants.push((id, weight));
+                }
+            }
+            enchants.sort();
+            rates.push((grade as u8, enchants));
+        }
+        rates.sort_by_key(|(grade, _)| *grade);
+    }
+    let mut perfect = Vec::new();
+    if let Ok(table) = slot.get::<mlua::Table>("PerfectECTbl") {
+        for (name, info) in table.pairs::<mlua::Value, mlua::Table>().flatten() {
+            if let Some(item) = named_id(&name, names) {
+                perfect.push(PerfectEnchant { item, cost: cost_of(&info, names) });
+            }
+        }
+        perfect.sort_by_key(|row| row.item);
+    }
+    let mut upgrades = Vec::new();
+    if let Ok(table) = slot.get::<mlua::Table>("UpgradeECTbl") {
+        for (name, info) in table.pairs::<mlua::Value, mlua::Table>().flatten() {
+            let result = info.get::<mlua::Value>("ResultItemDB").ok().and_then(|name| named_id(&name, names));
+            if let (Some(item), Some(result)) = (named_id(&name, names), result) {
+                upgrades.push((item, EnchantUpgrade { result, cost: cost_of(&info, names) }));
+            }
+        }
+        upgrades.sort_by_key(|(item, _)| *item);
+    }
+    EnchantSlot {
+        cost: require.as_ref().map(|require| cost_of(require, names)).unwrap_or(EnchantCost { zeny: 0, materials: Vec::new() }),
+        success_rate: slot.get::<u32>("SuccessRate").unwrap_or(0),
+        grade_bonus,
+        rates,
+        perfect,
+        upgrades,
+    }
+}
+
+/// `ReformItemList` and `ReformInfo`.
+pub const ITEM_REFORM: &str = "data\\luafiles514\\lua files\\itemreform\\itemreformsystem.lub";
+
+/// One way a reform item can turn a carried item into another.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReformInfo {
+    pub base: u32,
+    pub result: u32,
+    /// Material item and how many.
+    pub materials: Vec<(u32, u32)>,
+    pub refine_min: u16,
+    pub refine_max: u16,
+    /// Random options the item must have. The client doesn't track them, so the button ignores this.
+    pub need_options: u8,
+    /// The item may hold no cards.
+    pub empty_socket: bool,
+    /// Cards and enchants stay. False: they are removed.
+    pub preserve_socket: bool,
+    /// The item's grade stays. False: it is removed.
+    pub preserve_grade: bool,
+    /// Added to the refine (negative lowers it).
+    pub change_refine: i32,
+    pub random_option: String,
+    /// `InformationString`: the lines of the window's details popup (none: no link).
+    pub information: Vec<String>,
+}
+
+/// `ItemDBNameTbl` as name bytes to item id. Keys stay the Lua string's raw bytes: some names are cp949, not UTF-8.
+/// A table stored as id to name is read the other way into the same map.
+pub fn item_db_names(source: Vec<u8>) -> io::Result<HashMap<Vec<u8>, u32>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, ITEM_DB_NAMES, source)?;
+    let table: mlua::Table = lua.globals().get("ItemDBNameTbl").map_err(lua_error)?;
+    let mut names = HashMap::new();
+    for pair in table.pairs::<mlua::Value, mlua::Value>() {
+        let (key, value) = pair.map_err(lua_error)?;
+        let id_of = |value: &mlua::Value| number(value).and_then(|id| u32::try_from(id).ok());
+        if let (Some(name), Some(id)) = (raw_bytes(&key), id_of(&value)) {
+            names.insert(name, id);
+        } else if let (Some(id), Some(name)) = (id_of(&key), raw_bytes(&value)) {
+            names.insert(name, id);
+        }
+    }
+    Ok(names)
+}
+
+/// `ReformItemList` and `ReformInfo` from the file's bytes. Names resolve through `names`. `InformationString` is skipped.
+pub fn reform_table(source: Vec<u8>, names: &HashMap<Vec<u8>, u32>) -> io::Result<HashMap<u32, Vec<ReformInfo>>> {
+    let lua = new_lua()?;
+    exec_bytes(&lua, ITEM_REFORM, source)?;
+    let globals = lua.globals();
+    let list: mlua::Table = globals.get("ReformItemList").map_err(lua_error)?;
+    let info: mlua::Table = globals.get("ReformInfo").map_err(lua_error)?;
+    let mut reforms = HashMap::new();
+    for pair in list.pairs::<mlua::Value, mlua::Value>() {
+        let (key, value) = pair.map_err(lua_error)?;
+        let (Some(name), mlua::Value::Table(indexes)) = (raw_bytes(&key), value) else { continue };
+        let Some(&item) = names.get(&name) else { continue };
+        let mut entries = Vec::new();
+        for index in entry_numbers(&indexes)? {
+            let Ok(row) = info.get::<mlua::Table>(index) else { continue };
+            if let Some(entry) = read_reform(&row, names) {
+                entries.push(entry);
+            }
+        }
+        if !entries.is_empty() {
+            reforms.insert(item, entries);
+        }
+    }
+    Ok(reforms)
+}
+
+fn raw_bytes(value: &mlua::Value) -> Option<Vec<u8>> {
+    match value {
+        mlua::Value::String(text) => Some(text.as_bytes().to_vec()),
+        _ => None,
+    }
+}
+
+/// Lua 5.1 stores every number as a double; only whole ones are taken.
+fn number(value: &mlua::Value) -> Option<i64> {
+    match value {
+        mlua::Value::Integer(n) => Some(*n),
+        mlua::Value::Number(n) if n.fract() == 0.0 => format!("{n:.0}").parse().ok(),
+        _ => None,
+    }
+}
+
+/// The list's entry numbers, in the order written.
+fn entry_numbers(table: &mlua::Table) -> io::Result<Vec<i64>> {
+    let mut numbers = Vec::new();
+    for index in 1..=table.raw_len() {
+        if let Ok(n) = table.get::<i64>(index) {
+            numbers.push(n);
+        }
+    }
+    if numbers.is_empty() {
+        for pair in table.pairs::<mlua::Value, mlua::Value>() {
+            let (_, value) = pair.map_err(lua_error)?;
+            if let Some(n) = number(&value) {
+                numbers.push(n);
+            }
+        }
+    }
+    Ok(numbers)
+}
+
+fn field_number(table: &mlua::Table, key: &str) -> Option<i64> {
+    table.get::<mlua::Value>(key).ok().as_ref().and_then(number)
+}
+
+fn flag(table: &mlua::Table, key: &str, default: bool) -> bool {
+    match table.get::<mlua::Value>(key) {
+        Ok(mlua::Value::Boolean(value)) => value,
+        Ok(value) => number(&value).map(|n| n != 0).unwrap_or(default),
+        Err(_) => default,
+    }
+}
+
+fn reform_named(table: &mlua::Table, key: &str, names: &HashMap<Vec<u8>, u32>) -> Option<u32> {
+    let value = table.get::<mlua::Value>(key).ok()?;
+    names.get(&raw_bytes(&value)?).copied()
+}
+
+fn read_reform(entry: &mlua::Table, names: &HashMap<Vec<u8>, u32>) -> Option<ReformInfo> {
+    let base = reform_named(entry, "BaseItem", names)?;
+    let result = reform_named(entry, "ResultItem", names)?;
+    let mut materials = Vec::new();
+    if let Ok(table) = entry.get::<mlua::Table>("Material") {
+        for pair in table.pairs::<mlua::Value, mlua::Value>().flatten() {
+            if let (Some(name), Some(amount)) = (raw_bytes(&pair.0), number(&pair.1))
+                && let Some(&id) = names.get(&name)
+            {
+                materials.push((name, id, u32::try_from(amount).unwrap_or(0)));
+            }
+        }
+        materials.sort_by(|a, b| a.0.cmp(&b.0));
+    }
+    let narrow = |n: i64| u16::try_from(n).unwrap_or(if n < 0 { 0 } else { u16::MAX });
+    Some(ReformInfo {
+        base,
+        result,
+        materials: materials.into_iter().map(|(_, id, amount)| (id, amount)).collect(),
+        refine_min: field_number(entry, "NeedRefineMin").map(narrow).unwrap_or(0),
+        refine_max: field_number(entry, "NeedRefineMax").map(narrow).unwrap_or(u16::MAX),
+        need_options: u8::try_from(field_number(entry, "NeedOptionNumMin").unwrap_or(0)).unwrap_or(u8::MAX),
+        empty_socket: flag(entry, "IsEmptySocket", false),
+        preserve_socket: flag(entry, "PreserveSocketItem", true),
+        preserve_grade: flag(entry, "PreserveGrade", true),
+        change_refine: i32::try_from(field_number(entry, "ChangeRefineValue").unwrap_or(0)).unwrap_or(0),
+        random_option: entry.get::<mlua::LuaString>("RandomOptionCode").ok().map(|text| decode(&text)).unwrap_or_default(),
+        information: entry
+            .get::<mlua::Table>("InformationString")
+            .map(|lines| lines.sequence_values::<mlua::LuaString>().flatten().map(|line| decode(&line)).collect())
+            .unwrap_or_default(),
+    })
+}
+
+/// `data\luafiles514\lua files\hotkey.lub`: the game's shortcut defaults.
+const HOTKEY_LUB: &str = "data\\luafiles514\\lua files\\hotkey.lub";
+
+/// One row of `HOTKEY_<n>` or `USERKEY_<n>`: the action name and the virtual-key codes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HotkeyRow {
+    /// 1 hotbar, 2 interface, 3 macros and flags, 4 the second hotbar.
+    pub table: u8,
+    pub index: u16,
+    pub exe: String,
+    /// Missing, or 0, when the row is unbound.
+    pub key1: Option<u16>,
+    pub key2: u16,
+    /// A row from `USERKEY_<n>`, which replaces the default at the same table and index.
+    pub user: bool,
+}
+
+/// The shortcut tables in `grf`'s hotkey.lub.
+pub fn hotkey_defaults(grf: &Grf) -> io::Result<Vec<HotkeyRow>> {
+    hotkey_bytes(&grf.read(HOTKEY_LUB)?)
+}
+
+/// Shortcut rows from a Lua source in the same shape as hotkey.lub or UserKeys.lua.
+pub fn hotkey_rows(source: &str) -> io::Result<Vec<HotkeyRow>> {
+    hotkey_bytes(source.as_bytes())
+}
+
+/// `MsgStrID.MSI_HK_…` in older tables is the name itself, so a missing message table still yields the EXE string.
+const MSGSTRID: &str = "MsgStrID = setmetatable({}, { __index = function(_, name) return name end })";
+
+fn hotkey_bytes(bytes: &[u8]) -> io::Result<Vec<HotkeyRow>> {
+    let lua = new_lua()?;
+    lua.load(MSGSTRID).exec().map_err(lua_error)?;
+    exec_bytes(&lua, HOTKEY_LUB, bytes.to_vec())?;
+    let mut rows = Vec::new();
+    for table in 1..=4 {
+        rows.extend(hotkey_table(&lua, &format!("HOTKEY_{table}"), table, false)?);
+        rows.extend(hotkey_table(&lua, &format!("USERKEY_{table}"), table, true)?);
+    }
+    Ok(rows)
+}
+
+fn hotkey_table(lua: &Lua, name: &str, table: u8, user: bool) -> io::Result<Vec<HotkeyRow>> {
+    let Ok(entries) = lua.globals().get::<mlua::Table>(name) else { return Ok(Vec::new()) };
+    let mut rows = Vec::new();
+    for pair in entries.pairs::<mlua::Value, mlua::Value>() {
+        let (key, value) = pair.map_err(lua_error)?;
+        let (Some(index), mlua::Value::Table(entry)) = (number(&key).and_then(|index| u16::try_from(index).ok()), value) else { continue };
+        let Some(exe) = entry.get::<mlua::LuaString>("EXE").ok().map(|text| decode(&text)).filter(|exe| !exe.is_empty() && exe != "NULL") else {
+            continue;
+        };
+        // ponytail: KEY1 0 is unbound, the same as leaving it out (the save file omits a 0).
+        let key1 = field_number(&entry, "KEY1").and_then(|code| u16::try_from(code).ok()).filter(|code| *code > 0);
+        let key2 = field_number(&entry, "KEY2").and_then(|code| u16::try_from(code).ok()).unwrap_or(0);
+        rows.push(HotkeyRow { table, index, exe, key1, key2, user });
+    }
+    rows.sort_by_key(|row| row.index);
+    Ok(rows)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::grf::Grf;
+
+    #[test]
+    fn runs_a_translation_loader_with_its_custom_items() {
+        // A loader as translations ship it: the table under LuaFiles514, a merge function, and a server's custom table.
+        let files: std::collections::HashMap<&str, &str> = [
+            (
+                "system\\iteminfo.lua",
+                "require('SystemEN/LuaFiles514/merge_f')\ndofile('System/LuaFiles514/itemInfo.lua')\nImportFiles = { 'itemInfo_C.lua' }\n\
+                 for _, v in ipairs(ImportFiles) do dofile('System/' .. v) end\nMerge(tbl_custom)",
+            ),
+            ("system\\luafiles514\\merge_f.lua", "function Merge(t) for k, v in pairs(t) do tbl[k] = v end end"),
+            ("system\\luafiles514\\iteminfo.lua", "tbl = { [501] = { identifiedDisplayName = 'Red Potion' } }"),
+            ("system\\iteminfo_c.lua", "tbl_custom = { [50118] = { identifiedDisplayName = 'Bubble Gum', identifiedResourceName = 'gum' } }"),
+        ]
+        .into();
+        let read = |file: &str| files.get(file).map(|text| text.as_bytes().to_vec()).ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound));
+        let items = super::items_in(&super::run_loader(&read, "system\\iteminfo.lua").unwrap()).unwrap();
+        assert_eq!((items[&501].name.as_str(), items[&50118].name.as_str(), items[&50118].resource.as_str()), ("Red Potion", "Bubble Gum", "gum"));
+        // A file it can't find fails the run (the plain table is used then).
+        assert!(super::run_loader(&read, "system\\nothing.lua").is_err());
+    }
+
+    #[test]
+    fn reads_the_package_boxes() {
+        // kRO's shape: the sets added out of order, a set's items after its name.
+        let source = "function LoadTable()
+            if not AddTab(105830, 2, \"Gatling\", 1) then return false end
+            if not AddItem(105830, 2, 0, 400393, 1, 0, 12, false, 4, 4) then return false end
+            if not AddTab(105830, 0, \"Grenade\", 1) then return false end
+            if not AddItem(105830, 0, 0, 400391, 1, 0, 12, false, 4, 4) then return false end
+            if not AddItem(105830, 0, 1, 12210, 3, 24, 0, true, 0, 2) then return false end
+            return true, \"good\"
+        end";
+        let boxes = super::package_table(source.as_bytes().to_vec()).unwrap();
+        let sets = &boxes[&105830];
+        assert_eq!(sets.iter().map(|set| (set.number, set.name.as_str(), set.items.len())).collect::<Vec<_>>(), [(0, "Grenade", 2), (2, "Gatling", 1)]);
+        let item = super::PackageItem { item: 12210, count: 3, hours: 24, refine: 0, random_option: true, grade: 0 };
+        assert_eq!(sets[0].items[1], item);
+        assert_eq!((sets[0].items[0].refine, sets[0].items[0].grade), (12, 4));
+        assert!(super::package_table(b"function LoadTable() return false end".to_vec()).is_err());
+    }
+
+    #[test]
+    fn reads_the_attendance_event() {
+        // kRO's shape: {day, item, amount} rows, the config's switch missing.
+        let main = "function main()
+            local result, msg = InsertCheckAttendanceConfig(Config.EvendOnOff, Config.StartDate, Config.EndDate)
+            if not result then return false, msg end
+            for k, row in pairs(Reward) do InsertCheckAttendanceReward(row[1], row[2], row[3]) end
+            return true, \"success\"
+        end";
+        let source = format!("Config = {{ StartDate = 20261101, EndDate = 20271231 }}\nReward = {{ {{2, 502, 5}}, {{1, 501, 3}}, {{3, 616, 1}} }}\n{main}");
+        let event = super::attendance_table(source.into_bytes()).unwrap();
+        assert_eq!((event.start, event.end), (20261101, 20271231));
+        assert_eq!(event.rewards, [(501, 3), (502, 5), (616, 1)], "by day");
+        // Another server's: the rewards inside Config, keyed by day.
+        let main = "function main()
+            InsertCheckAttendanceConfig(Config.EvendOnOff, Config.StartDate, Config.EndDate)
+            for k, row in pairs(Config.Reward) do InsertCheckAttendanceReward(k, row[1], row[2]) end
+            return true, \"success\"
+        end";
+        let source =
+            format!("Config = {{ EvendOnOff = 1, StartDate = 20260730, EndDate = 20260831, Reward = {{ [2] = {{12263, 3}}, [1] = {{12264, 3}} }} }}\n{main}");
+        let event = super::attendance_table(source.into_bytes()).unwrap();
+        assert_eq!((event.start, event.end, event.rewards), (20260730, 20260831, vec![(12264, 3), (12263, 3)]));
+        assert!(super::attendance_table(b"Config = {}".to_vec()).is_err(), "no main");
+        assert!(super::attendance_table(b"function main() return false, 'bad' end".to_vec()).is_err(), "main refused");
+        // A character server's own file replaces the base file's rewards and dates; a missing one leaves them.
+        let base = format!("Config = {{ StartDate = 20261101, EndDate = 20271231 }}\nReward = {{ {{1, 501, 3}}, {{2, 502, 5}} }}\n{}", main_rows());
+        let own = format!("Config = {{ StartDate = 20261201, EndDate = 20261231 }}\nReward = {{ {{1, 607, 1}} }}\n{}", main_rows());
+        let read = |path: &str| match path {
+            super::ATTENDANCE => Ok(base.clone().into_bytes()),
+            "system\\CheckAttendance_Rust.lub" => Ok(own.clone().into_bytes()),
+            _ => Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        };
+        let event = super::server_attendance(&read, "Rust");
+        assert_eq!((event.start, event.end, event.rewards), (20261201, 20261231, vec![(607, 1)]));
+        let event = super::server_attendance(&read, "Other");
+        assert_eq!((event.start, event.end, event.rewards), (20261101, 20271231, vec![(501, 3), (502, 5)]));
+    }
+
+    /// A `main` that inserts the config's dates and the `Reward` rows.
+    fn main_rows() -> &'static str {
+        "function main()
+            InsertCheckAttendanceConfig(nil, Config.StartDate, Config.EndDate)
+            for k, row in pairs(Reward) do InsertCheckAttendanceReward(row[1], row[2], row[3]) end
+            return true, \"success\"
+        end"
+    }
+
+    #[test]
+    fn reads_the_sky_effects() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"MapSkyData = {
+                ["dali.rsw"] = { Star_Effect = true, BG_Color = { 6, 21, 35 } },
+                ["t_crack.rsw"] = { Star_Effect = true, Old_Cloud_Effect = { 11, 1 } },
+                ["1@exds.rsw"] = { Cloud_Effect = { { Num = 500, Height = 40, Height_Extra = 10, Size = 20, Size_Extra = 20,
+                    Expand_Rate = 0.05, Color = { 255, 250, 240 }, Alpha_Inc_Time = 80, Alpha_Inc_Time_Extra = 50,
+                    Alpha_Inc_Speed = 1, Alpha_Dec_Time = 300, Alpha_Dec_Time_Extra = 200, Alpha_Dec_Speed = 0.5, CullDist = 200 } } },
+            }"#,
+        )
+        .exec()
+        .unwrap();
+        let read = |key: &str| super::sky_effects_from_lua(&lua, key);
+        assert_eq!(read("dali.rsw"), super::SkyEffects { stars: true, types: vec![], fields: vec![] });
+        assert_eq!(read("t_crack.rsw").types, [11, 1]);
+        let fields = read("1@exds.rsw").fields;
+        assert_eq!((fields.len(), fields[0].num, fields[0].color, fields[0].alpha_dec_time_extra, fields[0].cull_dist), (1, 500, [255, 250, 240], 200, 200.0));
+        assert_eq!(read("prontera.rsw"), super::SkyEffects::default());
+    }
+
+    #[test]
+    fn writes_a_date_by_its_pattern() {
+        // 2026-10-20 18:30 UTC.
+        assert_eq!(super::local_date("!%m/%d %H:%M", 1_792_521_000), "10/20 18:30");
+        assert_eq!(super::local_date(&"!%Y".repeat(40), 0).len(), 127);
+    }
+
+    #[test]
+    fn reads_navigation_tables() {
+        let lua = super::new_lua().unwrap();
+        let source = r#"
+            Navi_Map = { { "prontera", "Prontera", 5001, 312, 392 }, { "prt_fild08", "Prontera Field", 5002, 400, 400 } }
+            Navi_Link = { { "prt_fild08", 100, 200, 99999, "warp", "", 170, 375, "prontera", 156, 22 } }
+            Navi_Npc = { { "prontera", 7, 101, 706, "Tool Dealer", "yusa", 134, 221 } }
+            Navi_Mob = { { "prt_fild08", 9, 301, 1377258, "Poring", "PORING", 60, 3211521 } }
+            Navi_Distance = {
+                "prt_fild08", 2, { { 100, { "E", 101, 678 }, { "E", 107, 6 }, { "NULL", 0, 0 } }, { 105, { "NULL", 0, 0 } } },
+                "prontera", 1, { { 101, { "E", 100, 5 }, { "NULL", 0, 0 }, { "E", 9, 9 } } },
+            }
+        "#;
+        super::exec_bytes(&lua, "navi", source.as_bytes().to_vec()).unwrap();
+        let tables = super::navi_tables(&lua).unwrap();
+        assert_eq!(tables.maps.get("prt_fild08").map(String::as_str), Some("Prontera Field"));
+        assert_eq!(tables.sizes.get("prontera"), Some(&[312, 392]));
+        let link =
+            super::NaviLink { id: 100, map: "prt_fild08".into(), kind: 200, name: "warp".into(), cell: [170, 375], to: "prontera".into(), to_cell: [156, 22] };
+        assert_eq!(tables.links, [link]);
+        // Each way's list of ways on, up to its end mark.
+        assert_eq!(tables.passes, [(100, vec![(101, 678), (107, 6)]), (105, vec![]), (101, vec![(100, 5)])].into_iter().collect());
+        assert_eq!(tables.npcs, [super::NaviNpc { map: "prontera".into(), name: "Tool Dealer".into(), cell: [134, 221], job: 706 }]);
+        let poring = super::NaviMonster {
+            map: "prt_fild08".into(),
+            id: 1002,
+            name: "Poring".into(),
+            spawns: 21,
+            sprite: "PORING".into(),
+            level: 60,
+            element: 49,
+            size: 1,
+            race: 1,
+            boss: true,
+        };
+        assert_eq!(tables.monsters, [poring]);
+    }
+
+    #[test]
+    fn lays_a_translation_over_the_clients_items() {
+        let item = |name: &str| super::ItemInfo { name: name.into(), ..Default::default() };
+        let own = [(501, item("빨간포션")), (25_000, item("새 아이템"))].into_iter().collect();
+        let translated = [(501, item("Red Potion"))].into_iter().collect();
+        let items = super::layered(Ok(own), Some(translated)).unwrap();
+        // Translated where the translation has it; the newer item keeps the client's name.
+        assert_eq!((items[&501].name.as_str(), items[&25_000].name.as_str()), ("Red Potion", "새 아이템"));
+        assert!(super::layered(Err(std::io::ErrorKind::NotFound.into()), None).is_err());
+    }
+
+    #[test]
+    fn reads_shadow_factors_by_sprite_job() {
+        let npcs = b"jobtbl = { JT_WARPNPC = 45, JT_PORING = 1002, JT_KADES = 1900, JT_EGG = 1047 }".to_vec();
+        let jobs = b"JTtbl = { JT_KNIGHT_H = 4014, JT_NOVICE = 0 }".to_vec();
+        let shadows = br#"
+            ShadowFactorTable = {
+                [jobtbl.JT_WARPNPC] = 0, [jobtbl.JT_PORING] = 0.5, [jobtbl.JT_EGG] = 0,
+                [JTtbl.JT_KNIGHT_H] = 1.5, [jobtbl.JT_NOT_IN_THIS_DATA] = 3, [jobtbl.JT_KADES] = 2,
+            }
+        "#
+        .to_vec();
+        let radius = b"NpcLocationRadius = { [jobtbl.JT_KADES] = 1 }".to_vec();
+        let factors = super::shadow_tables(npcs.clone(), jobs.clone(), shadows.clone(), Some(radius)).unwrap();
+        // None for warps and eggs, a smaller one for a Poring, a mounted Knight's wider.
+        assert_eq!((factors[&45], factors[&1047], factors[&1002], factors[&4014]), (0.0, 0.0, 0.5, 1.5));
+        // A unit standing on a radius of one cell: three cells wide, whatever the shadow table says.
+        assert_eq!(factors[&1900], 3.0);
+        // Unlisted jobs (the Novice) and names this data doesn't know aren't in the table.
+        assert!(!factors.contains_key(&0));
+        assert_eq!(factors.len(), 5);
+        assert_eq!(super::shadow_tables(npcs.clone(), jobs.clone(), shadows, None).unwrap()[&1900], 2.0);
+        // The radii alone, for big monsters' reach.
+        let radii = super::radius_table(npcs, jobs, b"NpcLocationRadius = { [jobtbl.JT_KADES] = 2, [jobtbl.JT_PORING] = 0 }".to_vec()).unwrap();
+        assert_eq!(radii, std::collections::HashMap::from([(1900, 2.0)]));
+    }
+
+    #[test]
+    fn reads_monster_sizes_and_lets_the_new_table_win() {
+        let old = br#"
+            tbl = {
+                [1031] = { MonsterSize = 1.2, MonsterEff = -1 },
+                [1111] = { MonsterSize = 0.5, MonsterEff = { -1 } },
+                [2222] = { MonsterSize = 2 },
+            }
+        "#;
+        let new_table = br#"
+            tbl = {
+                [1031] = { MonsterSize = 1.5 },
+                [3333] = { MonsterSize = 2.5 },
+            }
+        "#;
+        let sizes = super::monster_size_tables(Some(old), Some(new_table)).unwrap();
+        // Poring (1002) is in neither table.
+        assert!(!sizes.contains_key(&1002));
+        assert_eq!(super::sprite_scale(sizes.get(&1002).copied().unwrap_or(1.0), None), 1.0);
+        // The new table replaces the old size. A job only the old table has stays.
+        assert_eq!((sizes[&1031], sizes[&1111], sizes[&2222], sizes[&3333]), (1.5, 0.5, 2.0, 2.5));
+        assert_eq!(super::monster_size_tables(Some(old), None).unwrap()[&1031], 1.2);
+        assert_eq!(super::monster_size_tables(None, Some(new_table)).unwrap()[&3333], 2.5);
+        // ChangeSize's percent multiplies the table factor. 100% leaves it.
+        assert_eq!(super::sprite_scale(sizes[&1031], Some(150)), 2.25);
+        assert_eq!(super::sprite_scale(sizes[&1031], Some(100)), 1.5);
+        assert_eq!(super::sprite_scale(1.0, Some(50)), 0.5);
+        assert_eq!(super::sprite_scale(1.2, None), 1.2);
+    }
+
+    #[test]
+    fn reads_quest_info() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"QuestInfoList = {
+                [7001] = { Title = "Hunting Porings", Description = { "Hunt", "ten Porings." }, Summary = "Poring x10" },
+                [7002] = { Title = "See Kafra", Description = { "Talk." }, Summary = "Kafra", NpcPosX = 150, NpcPosY = 180,
+                    NpcSpr = "4_F_KAFRA1", NpcNavi = "prontera", RewardEXP = "1000", RewardJEXP = 500,
+                    RewardItemList = { { ItemID = 501, ItemNum = 3 }, { ItemID = 909, ItemNum = 1 } } },
+                [7003] = { Title = "Wait", CoolTimeQuest = 1 },
+            }"#,
+        )
+        .exec()
+        .unwrap();
+        let quests = super::quest_infos(&lua).unwrap();
+        assert_eq!(quests[&7001].title, "Hunting Porings");
+        assert_eq!(quests[&7001].description, ["Hunt", "ten Porings."]);
+        let kafra = &quests[&7002];
+        assert_eq!((kafra.npc_sprite.as_str(), kafra.npc_map.as_str()), ("4_F_KAFRA1", "prontera"));
+        assert_eq!((kafra.reward_exp.as_str(), kafra.reward_job_exp.as_str(), kafra.reward_items.clone()), ("1000", "500", vec![(501, 3), (909, 1)]));
+        assert_eq!(quests[&7001].npc, None);
+        assert_eq!(quests[&7002].npc, Some([150, 180]));
+        assert!(!quests[&7001].cooldown && quests[&7003].cooldown, "a cooldown timer");
+    }
+
+    #[test]
+    fn puts_the_translations_quests_over_the_original() {
+        let quests = |list: &str| {
+            let lua = super::new_lua().unwrap();
+            lua.load(list).exec().unwrap();
+            super::quest_infos(&lua)
+        };
+        let original = quests(r#"QuestInfoList = { [1] = { Title = "원본" }, [2] = { Title = "둘" } }"#);
+        let translated = quests(r#"QuestInfoList = { [2] = { Title = "Two" }, [79901] = { Title = "Job Change: Knight" } }"#);
+        let merged = super::merge_quests([original, translated]).unwrap();
+        assert_eq!([1, 2, 79901].map(|id| merged[&id].title.clone()), ["원본", "Two", "Job Change: Knight"]);
+        let missing = || Err(std::io::Error::from(std::io::ErrorKind::NotFound));
+        let only = super::merge_quests([missing(), quests(r#"QuestInfoList = { [3] = { Title = "Three" } }"#)]).unwrap();
+        assert_eq!(only[&3].title, "Three");
+        assert!(super::merge_quests([missing(), missing()]).is_err());
+    }
+
+    #[test]
+    fn reads_quest_filters() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"QUEST_FILTER = { ALL = 0, ETC = 1, NORMAL = 2 }
+            QuestFilterTable = {
+                [QUEST_FILTER.ALL] = { Tooltip = "All", QuestIcons = {} },
+                [QUEST_FILTER.NORMAL] = { Tooltip = "Normal", QuestIcons = { "ico_ep.bmp", "ico_gq.bmp" } },
+                [QUEST_FILTER.ETC] = { Tooltip = "Etc" },
+            }"#,
+        )
+        .exec()
+        .unwrap();
+        let filters = super::quest_filter_table(&lua).unwrap();
+        assert_eq!(filters[&0], ("All".to_owned(), vec![]));
+        assert_eq!(filters[&2], ("Normal".to_owned(), vec!["ico_ep.bmp".to_owned(), "ico_gq.bmp".to_owned()]));
+        assert_eq!(filters[&1].1, Vec::<String>::new());
+    }
+
+    #[test]
+    fn reads_skill_descriptions() {
+        let lua = super::new_lua().unwrap();
+        lua.load(r#"SKID = { SM_BASH = 5 } SKILL_DESCRIPT = { [SKID.SM_BASH] = { "Bash", "Max Level: 10", "^777777Hits hard^000000" } }"#).exec().unwrap();
+        let descriptions = super::skill_descripts(&lua).unwrap();
+        assert_eq!(descriptions[&5], ["Bash", "Max Level: 10", "^777777Hits hard^000000"]);
+    }
+
+    #[test]
+    fn reads_what_status_icons_say() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"EFST_IDs = { EFST_BLESSING = 10, EFST_AUTOBERSERK = 107 }
+            COLOR_TITLE_BUFF = { 155, 202, 155 }
+            COLOR_TIME = { 255, 176, 98 }
+            StateIconList = {}
+            StateIconList[EFST_IDs.EFST_BLESSING] = { haveTimeLimit = 1, posTimeLimitStr = 2,
+                descript = { { "Blessing", COLOR_TITLE_BUFF }, { "%s", COLOR_TIME }, { "Increases STR, DEX and INT" } } }
+            StateIconList[EFST_IDs.EFST_AUTOBERSERK] = { descript = { { "Berserk", COLOR_TITLE_BUFF } } }"#,
+        )
+        .exec()
+        .unwrap();
+        let infos = super::state_infos(&lua).unwrap();
+        let blessing = &infos[&10];
+        assert!(blessing.time_limit);
+        assert_eq!(
+            blessing.lines,
+            [("Blessing".into(), Some([155, 202, 155])), ("%s".into(), Some([255, 176, 98])), ("Increases STR, DEX and INT".into(), None)]
+        );
+        assert!(!infos[&107].time_limit);
+    }
+
+    #[test]
+    fn status_icon_text_skips_effects_efstids_does_not_know() {
+        let lua = super::new_lua().unwrap();
+        lua.load("EFST_IDs = { EFST_BLESSING = 10 }").exec().unwrap();
+        lua.load(super::UNKNOWN_EFSTS).exec().unwrap();
+        lua.load(
+            r#"StateIconList = {}
+            StateIconList[EFST_IDs.EFST_CONTENTS_23] = { descript = { { "Unknown" } } }
+            StateIconList[EFST_IDs.EFST_BLESSING] = { descript = { { "Blessing" } } }"#,
+        )
+        .exec()
+        .unwrap();
+        let infos = super::state_infos(&lua).unwrap();
+        assert_eq!(infos.len(), 1);
+        assert_eq!(infos[&10].lines, [("Blessing".into(), None)]);
+    }
+
+    #[test]
+    fn reads_the_battleground_list() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"EntryQueueList = {
+                [2] = { BattleFieldName = "KVM (Level 80 and up)", DisplayBattleFieldName = "KVM", AllianceNum = 5, EnemyNum = 5,
+                    PrivateApply = 1, PartyApply = 1, GuildApply = 0, EnterCondType = 2, EnterCondValue1 = 80, EnterCondValue2 = 0,
+                    RewardWin = "5 Badges", RewardDraw = "2", RewardLose = "1", VictoryCond = "More kills", MiniMapFile = "bat_c01.bmp" },
+                [1] = { BattleFieldName = "Tierra Gorge", AllianceNum = 6, EnemyNum = 6, EnterCondType = 3, EnterCondValue1 = 60,
+                    EnterCondValue2 = 79 },
+            }
+            function ReadEntryQueueList() for k, v in pairs(EntryQueueList) do AddEntryQueue(k, v) end end"#,
+        )
+        .exec()
+        .unwrap();
+        let list = super::battlegrounds(&lua).unwrap();
+        assert_eq!(list.iter().map(|entry| entry.name.as_str()).collect::<Vec<_>>(), ["Tierra Gorge", "KVM (Level 80 and up)"]);
+        let kvm = &list[1];
+        assert_eq!((kvm.sizes, kvm.applies, kvm.condition), ([5, 5], [true, true, false], (2, [80, 0])));
+        assert_eq!((kvm.rewards[0].as_str(), kvm.goal.as_str(), kvm.picture.as_str()), ("5 Badges", "More kills", "bat_c01.bmp"));
+        assert_eq!(list[0].condition, (3, [60, 79]));
+    }
+
+    #[test]
+    fn finds_the_achievement_table_under_either_name() {
+        let only = |name: &'static str| {
+            move |path: &str| -> std::io::Result<Vec<u8>> {
+                if path == name {
+                    Ok(b"achievement_tbl = { [240000] = { title = \"First steps\" } }".to_vec())
+                } else {
+                    Err(std::io::ErrorKind::NotFound.into())
+                }
+            }
+        };
+        for name in [super::ACHIEVEMENTS, super::ACHIEVEMENT_LIST] {
+            let table = super::achievement_table(super::achievement_source(only(name)).unwrap()).unwrap();
+            assert_eq!(table[&240000].title, "First steps", "{name}");
+        }
+        assert!(super::achievement_source(only("elsewhere")).is_err());
+    }
+
+    #[test]
+    fn reads_achievements() {
+        let source = r#"
+            achievement_tbl = {
+                [200000] = {
+                    UI_Type = 0, group = "GOAL_LEVEL", major = 1, minor = 0,
+                    title = "Acquire the first aura!",
+                    content = { summary = "Achieve Base Level 99!", details = "Achieve Base Level 99." },
+                    resource = { [1] = { text = "Base Level 99" } },
+                    reward = { title = 1000, buff = 10, item = 12549 },
+                    score = 50
+                },
+                [120001] = {
+                    UI_Type = 1, group = "ADVENTURE", major = 2, minor = 3, title = "Hunter",
+                    resource = { [1] = { text = "Porings", count = 10 }, [2] = { text = "Lunatics", count = 5 } },
+                    reward = {}, score = 10
+                }
+            }
+            function main() return CallTheClient() end
+        "#;
+        let table = super::achievement_table(source.as_bytes().to_vec()).unwrap();
+        let aura = &table[&200000];
+        assert_eq!((aura.counted, aura.group.as_str(), aura.major, aura.minor), (false, "goal_level", 1, 0));
+        assert_eq!((aura.title.as_str(), aura.summary.as_str()), ("Acquire the first aura!", "Achieve Base Level 99!"));
+        assert_eq!((aura.reward_item, aura.reward_title, aura.reward_buff, aura.score), (12549, 1000, 10, 50));
+        assert_eq!(aura.objectives, [("Base Level 99".to_owned(), 0)]);
+        let hunter = &table[&120001];
+        assert!(hunter.counted);
+        assert_eq!(hunter.objectives, [("Porings".to_owned(), 10), ("Lunatics".to_owned(), 5)]);
+        assert_eq!((hunter.reward_title, hunter.details.as_str()), (0, ""));
+    }
+
+    #[test]
+    fn reads_the_dress_lists() {
+        let lua = super::new_lua().unwrap();
+        lua.load(
+            r#"
+            _DressHeadstyleList_f = { { "(1) Short", 1 }, { "(2) Long", 2 } }
+            _DressHeadstyleList_m = { { "(1) Spiky", 1 } }
+            _DressHeadPaletteList = { { "(0) Basic", 0 } }
+            _DressBodyPaletteList = { { "(0) Basic", 0 }, { "(3) Red", 3 } }
+            function _get_Headstylelist(sex, index)
+                local list = sex == 0 and _DressHeadstyleList_f or _DressHeadstyleList_m
+                if nil == list[index] then return nil, nil end
+                return list[index][1], list[index][2]
+            end
+            function _get_DressHeadPaletteList(sex, index)
+                if nil == _DressHeadPaletteList[index] then return nil, nil end
+                return _DressHeadPaletteList[index][1], _DressHeadPaletteList[index][2]
+            end
+            function _get_DressBodyPaletteList(sex, index)
+                if nil == _DressBodyPaletteList[index] then return nil, nil end
+                return _DressBodyPaletteList[index][1], _DressBodyPaletteList[index][2]
+            end
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let [hair, hair_color, clothes_color] = super::read_dress_lists(&lua, 0).unwrap();
+        assert_eq!(hair, [("(1) Short".to_owned(), 1), ("(2) Long".to_owned(), 2)]);
+        assert_eq!(hair_color, [("(0) Basic".to_owned(), 0)]);
+        assert_eq!(clothes_color, [("(0) Basic".to_owned(), 0), ("(3) Red".to_owned(), 3)]);
+        assert_eq!(super::read_dress_lists(&lua, 1).unwrap()[0], [("(1) Spiky".to_owned(), 1)]);
+    }
+
+    #[test]
+    fn reads_laphine_boxes() {
+        let synthesis = r#"
+            tblLapineDdukddakBox = {
+                sources = {
+                    IDTest = {
+                        ItemID = 100000, NeedCount = 3, NeedRefineMin = 0, NeedRefineMax = 6,
+                        NeedSource_String = "Jellopy, Fluff, Shell",
+                        SourceItems = { { "Jellopy", 1, 909 }, { "Fluff", 1, 914 }, { "Shell", 1, 935 } }
+                    }
+                }
+            }
+            function set_resource_item_list() end
+        "#;
+        let boxes = super::synthesis_table(synthesis.as_bytes().to_vec()).unwrap();
+        let test = &boxes[&100000];
+        assert_eq!((test.need_count, test.refine_min, test.refine_max, test.need_text.as_str()), (3, 0, 6, "Jellopy, Fluff, Shell"));
+        assert_eq!(
+            test.sources,
+            [
+                super::SynthesisSource { name: "Jellopy".into(), amount: 1, id: 909 },
+                super::SynthesisSource { name: "Fluff".into(), amount: 1, id: 914 },
+                super::SynthesisSource { name: "Shell".into(), amount: 1, id: 935 },
+            ]
+        );
+
+        let upgrade = r#"
+            tblLapineUpgradeBox = {
+                targets = {
+                    GrayWolf = {
+                        ItemID = 100626, NeedRefineMin = 0, NeedRefineMax = 6,
+                        NeedOptionNumMin = 2, NotSocketEnchantItem = true,
+                        NeedSource_String = "Gray Wolf Suit",
+                        TargetItems = { { "Gray Wolf Suit", 450177 } }
+                    },
+                    Open = { ItemID = 100001, NeedRefineMin = 1, TargetItems = { { "Knife", 1201 } } }
+                }
+            }
+        "#;
+        let boxes = super::upgrade_table(upgrade.as_bytes().to_vec()).unwrap();
+        let wolf = &boxes[&100626];
+        assert_eq!((wolf.refine_min, wolf.refine_max, wolf.option_min, wolf.no_cards, wolf.need_text.as_str()), (0, 6, 2, true, "Gray Wolf Suit"));
+        assert_eq!(wolf.targets, [super::UpgradeTarget { name: "Gray Wolf Suit".into(), id: 450177 }]);
+        let open = &boxes[&100001];
+        assert_eq!((open.refine_max, open.no_cards, open.targets[0].id, open.need_text.as_str()), (u32::from(u8::MAX), false, 1201, ""));
+    }
+
+    #[test]
+    fn reads_a_styling_shop_table() {
+        let source = r#"
+            StylingShop = {
+                HeadPalette = { [1] = { goods = 1, payment = { zeny = 100000 }, isDoram = true } },
+                HeadStyle = {
+                    [2] = { goods = 2, payment = { zeny = 100000 }, isColoring = false },
+                    [24] = { goods = 24, payment = { itid = 7622, boxitid = 16843 } }
+                },
+                DoramHeadStyle = { [2] = { goods = 2, payment = { zeny = 100000 }, isColoring = false } },
+                BodyPalette = {
+                    [1] = { goods = 0, payment = { itid = 6047, boxitid = 16855 } },
+                    [2] = { goods = 2, payment = { itid = 6046, boxitid = 16854 } }
+                },
+                DoramBodyPalette = { [1] = { goods = 0, payment = { itid = 6047, boxitid = 16855 } } },
+                TopAccessory = { [1] = { goods = 2220, payment = { zeny = 1000 }, isDoram = true } },
+                MidAccessory = {},
+                BottomAccessory = { [1] = { goods = 2241, payment = { zeny = 5000 } } },
+                BodyStyle = { [1] = { goods = 0, payment = { itid = 6959, boxitid = 6959 } } },
+                CostumeChange = { [1] = { goods = 99, payment = { zeny = 1 } } }
+            }
+        "#;
+        let shop = super::styling_shop(&[source.as_bytes().to_vec()]).unwrap();
+        assert_eq!(shop.head_palette[&1], super::StyleRow { goods: 1, zeny: 100_000, is_doram: Some(true), ..super::StyleRow::default() });
+        assert_eq!(shop.head_style[&2].is_coloring, Some(false));
+        assert_eq!((shop.head_style[&24].item, shop.head_style[&24].box_item), (7622, 16843));
+        assert_eq!(shop.body_palette[&1].goods, 0);
+        assert_eq!((shop.body_palette[&2].item, shop.body_palette[&2].box_item), (6046, 16854));
+        assert_eq!(shop.top_accessory[&1].goods, 2220);
+        assert_eq!(shop.body_style[&1].item, 6959);
+        assert!(shop.mid_accessory.is_empty());
+        // Costume change is not one of the lists this window reads: goods 99 never lands in them.
+        let goods = shop.body_style.values().chain(shop.head_style.values()).map(|row| row.goods);
+        assert!(goods.into_iter().all(|goods| goods != 99));
+    }
+
+    #[test]
+    fn runs_the_styling_shops_functions_then_its_lists() {
+        let framework = r#"
+            StylingShop = {}
+            StylingShop.HeadPalette = {}
+            StylingShop.BodyPalette = {}
+            function StylingShop.AddHeadPalette(goods, payment, isDoram)
+                StylingShop.HeadPalette[#StylingShop.HeadPalette + 1] = { goods = goods, payment = payment, isDoram = isDoram }
+            end
+            function StylingShop.AddBodyPalette(goods, payment)
+                StylingShop.BodyPalette[#StylingShop.BodyPalette + 1] = { goods = goods, payment = payment }
+            end
+        "#;
+        let lists = r#"
+            StylingShop.AddHeadPalette(3, { zeny = 100000 }, true)
+            StylingShop.AddBodyPalette(0, { itid = 6047, boxitid = 16855 })
+        "#;
+        let shop = super::styling_shop(&[framework.as_bytes().to_vec(), lists.as_bytes().to_vec()]).unwrap();
+        assert_eq!(shop.head_palette[&1].goods, 3);
+        assert_eq!((shop.body_palette[&1].goods, shop.body_palette[&1].item, shop.body_palette[&1].box_item), (0, 6047, 16855));
+    }
+
+    #[test]
+    fn reads_reform_names_as_raw_bytes() {
+        // "\196\247" is the bytes C4 F7 (Lua's \ddd escapes are decimal), not UTF-8. One name is stored as id to name.
+        let names = super::item_db_names(
+            br#"
+            ItemDBNameTbl = {
+                ["Box"] = 100, ["Sword"] = 200, ["Shard"] = 300,
+                [400] = "\196\247"
+            }
+            "#
+            .to_vec(),
+        )
+        .unwrap();
+        assert_eq!(names.get(b"Box".as_slice()), Some(&100));
+        assert_eq!(names.get(&vec![0xC4, 0xF7]), Some(&400));
+        let reforms = super::reform_table(
+            br#"
+            ReformItemList = { ["Box"] = { 1 }, ["\196\247"] = { 2 }, ["Missing"] = { 3 } }
+            ReformInfo = {
+                [1] = {
+                    BaseItem = "Sword", ResultItem = "\196\247",
+                    Material = { Shard = 100, Box = 1 },
+                    NeedRefineMin = 9, NeedRefineMax = 20, NeedOptionNumMin = 1,
+                    IsEmptySocket = false, PreserveSocketItem = true, PreserveGrade = true,
+                    ChangeRefineValue = -5, RandomOptionCode = "AD",
+                    InformationString = { "leave this out" }
+                },
+                [2] = {
+                    BaseItem = "Sword", ResultItem = "Box",
+                    NeedRefineMin = 0, NeedRefineMax = 10,
+                    IsEmptySocket = true, PreserveSocketItem = false, PreserveGrade = false
+                }
+            }
+            "#
+            .to_vec(),
+            &names,
+        )
+        .unwrap();
+        let box_entry = &reforms[&100][0];
+        assert_eq!((box_entry.base, box_entry.result, box_entry.materials.as_slice()), (200, 400, &[(100, 1), (300, 100)][..]));
+        assert_eq!((box_entry.refine_min, box_entry.refine_max, box_entry.need_options, box_entry.change_refine), (9, 20, 1, -5));
+        assert_eq!((box_entry.empty_socket, box_entry.preserve_socket, box_entry.preserve_grade, box_entry.random_option.as_str()), (false, true, true, "AD"));
+        let korean = &reforms[&400][0];
+        assert_eq!((korean.base, korean.result, korean.empty_socket, korean.preserve_socket), (200, 100, true, false));
+        assert!(!reforms.contains_key(&0) && reforms.len() == 2);
+    }
+
+    /// Needs the official data.grf, at `RUSTNAROK_CLIENT_GRF` or `./data.grf`.
+    #[test]
+    fn reads_the_world_maps() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let (worlds, colors) = super::worlds(&grf).unwrap();
+        let midgard = &worlds[0];
+        assert_eq!(midgard.image, "worldmap.jpg");
+        let prontera = midgard.fields.iter().find(|field| field.map == "prontera").unwrap();
+        assert_eq!((prontera.rect, prontera.region), ([812.0, 587.0, 870.0, 643.0], 108));
+        assert!(midgard.fields.iter().find(|field| field.map == "moc_pryd01").is_some_and(|field| field.region < 100));
+        assert_eq!(colors, [[85, 85, 255, 102], [149, 15, 15, 70]]);
+    }
+
+    #[test]
+    fn leaves_out_random_options_the_data_doesnt_know() {
+        let lua = super::new_lua().unwrap();
+        lua.load("EnumVAR = { VAR_STRAMOUNT = { 3 }, VAR_MAXSPPERCENT = { 10 } }").exec().unwrap();
+        let table =
+            b"NameTable_VAR = { [EnumVAR.VAR_STRAMOUNT[1]] = 'STR +%d', [EnumVAR.VAR_MAXSPPERCENT[1]] = 'MaxSP +%d%%', [EnumVAR.VAR_NEWER[1]] = 'New +%d' }";
+        let names = super::random_option_names(&lua, table.to_vec()).unwrap();
+        assert_eq!(names, std::collections::HashMap::from([(3, "STR +%d".to_owned()), (10, "MaxSP +%d%%".to_owned())]));
+    }
+
+    #[test]
+    fn reads_an_items_effect_number() {
+        let lua = super::new_lua().unwrap();
+        lua.load("tbl = { [4001] = { EffectID = 1186 }, [4002] = {}, [4003] = { EffectID = -1 } }").exec().unwrap();
+        let items = super::items_in(&lua).unwrap();
+        assert_eq!([4001, 4002, 4003].map(|id| items[&id].effect_id), [Some(1186), None, None]);
+    }
+
+    /// Needs the official data.grf, at `RUSTNAROK_CLIENT_GRF` or `./data.grf`.
+    #[test]
+    fn reads_item_names_and_resources() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let started = std::time::Instant::now();
+        let items = super::item_info(&grf).unwrap();
+        eprintln!("{} items in {:?}", items.len(), started.elapsed());
+        assert!(items.len() > 5_000, "{} items", items.len());
+        let jellopy = &items[&909];
+        assert_eq!((jellopy.name.as_str(), jellopy.resource.as_str()), ("젤로피", "젤로피"));
+        assert_eq!(items[&501].name, "빨간포션");
+        assert_eq!(items[&1201].name, "나이프");
+    }
+
+    #[test]
+    fn finds_a_skills_prerequisites_along_the_line() {
+        let lua = super::new_lua().unwrap();
+        // Heal (28) asks a Crusader (14) for Faith (248) and Demon Bane (23); Moonlit Water Mill (395) asks a Minstrel
+        // (4068) for Musical Lesson (315), and a transcendent Minstrel (4075) counts as one.
+        lua.load(
+            r#"JOB_INHERIT_LIST2 = { [4075] = 4068, [4060] = 4054 }
+            JOB_INHERIT_LIST2.__newindex = function() error("unknown state") end
+            setmetatable(JOB_INHERIT_LIST2, JOB_INHERIT_LIST2)
+            SKILL_INFO_LIST = {
+                [28] = { "AL_HEAL", _NeedSkillList = { { 22, 1 } }, NeedSkillList = { [14] = { { 248, 10 }, { 23, 5 } } } },
+                [395] = { "CG_MOONLIT", NeedSkillList = { [4068] = { { 315, 7 } } } },
+                [3207] = { "NPC_SCALED", SkillScale = { [1] = { x = 3, y = 3 }, [5] = { x = 11, y = 9 } } },
+            }"#,
+        )
+        .exec()
+        .unwrap();
+        let skills = super::skill_infos(&lua).unwrap();
+        let heal = &skills[&28];
+        // A Paladin (4015) gets the Crusader's list, a Priest (8) the usual.
+        assert_eq!(heal.needs_for(&[0, 1, 14, 4015]), [(248, 10), (23, 5)]);
+        assert_eq!(heal.needs_for(&[0, 4, 8]), [(22, 1)]);
+        assert_eq!(skills[&395].needs_for(&[0, 3, 19, 4020, 4075]), [(315, 7)]);
+        assert!(skills[&395].needs_for(&[0, 3, 19, 4020]).is_empty());
+        // The area by level, with the levels the data skips left out.
+        assert_eq!(skills[&3207].scale, std::collections::HashMap::from([(1, [3, 3]), (5, [11, 9])]));
+        assert!(heal.scale.is_empty());
+    }
+
+    #[test]
+    fn reads_every_job_of_the_inherit_lists() {
+        let lua = super::new_lua().unwrap();
+        // As in jobinheritlist: each list is its own metatable, so `__newindex` is one of its keys.
+        lua.load(
+            r#"JOB_INHERIT_LIST = { [1] = 0, [2] = 0, [3] = 0, [4] = 0, [5] = 0, [6] = 0, [7] = 1, [8] = 4, [4001] = 0,
+                [4002] = 1, [4008] = 7, [4009] = 8, [4054] = 7, [4060] = 4008, [4252] = 4060, [4220] = 4218, [4308] = 4218 }
+            JOB_INHERIT_LIST2 = { [4060] = 4054, [4061] = 4055 }
+            for _, list in ipairs({ JOB_INHERIT_LIST, JOB_INHERIT_LIST2 }) do
+                list.__newindex = function() error("unknown state") end
+                setmetatable(list, list)
+            end
+            SKILL_TREEVIEW_FOR_JOB = { [0] = { [0] = 1 }, [1] = { [1] = 5 }, [7] = { [0] = 55 }, [4008] = { [4] = 355 },
+                [4054] = { [1] = 2001 }, [4218] = { [0] = 5018 } }"#,
+        )
+        .exec()
+        .unwrap();
+        let trees = super::skill_trees_from(&lua).unwrap();
+        // A Lord Knight's line runs through Swordman and Knight; a transcendent Rune Knight's through Lord Knight.
+        assert_eq!(trees.lineage(4008), [0, 1, 7, 4008]);
+        assert_eq!(trees.lineage(4252), [0, 1, 7, 4008, 4060, 4252]);
+        // A Doram has no Novice before it.
+        assert_eq!(trees.lineage(4308), [4218, 4308]);
+        // The transcendent Rune Knight shows the Rune Knight's skills.
+        assert_eq!(trees.trees[&4060], [(1, 2001)]);
+        assert!(!trees.trees.contains_key(&4061), "no third job tree to show");
+    }
+
+    #[test]
+    fn reads_skill_tables() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let skills = super::skill_info(&grf).unwrap();
+        let heal = &skills[&28];
+        assert_eq!((heal.resource.as_str(), heal.name.as_str(), heal.max_level), ("AL_HEAL", "힐", 10));
+        // A Paladin's Heal needs the Crusader's Faith (248).
+        assert!(heal.needs_for(&[0, 1, 14, 4015]).contains(&(248, 10)));
+        let trees = super::skill_trees(&grf).unwrap();
+        // Novice: Basic Skill, First Aid and Play Dead down the first column.
+        assert_eq!(trees.trees[&0], [(0, 1), (7, 142), (14, 143)]);
+        assert!(trees.trees[&4].contains(&(2, 28)));
+        // Priest (8) comes from Acolyte (4).
+        assert_eq!(trees.lineage(8), [0, 4, 8]);
+        assert_eq!(trees.lineage(4060), [0, 1, 7, 4008, 4060]);
+        assert_eq!(trees.trees[&4060], trees.trees[&4054]);
+        assert_eq!(trees.lineage(0), [0]);
+        let icons = super::status_icons(&grf).unwrap();
+        assert_eq!(icons[&75].1, "DONTFORGETME.tga");
+        assert_eq!(icons[&12].1, "민첩성증가.tga");
+    }
+
+    #[test]
+    fn reads_job_names() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let names = super::pc_job_names(&grf).unwrap();
+        assert_eq!(names.get(&0).map(String::as_str), Some("Novice"));
+        assert_eq!(names.get(&4008).map(String::as_str), Some("Lord Knight"));
+    }
+
+    #[test]
+    fn reads_look_tables() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let tables = super::look_tables(&grf).unwrap();
+        assert_eq!(tables.headgears.get(&1).map(String::as_str), Some("_고글"));
+        assert_eq!(tables.weapons.get(&1).map(String::as_str), Some("_단검"));
+        assert!(tables.robes.len() > 100 && tables.weapon_types.len() > 10);
+        assert_eq!(tables.weapon_type(1), 1);
+    }
+
+    #[test]
+    fn reads_npc_and_monster_sprite_names() {
+        let Some(grf) = Grf::for_tests() else { return };
+        let names = super::job_names(&grf).unwrap();
+        assert!(names.len() > 1000, "{} names", names.len());
+        // Warp portals and Poring are the classic examples.
+        assert_eq!(names.get(&45).map(String::as_str), Some("1_ETC_01"));
+        assert_eq!(names.get(&1002).map(|name| name.to_lowercase()), Some("poring".into()));
+    }
+
+    #[test]
+    fn reads_an_enchant_table_and_resolves_names_by_their_bytes() {
+        let names = b"ItemDBNameTbl = { Sharp1 = 4818, Sharp2 = 4817, Mysterious = 25669, [\"\\128\\129\"] = 600028 }\n".to_vec();
+        let list = b"
+            function order(self, ...)
+                self.SlotOrder = {}
+                for i = 1, #arg do self.SlotOrder[i] = arg[i] end
+            end
+            local info = {
+                TargetItemTbl = { \"\\128\\129\" },
+                Condition = { MinRefine = 5, MinGrade = 1 },
+                bApproveRandomOpt = false,
+                Reset = { bReset = true, Rate = 100000, Zeny = 500000, MatTbl = {} },
+                Slot = {
+                    [3] = {
+                        RequireTbl = { Zeny = 1000, MatTbl = { Mysterious = 2 } },
+                        SuccessRate = 80000,
+                        GradeBonusTbl = { [0] = 0, [1] = 5000 },
+                        EnchantRateTbl = { [1] = { Sharp1 = 100000 } },
+                        PerfectECTbl = { Sharp1 = { Zeny = 100000, MatTbl = { Mysterious = 20 } } },
+                        UpgradeECTbl = { Sharp1 = { ResultItemDB = \"Sharp2\", Zeny = 200000, MatTbl = { Mysterious = 40 } } },
+                    },
+                },
+            }
+            order(info, 3, 2)
+            Table = { [33] = info }
+        "
+        .to_vec();
+        let tables = super::enchant_tables(&[list], names).unwrap();
+        let table = &tables[&33];
+        assert_eq!(table.targets, [600028]);
+        assert_eq!(table.slot_order, [3, 2]);
+        assert_eq!((table.min_refine, table.min_grade, table.approve_random_opt), (5, 1, false));
+        let reset = table.reset.as_ref().unwrap();
+        assert_eq!((reset.enabled, reset.rate, reset.cost.zeny), (true, 100000, 500000));
+        let slot = table.slots[3].as_ref().unwrap();
+        assert_eq!((slot.cost.zeny, slot.cost.materials.as_slice(), slot.success_rate, slot.bonus(1)), (1000, [(25669, 2)].as_slice(), 80000, 5000));
+        assert_eq!(slot.rate_list(1), [(4818, 100000)]);
+        assert!(slot.rate_list(0).is_empty());
+        assert_eq!(slot.perfect[0].item, 4818);
+        assert_eq!((slot.perfect[0].cost.zeny, slot.perfect[0].cost.materials.as_slice()), (100000, [(25669, 20)].as_slice()));
+        assert_eq!(slot.upgrades[0].1.result, 4817);
+        assert_eq!(slot.upgrades[0].1.cost.materials, [(25669, 40)]);
+    }
+
+    #[test]
+    fn sky_colour_blends_with_fog_and_is_black_when_missing() {
+        let yuno = super::SkyRow { color: Some([0x99, 0xCC, 0xFF]), fog: true };
+        let background = [0x99 as f32 / 255.0, 0xCC as f32 / 255.0, 0xFF as f32 / 255.0];
+        assert_eq!(super::clear_color(Some(yuno), None), background);
+        assert_eq!(super::clear_color(Some(yuno), Some(([255, 255, 255], 255))), [1.0; 3]);
+        let cover = 128.0 / 255.0;
+        let mixed = super::clear_color(Some(yuno), Some(([255, 255, 255], 128)));
+        for (channel, ground) in mixed.into_iter().zip(background) {
+            assert!((channel - (ground * (1.0 - cover) + cover)).abs() < 1e-5, "{mixed:?}");
+        }
+        assert_eq!(super::clear_color(None, Some(([255, 255, 255], 255))), [0.0; 3]);
+        assert_eq!(super::clear_color(Some(super::SkyRow { color: None, fog: true }), Some(([255, 0, 0], 255))), [0.0; 3]);
+    }
+
+    #[test]
+    fn reads_the_sky_functions() {
+        let lua = super::new_lua().unwrap();
+        let source = br#"
+            MapSkyData = {
+                ["yuno.rsw"] = { BG_Color = "0x99CCFF", BG_Fog = 1 },
+                ["gef_fild07.rsw"] = { BG_Fog = 1 },
+            }
+            function IsExistMapSkyData(name)
+                return MapSkyData[name] ~= nil
+            end
+            function GetBackgroundColor(name)
+                local row = MapSkyData[name]
+                if row == nil then return nil end
+                return row.BG_Color
+            end
+            function IsBackGroundFog(name)
+                local row = MapSkyData[name]
+                if row == nil or row.BG_Fog == nil then return 0 end
+                return row.BG_Fog
+            end
+        "#;
+        super::exec_bytes(&lua, "mapskydata", source.to_vec()).unwrap();
+        assert_eq!(super::sky_from_lua(&lua, "yuno.rsw"), Some(super::SkyRow { color: Some([0x99, 0xCC, 0xFF]), fog: true }));
+        assert_eq!(super::sky_from_lua(&lua, "gef_fild07.rsw"), Some(super::SkyRow { color: None, fog: true }));
+        assert_eq!(super::sky_from_lua(&lua, "izlude.rsw"), None);
+        assert_eq!(super::clear_color(super::sky_from_lua(&lua, "izlude.rsw"), None), [0.0; 3]);
+    }
+
+    #[test]
+    fn decodes_words_in_the_data_code_page_and_file_names_in_euc_kr() {
+        // "ยอมรับ" in a Thai client's tables, "고글" (a headgear's sprite name) in any.
+        assert_eq!(super::decode_in(&[0xC2, 0xCD, 0xC1, 0xC3, 0xD1, 0xBA], encoding_rs::WINDOWS_874), "ยอมรับ");
+        assert_eq!(super::decode_in(&[0xB0, 0xED, 0xB1, 0xDB], encoding_rs::EUC_KR), "고글");
+        let lua = super::new_lua().unwrap();
+        assert_eq!(super::decode_name(&lua.create_string([0xB0, 0xED, 0xB1, 0xDB]).unwrap()), "고글");
+        // Korean read as Windows-1252 and saved as UTF-8 comes back.
+        let mangled: String = [0xB0u8, 0xED, 0xB1, 0xDB].iter().map(|&byte| encoding_rs::WINDOWS_1252.decode(&[byte]).0.into_owned()).collect();
+        assert_eq!(super::decode_in(mangled.as_bytes(), encoding_rs::EUC_KR), "고글");
+    }
+
+    #[test]
+    fn loadstring_runs_32_bit_bytecode() {
+        // Source that loadstrings bytecode built for a 32-bit client, as some translations wrap the official files.
+        let lua = super::new_lua().unwrap();
+        let native = lua.load("answer = 42").into_function().unwrap().dump(true);
+        let format = lunify::Format { size_t_width: lunify::BitWidth::Bit32, ..Default::default() };
+        let bytecode = lunify::unify(&native, &format, &lunify::Settings::default()).unwrap();
+        assert_ne!(bytecode, native);
+        let escaped: String = bytecode.iter().map(|byte| format!("\\{byte}")).collect();
+        lua.load(format!("local loaded = loadstring(\"{escaped}\") loaded()")).exec().unwrap();
+        assert_eq!(lua.globals().get::<i64>("answer").unwrap(), 42);
+        // Broken input: nil and the error, as Lua's own loadstring.
+        lua.load("loaded, problem = loadstring(\"answer =\")").exec().unwrap();
+        assert!(lua.globals().get::<Option<mlua::Function>>("loaded").unwrap().is_none());
+        assert!(!lua.globals().get::<String>("problem").unwrap().is_empty());
+    }
+}

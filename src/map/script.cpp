@@ -4845,6 +4845,386 @@ void do_final_script() {
 /*==========================================
  * Initialization
  *------------------------------------------*/
+// MYGENE_GUARDIAN_OF_TIME_V13
+
+static void mygene_time_abort_dialogue(
+    map_session_data* sd
+) {
+    if (!sd)
+        return;
+
+    if (sd->npc_id)
+        clif_scriptclose(*sd,sd->npc_id);
+
+    // Abort suspended scripts without executing
+    // their remaining lesson instructions.
+
+    while (sd->st) {
+
+        auto* st = sd->st;
+
+        script_detach_state(st,false);
+        script_free_state(st);
+    }
+
+#ifdef SECURE_NPCTIMEOUT
+    if (sd->npc_idle_timer != INVALID_TIMER) {
+
+        delete_timer(
+            sd->npc_idle_timer,
+            npc_secure_timeout_timer
+        );
+
+        sd->npc_idle_timer = INVALID_TIMER;
+    }
+#endif
+
+    sd->npc_id = 0;
+    sd->npc_menu = 0;
+    sd->state.menu_or_input = 0;
+    sd->state.disable_atcommand_on_npc = 0;
+}
+
+// =============================================
+// Independent inactivity monitor.
+// Phase 0: Normal training
+// Phase 1: Guardian response window
+// Phase 2: Farewell and forced safe exit
+// =============================================
+
+// MYGENE_GUARDIAN_POLISH_V135
+
+static void mygene_time_vanish(map_session_data* sd)
+{
+    if (!sd)
+        return;
+
+    const int32 gid = static_cast<int32>(
+        pc_readreg2(sd,"@MYGENE_NT_TIME_GID")
+    );
+
+    pc_setreg2(sd,"@MYGENE_NT_TIME_GID",0);
+
+    if (gid <= 0 || sd->m < 0)
+        return;
+
+    if (!map_getmapdata(sd->m)->instance_id)
+        return;
+
+    if (map_getmapdata(sd->m)->instance_id !=
+        pc_readreg2(sd,"@MYGENE_NT_TIME_INSTANCE"))
+        return;
+
+    auto* md = map_id2md(gid);
+
+    if (!md ||
+        md->m != sd->m ||
+        strcmp(
+            md->npc_event,
+            "MYgene_NT_TimeGuardian::OnRemoved"
+        ) != 0)
+        return;
+
+    unit_free(md,CLR_OUTSIGHT);
+
+    ShowInfo(
+        "[GUARDIAN V135] Peaceful departure. CID=%d\n",
+        sd->status.char_id
+    );
+}
+
+static TIMER_FUNC(mygene_guardian_time_timer)
+{
+    const int64 now =
+        static_cast<int64>(time(nullptr));
+
+    auto* iter = mapit_getallusers();
+
+    for (auto* sd =
+            static_cast<map_session_data*>(
+                mapit_first(iter)
+            );
+        mapit_exists(iter);
+        sd = static_cast<map_session_data*>(
+            mapit_next(iter)
+        )) {
+
+        if (!sd ||
+            !sd->state.pc_loaded ||
+            !sd->prev ||
+            sd->m < 0)
+            continue;
+
+        const auto instance = pc_readreg2(
+            sd,"@MYGENE_NT_TIME_INSTANCE"
+        );
+
+        if (pc_get_group_id(sd) == 99 &&
+            pc_readreg2(sd,"@MYGENE_NT_TIME_TEST") != 0 &&
+            map_getmapdata(sd->m)->instance_id > 0 &&
+            now % 5 == 0) {
+
+            ShowInfo(
+                "[GOT V135] CID=%d Registered=%lld Actual=%d Route=%lld Cleared=%lld RawIdle=%lld Wisdom=%lld Dialogue=%d\n",
+                sd->status.char_id,
+                static_cast<long long>(instance),
+                map_getmapdata(sd->m)->instance_id,
+                static_cast<long long>(
+                    pc_readreg2(
+                        sd,"MYGENE_NT_DEV_ROUTE"
+                    )
+                ),
+                static_cast<long long>(
+                    pc_readreg2(
+                        sd,"MYGENE_NT_DEV_CLEARED"
+                    )
+                ),
+                static_cast<long long>(
+                    DIFF_TICK(last_tick,sd->idletime)
+                ),
+                static_cast<long long>(
+                    pc_readreg2(
+                        sd,"@MYGENE_NT_WD_DEMO_ACTIVE"
+                    )
+                ),
+                sd->st ? 1 : 0
+            );
+        }
+
+        if (instance <= 0)
+            continue;
+
+        if (map_getmapdata(sd->m)->instance_id != instance ||
+            sd->status.class_ != JOB_NOVICE ||
+            pc_readreg2(
+                sd,"MYGENE_NT_DEV_ROUTE"
+            ) != 2 ||
+            pc_readreg2(
+                sd,"MYGENE_NT_DEV_CLEARED"
+            ) >= 5) {
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_INSTANCE",0
+            );
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_PHASE",0
+            );
+
+            continue;
+        }
+
+        const auto phase = pc_readreg2(
+            sd,"@MYGENE_NT_TIME_PHASE"
+        );
+
+        const auto deadline = pc_readreg2(
+            sd,"@MYGENE_NT_TIME_DEADLINE"
+        );
+
+        // No response to the Guardian.
+
+        if (phase == 1) {
+
+            if (now >= deadline) {
+
+                mygene_time_abort_dialogue(sd);
+
+                pc_setreg2(
+                    sd,"@MYGENE_NT_TIME_PHASE",2
+                );
+
+                pc_setreg2(
+                    sd,"@MYGENE_NT_TIME_DEADLINE",
+                    now + 10
+                );
+
+                npc_event(
+                    sd,
+                    "MYgene_NT_TimeGuardian::OnFarewell",
+                    0
+                );
+
+                ShowInfo(
+                    "[GUARDIAN OF TIME] Response expired. CID=%d\n",
+                    sd->status.char_id
+                );
+            }
+
+            continue;
+        }
+
+        // Independent forced exit.
+        // Does not require the player to press Close.
+
+        if (phase == 2) {
+
+            if (now >= deadline) {
+
+                mygene_time_abort_dialogue(sd);
+
+                mygene_time_vanish(sd);
+
+                if (pc_isdead(sd))
+                    status_revive(sd,100,100);
+
+                if (pc_setpos(
+                        sd,
+                        mapindex_name2id("prontera"),
+                        158,176,
+                        CLR_TELEPORT
+                    ) == SETPOS_OK) {
+
+                    pc_setreg2(
+                        sd,"@MYGENE_NT_TIME_INSTANCE",0
+                    );
+
+                    pc_setreg2(
+                        sd,"@MYGENE_NT_TIME_PHASE",0
+                    );
+
+                    clif_displaymessage(
+                        sd->fd,
+                        "[Guardian of Time] Your progress is safe."
+                    );
+
+                    ShowInfo(
+                        "[GUARDIAN OF TIME] Safe exit. CID=%d\n",
+                        sd->status.char_id
+                    );
+                }
+            }
+
+            continue;
+        }
+
+        // Observation is intentional during
+        // automatic Wisdom demonstrations.
+
+        if (pc_readreg2(
+                sd,"@MYGENE_NT_WD_DEMO_ACTIVE"
+            )) {
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_ENTRY",now
+            );
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_WARNED",0
+            );
+
+            continue;
+        }
+
+        // MYGENE_GUARDIAN_CLOCK_V133
+
+        int64 idle = std::max<int64>(
+            0,
+            DIFF_TICK(last_tick,sd->idletime)
+        );
+
+#ifdef SECURE_NPCTIMEOUT
+        if (sd->st) {
+
+            const int64 npc_idle =
+                DIFF_TICK(
+                    gettick(),sd->npc_idle_tick
+                ) / 1000;
+
+            if (npc_idle < idle)
+                idle = npc_idle;
+        }
+#endif
+
+        const int64 elapsed =
+            now - pc_readreg2(
+                sd,"@MYGENE_NT_TIME_ENTRY"
+            );
+
+        if (elapsed < idle)
+            idle = elapsed;
+
+        // Production timings in seconds.
+
+        // MYGENE_GUARDIAN_DIAGNOSTIC_V132
+
+        const bool gm_test =
+            pc_get_group_id(sd) == 99 &&
+            pc_readreg2(sd,"@MYGENE_NT_TIME_TEST") != 0;
+
+        const int64 warning_seconds =
+            gm_test ? 10 : 300;
+
+        const int64 guardian_seconds =
+            gm_test ? 20 : 600;
+
+        const int64 response_seconds =
+            gm_test ? 15 : 60;
+
+        if (gm_test && now % 5 == 0) {
+
+            ShowInfo(
+                "[GOT V135] Effective idle=%lld Threshold=%lld Phase=%lld\n",
+                static_cast<long long>(idle),
+                static_cast<long long>(guardian_seconds),
+                static_cast<long long>(phase)
+            );
+        }
+
+        if (idle < warning_seconds) {
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_WARNED",0
+            );
+
+            continue;
+        }
+
+        if (!pc_readreg2(
+                sd,"@MYGENE_NT_TIME_WARNED"
+            )) {
+
+            pc_setreg2(
+                sd,"@MYGENE_NT_TIME_WARNED",1
+            );
+
+            clif_displaymessage(
+                sd->fd,
+                "[Guardian of Time] Adventurer, are you still with us?"
+            );
+        }
+
+        if (idle < guardian_seconds)
+            continue;
+
+        mygene_time_abort_dialogue(sd);
+
+        pc_setreg2(
+            sd,"@MYGENE_NT_TIME_PHASE",1
+        );
+
+        pc_setreg2(
+            sd,"@MYGENE_NT_TIME_DEADLINE",
+            now + response_seconds
+        );
+
+        npc_event(
+            sd,
+            "MYgene_NT_TimeGuardian::OnOffer",
+            0
+        );
+
+        ShowInfo(
+            "[GUARDIAN OF TIME] Appeared. CID=%d\n",
+            sd->status.char_id
+        );
+    }
+
+    mapit_free(iter);
+
+    return 0;
+}
+
 void do_init_script(void) {
 	st_db = idb_alloc(DB_OPT_BASE);
 	userfunc_db = strdb_alloc(DB_OPT_DUP_KEY,0);
@@ -4856,6 +5236,21 @@ void do_init_script(void) {
 	array_ers = ers_new(sizeof(struct script_array), "script.cpp:array_ers", ERS_CLEAN_OPTIONS);
 
 	add_timer_func_list( run_script_timer, "run_script_timer" );
+
+    add_timer_func_list(
+        mygene_guardian_time_timer,
+        "mygene_guardian_time_timer"
+    );
+
+    ShowInfo(
+        "[GOT V135] Guardian diagnostic monitor initialized.\n"
+    );
+
+    add_timer_interval(
+        gettick()+1000,
+        mygene_guardian_time_timer,
+        0,0,1000
+    );
 
 	ers_chunk_size(st_ers, 10);
 	ers_chunk_size(stack_ers, 10);
@@ -7919,6 +8314,198 @@ BUILDIN_FUNC(getitem2)
  * rentitem <item id>,<seconds>{,<account_id>}
  * rentitem "<item name>",<seconds>{,<account_id>}
  */
+// MYGENE_AWAKENING_V1071
+// MYGENE_EXCLUSIVE_LOOT_V1011
+BUILDIN_FUNC(mygeneexclusivegive)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    const t_itemid id = script_getnum(st, 2);
+
+    switch (id) {
+        case 31001: case 31002:
+        case 31006: case 31007:
+        case 60010: case 60011:
+        case 60013: case 60014:
+        case 60016: case 60017:
+        case 60019: case 60020:
+        case 715: case 716: case 717:
+        case 969: case 31003:
+            break;
+
+        default:
+            script_pushint(st, 0);
+            return SCRIPT_CMD_SUCCESS;
+    }
+
+    if (!item_db.exists(id)) {
+        script_pushint(st, 0);
+        return SCRIPT_CMD_SUCCESS;
+    }
+
+    struct item reward = {};
+    reward.nameid = id;
+    reward.identify = 1;
+
+    const auto result =
+        pc_additem(
+            sd, &reward, 1,
+            LOG_TYPE_PICKDROP_PLAYER
+        );
+
+    script_pushint(
+        st,
+        result == ADDITEM_SUCCESS ? 1 : 0
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+// MYGENE_TOWER_NATIVE_V451
+// MYGENE_SURVIVAL_V2
+// MYGENE_WISDOM_UI_V2
+// MYGENE_CONQUEST_SCRIPT_V3
+
+BUILDIN_FUNC(mygenecqspawn)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    script_pushint(
+        st,
+        mygene_cq_spawn(
+            sd,
+            script_getnum(st,2),
+            script_getnum(st,3)
+        )
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygenecqremove)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    auto* md = map_id2md(script_getnum(st,2));
+
+    if (md &&
+        md->mygene_cq_role &&
+        md->master_id == sd->id) {
+
+        unit_free(md,CLR_OUTSIGHT);
+    }
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygenetowerskills)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    clif_specialeffect_value(
+        sd, 62095, 1, SELF
+    );
+
+    ShowInfo(
+        "[WISDOM UI] Skill signal sent. CID=%u\n",
+        static_cast<unsigned int>(
+            sd->status.char_id
+        )
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygenetowerinventory)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    clif_specialeffect_value(
+        sd, 62094, 1, SELF
+    );
+
+    ShowInfo(
+        "[SURVIVAL UI] Inventory signal sent. CID=%u\n",
+        static_cast<unsigned int>(
+            sd->status.char_id
+        )
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygenetimevanish)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    mygene_time_vanish(sd);
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygenetowerstatus)
+{
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    // Send only to the attached player.
+    clif_specialeffect_value(
+        sd, 62093, 1, SELF
+    );
+
+    ShowInfo(
+        "[TOWER UI V451] Status signal sent. CID=%u\n",
+        static_cast<unsigned int>(
+            sd->status.char_id
+        )
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
+BUILDIN_FUNC(mygeneawakeningtest) {
+    map_session_data* sd;
+
+    if (!script_rid2sd(sd))
+        return SCRIPT_CMD_FAILURE;
+
+    const int32 mode = script_getnum(st, 2);
+
+    if (mode != 0 && mode != 1) {
+        script_pushint(st, 0);
+        return SCRIPT_CMD_SUCCESS;
+    }
+
+    script_pushint(
+        st,
+        pc_mygene_awakening_test(
+            sd, mode == 1
+        ) ? 1 : 0
+    );
+
+    return SCRIPT_CMD_SUCCESS;
+}
+
 BUILDIN_FUNC(rentitem) {
 	map_session_data *sd;
 	t_itemid nameid = 0;
@@ -14154,6 +14741,25 @@ BUILDIN_FUNC(successremovecards) {
 	if( !script_rid2sd(sd) )
 		return SCRIPT_CMD_SUCCESS;
 
+	for (int32 slot = 0;
+         slot < MAX_INVENTORY;
+         ++slot) {
+
+        const auto& relic =
+            sd->inventory.u.items_inventory[slot];
+
+        if (relic.equip != 0 &&
+            pc_mygene_is_awakened(&relic)) {
+
+            clif_displaymessage(
+                sd->fd,
+                "Card removal blocked while an awakened Slayer is equipped."
+            );
+
+            return SCRIPT_CMD_FAILURE;
+        }
+    }
+
 	num = script_getnum(st,2);
 
 	if (equip_index_check(num))
@@ -14237,6 +14843,25 @@ BUILDIN_FUNC(failedremovecards) {
 
 	if( !script_rid2sd(sd) )
 		return SCRIPT_CMD_SUCCESS;
+
+	for (int32 slot = 0;
+         slot < MAX_INVENTORY;
+         ++slot) {
+
+        const auto& relic =
+            sd->inventory.u.items_inventory[slot];
+
+        if (relic.equip != 0 &&
+            pc_mygene_is_awakened(&relic)) {
+
+            clif_displaymessage(
+                sd->fd,
+                "Card removal blocked while an awakened Slayer is equipped."
+            );
+
+            return SCRIPT_CMD_FAILURE;
+        }
+    }
 
 	num = script_getnum(st,2);
 	typefail = script_getnum(st,3);
@@ -25939,7 +26564,22 @@ BUILDIN_FUNC(achievementcomplete) {
 	ARR_FIND(0, sd->achievement_data.count, i, sd->achievement_data.achievements[i].achievement_id == achievement_id);
 	if (i == sd->achievement_data.count)
 		achievement_add(sd, achievement_id);
-	achievement_update_achievement(sd, achievement_id, true);
+	if (achievement_id == 900002) {
+
+        if (pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1) {
+            script_pushint(st, false);
+            return SCRIPT_CMD_SUCCESS;
+        }
+
+        mygene_spacebox_sync_achievement(sd);
+
+        achievement_get_titles(sd->status.char_id);
+        clif_achievement_list_all(sd);
+        intif_achievement_save(sd);
+
+    } else {
+        achievement_update_achievement(sd, achievement_id, true);
+    }
 	script_pushint(st, true);
 	return SCRIPT_CMD_SUCCESS;
 }
@@ -27963,7 +28603,15 @@ struct script_function buildin_func[] = {
 	BUILDIN_DEF(inarray,"rv"),
 	BUILDIN_DEF(countinarray,"rr"),
 	BUILDIN_DEF(getitem,"vi?"),
-	BUILDIN_DEF(rentitem,"vi?"),
+	BUILDIN_DEF(mygeneawakeningtest,"i"),
+	BUILDIN_DEF(mygenetimevanish,""),
+    BUILDIN_DEF(mygenetowerstatus,""),
+	BUILDIN_DEF(mygenetowerinventory,""),
+	BUILDIN_DEF(mygenetowerskills,""),
+	BUILDIN_DEF(mygenecqspawn,"ii"),
+	BUILDIN_DEF(mygenecqremove,"i"),
+	BUILDIN_DEF(mygeneexclusivegive,"i"),
+    BUILDIN_DEF(rentitem,"vi?"),
 	BUILDIN_DEF(rentitem2,"viiiiiiii?"),
 	BUILDIN_DEF(getitem2,"viiiiiiii?"),
 	BUILDIN_DEF(getnameditem,"vv"),

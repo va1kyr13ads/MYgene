@@ -67,6 +67,8 @@ enum e_title_table : uint16 {
 	TITLE_NONE = 0,
 	TITLE_BASE = 1000,
 	TITLE_MAX = 1046,
+	MYGENE_TITLE_BASE = 2000,
+	MYGENE_TITLE_MAX = 2099,
 };
 
 struct achievement_target {
@@ -144,6 +146,7 @@ int32 achievement_check_progress( const map_session_data* sd, int32 achievement_
 int32 *achievement_level(map_session_data *sd, bool flag);
 bool achievement_check_condition(struct script_code* condition, map_session_data* sd);
 void achievement_get_titles(uint32 char_id);
+void mygene_spacebox_sync_achievement(map_session_data* sd);
 void achievement_update_objective(map_session_data *sd, enum e_achievement_group group, uint8 arg_count, ...);
 int32 achievement_update_objective_sub(block_list *bl, va_list ap);
 void achievement_read_db(void);

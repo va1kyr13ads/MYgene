@@ -83,6 +83,44 @@ prt_church,184,41,4	script	Cleric#aco	60,{
 	next;
 	switch(select("Father, I want to be a Acolyte.:Acolyte Requirements.:Just looking around.")) {
 	case 1:
+    // MYgene: Vanilla First Job Fast Advancement
+    if (Class == Job_Novice && Upper == 0 &&
+        BaseLevel >= 20 && JobLevel >= 10 &&
+        getskilllv("NV_BASIC") >= 9 &&
+        (MYGENE_NT_ROUTE == 0 || MYGENE_NT_ROUTE == 1) &&
+        MYGENE_NT_DEV_ROUTE != 2 &&
+        MYGENE_NT_INSTANCE == 0) {
+
+        mes "[First Job Advancement]";
+        mes "Your training is complete.";
+        mes "You qualify to become a Acolyte";
+        mes "without taking the job change test.";
+        next;
+
+        if (select("Become a Acolyte:Cancel") != 1)
+            close;
+
+        skill "NV_TRICKDEAD",0,SKILL_PERM;
+        callfunc "Job_Change",Job_Acolyte;
+
+        if (Class != Job_Acolyte) {
+            mes "Job change failed.";
+            close;
+        }
+
+        callfunc "F_ClearJobVar";
+
+        for (.@q = 1001; .@q <= 1014; .@q++) {
+            if (isbegin_quest(.@q) == 1)
+                erasequest .@q;
+        }
+
+        mes "[First Job Advancement]";
+        mes "Congratulations!";
+        mes "You are now a Acolyte.";
+        close;
+    }
+
 		mes "[Father Mareusis]";
 		if (BaseJob == Job_Acolyte) {
 			mes "Are you feeling okay today? I can tell by your attire that you are already an Acolyte. You're not joking around, are you?";

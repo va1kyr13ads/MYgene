@@ -1,0 +1,46 @@
+// MYgene Fabre-family event diagnostic for development GMs only.
+// Read-only: never changes the encounter counter, spawned mobs or drops.
+// Commands: @mygene_fabrecount (current map), @mygene_fabreall (tracked maps).
+// Load after MYgene_Yellow_Fabre from npc/custom/mygene/yellow_fabre.txt.
+-	script	MYgene_Fabre_Counter_Test	-1,{
+OnInit:
+    bindatcmd "mygene_fabrecount",strnpcinfo(3)+"::OnCount",99,99;
+    bindatcmd "mygene_fabreall",strnpcinfo(3)+"::OnAll",99,99;
+    end;
+
+OnCount:
+    if (getgroupid() != 99)
+        end;
+    .@here$ = strcharinfo(3);
+    .@total = getvariableofnpc(.MapCount,"MYgene_Yellow_Fabre");
+    .@found = 0;
+    for (.@i = 0; .@i < .@total; .@i++) {
+        .@map$ = getvariableofnpc(.MapName$[.@i],"MYgene_Yellow_Fabre");
+        if (.@map$ != .@here$)
+            continue;
+        .@found = 1;
+        .@kills = getvariableofnpc(.KillCount[.@i],"MYgene_Yellow_Fabre");
+        .@active = getvariableofnpc(.YellowActive[.@i],"MYgene_Yellow_Fabre");
+        dispbottom "[Fabre Test] "+.@map$+": "+.@kills+"/30, Yellow Fabre active: "+(.@active ? "Yes" : "No");
+        break;
+    }
+    if (!.@found) {
+        dispbottom "[Fabre Test] "+.@here$+": 0/30, Yellow Fabre active: No";
+        if (.@total == 0)
+            dispbottom "[Fabre Test] No maps tracked; confirm the new per-map event is loaded.";
+    }
+    end;
+
+OnAll:
+    if (getgroupid() != 99)
+        end;
+    .@total = getvariableofnpc(.MapCount,"MYgene_Yellow_Fabre");
+    dispbottom "[Fabre Test] Tracked maps: "+.@total;
+    for (.@i = 0; .@i < .@total; .@i++) {
+        .@map$ = getvariableofnpc(.MapName$[.@i],"MYgene_Yellow_Fabre");
+        .@kills = getvariableofnpc(.KillCount[.@i],"MYgene_Yellow_Fabre");
+        .@active = getvariableofnpc(.YellowActive[.@i],"MYgene_Yellow_Fabre");
+        dispbottom "[Fabre Test] "+.@map$+": "+.@kills+"/30, Yellow Fabre active: "+(.@active ? "Yes" : "No");
+    }
+    end;
+}

@@ -1034,6 +1034,82 @@ ACMD_FUNC(speed)
 /*==========================================
  *
  *------------------------------------------*/
+ACMD_FUNC(spacebox)
+{
+    nullpo_retr(-1, sd);
+
+    if (pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1) {
+        clif_displaymessage(fd, "[Space Box] Feature locked.");
+        clif_displaymessage(fd, "You have not unlocked dimensional storage.");
+        return 0;
+    }
+
+    if (message && !strcmpi(message, "off")) {
+        sd->mygene_spacebox_loot = false;
+        clif_displaymessage(fd, "Loot destination: Inventory.");
+        return 0;
+    }
+
+    if (message && !strcmpi(message, "info")) {
+        clif_displaymessage(fd, sd->mygene_spacebox_loot ?
+            "Loot destination: Space Box (when available)." :
+            "Loot destination: Inventory.");
+
+        if (sd->premiumStorage.stor_id == 90) {
+            char output[128];
+            snprintf(output, sizeof(output), "Space Box: %u/%u slots. Unlimited weight.",
+                (unsigned)sd->premiumStorage.amount,
+                (unsigned)sd->premiumStorage.max_amount);
+            clif_displaymessage(fd, output);
+        }
+
+        return 0;
+    }
+
+    bool enable = message && !strcmpi(message, "on");
+
+    if (message && *message && !enable) {
+        clif_displaymessage(fd, "Usage: @spacebox [on/off/info]");
+        return 0;
+    }
+
+    if (sd->mygene_spacebox_pending) {
+        clif_displaymessage(fd, "Space Box is loading.");
+        return 0;
+    }
+
+    if (!storage_exists(90)) {
+        clif_displaymessage(fd, "Space Box is unavailable.");
+        return 0;
+    }
+
+    if (enable && sd->premiumStorage.stor_id == 90 &&
+        sd->premiumStorage.id == sd->status.account_id) {
+        sd->mygene_spacebox_loot = true;
+        clif_displaymessage(fd, "Loot destination: Space Box.");
+        return 0;
+    }
+
+    if (sd->npc_id || sd->state.storage_flag ||
+        sd->state.trading || sd->state.vending ||
+        sd->state.buyingstore || sd->state.autotrade)
+        return -1;
+
+    bool loading = sd->premiumStorage.stor_id != 90;
+
+    if (!storage_premiumStorage_load(sd, 90, STOR_MODE_ALL))
+        return -1;
+
+    sd->mygene_spacebox_pending = loading;
+
+    if (enable) {
+        sd->mygene_spacebox_loot = true;
+        clif_displaymessage(fd, "Space Box selected. Close storage before farming.");
+    }
+
+    return 0;
+}
+
 ACMD_FUNC(storage)
 {
 	nullpo_retr(-1, sd);
@@ -3048,7 +3124,7 @@ ACMD_FUNC(stat_all)
 				max_status[i] = pc_maxparameter(sd, static_cast<e_params>(i));
 		}
 	}
-	
+
 	count = 0;
 	for (i = PARAM_STR; i < PARAM_POW; i++) {
 		int16 new_value;
@@ -3226,7 +3302,7 @@ ACMD_FUNC(makeegg) {
 
 		// for egg name
 		std::shared_ptr<item_data> item_data = item_db.searchname( message );
-		
+
 		if( item_data != nullptr ){
 			nameid = item_data->nameid;
 		}else{
@@ -3246,10 +3322,10 @@ ACMD_FUNC(makeegg) {
 				res = -2; //char server down
 			}
 		}
-	} 
-	
+	}
+
 	switch(res){
-		case -1:		
+		case -1:
 			clif_displaymessage(fd, msg_txt(sd,180)); // The monster/egg name/id doesn't exist.
 			break;
 		case -2:
@@ -3474,7 +3550,7 @@ ACMD_FUNC(ban)
 		clif_displaymessage(fd, msg_txt(sd,702)); // Time parameter format is +/-<value> to alter. y/a = Year, m = Month, d/j = Day, h = Hour, n/mn = Minute, s = Second.
 		return -1;
 	}
-	
+
 	if( timediff < 0 ){
 		clif_displaymessage(fd,msg_txt(sd,1023)); // You are not allowed to alter the time of a ban.
 		return -1;
@@ -3519,7 +3595,7 @@ ACMD_FUNC(char_ban)
 		clif_displaymessage(fd, msg_txt(sd,702)); // Time parameter format is +/-<value> to alter. y/a = Year, m = Month, d/j = Day, h = Hour, n/mn = Minute, s = Second.
 		return -1;
 	}
-	
+
 	if( timediff < 0 ){
 		clif_displaymessage(fd,msg_txt(sd,1023)); // You are not allowed to alter the time of a ban.
 		return -1;
@@ -5631,7 +5707,7 @@ ACMD_FUNC(jailfor) {
 	nullpo_retr(-1, sd);
 
 	memset(atcmd_output, '\0', sizeof(atcmd_output));
-	
+
 	if (!message || !*message || sscanf(message, "%255s %23[^\n]",atcmd_output,atcmd_player_name) < 2) {
 		clif_displaymessage(fd, msg_txt(sd,400));	//Usage: @jailfor <time> <character name>
 		return -1;
@@ -6132,7 +6208,7 @@ ACMD_FUNC(npcmove)
 		return -1;
 	}
 
-	if ( npc_movenpc( nd, x, y ) ) 
+	if ( npc_movenpc( nd, x, y ) )
 	{ //actually failed to move
 		clif_displaymessage(fd, msg_txt(sd,1154)); // NPC is not on this map.
 		return -1;	//Not on a map.
@@ -6226,7 +6302,7 @@ ACMD_FUNC(dropall)
 	uint16 i, count = 0, count2 = 0;
 
 	nullpo_retr(-1, sd);
-	
+
 	if( message[0] ) {
 		type = atoi(message);
 		if( type != -1 && type != IT_HEALING && type != IT_USABLE && type != IT_ETC && type != IT_WEAPON &&
@@ -6266,7 +6342,7 @@ ACMD_FUNC(dropall)
 		}
 	}
 	sprintf(atcmd_output, msg_txt(sd,1494), count,count2); // %d items are dropped (%d skipped)!
-	clif_displaymessage(fd, atcmd_output); 
+	clif_displaymessage(fd, atcmd_output);
 	return 0;
 }
 
@@ -6277,7 +6353,7 @@ ACMD_FUNC(dropall)
 ACMD_FUNC(stockall)
 {
 	nullpo_retr(-1, sd);
-	
+
 	if (!pc_iscarton(sd)) {
 		clif_displaymessage(fd, msg_txt(sd,1533)); // You do not have a cart.
 		return -1;
@@ -6326,7 +6402,7 @@ ACMD_FUNC(stockall)
 		}
 	}
 	sprintf(atcmd_output, msg_txt(sd,1535), count,count2); // %d items are transferred (%d skipped)!
-	clif_displaymessage(fd, atcmd_output); 
+	clif_displaymessage(fd, atcmd_output);
 	return 0;
 }
 
@@ -7860,7 +7936,7 @@ ACMD_FUNC(uptime)
 }
 
 /*==========================================
- * @changesex 
+ * @changesex
  * => Changes one's account sex. Switch from male to female or visversa
  *------------------------------------------*/
 ACMD_FUNC(changesex)
@@ -8150,7 +8226,10 @@ ACMD_FUNC(mobinfo)
 		clif_displaymessage(fd, atcmd_output);
 #endif
 		// drops
-		clif_displaymessage(fd, msg_txt(sd,1245)); //  Drops:
+		if( mob->id == 31050 || mob->id == 31051 )
+			clif_displaymessage(fd, "Normal Drops (monster database):");
+		else
+			clif_displaymessage(fd, msg_txt(sd,1245)); // Drops:
 		strcpy(atcmd_output, " ");
 
 		if( mob->dropitem.empty() ){
@@ -8187,6 +8266,57 @@ ACMD_FUNC(mobinfo)
 				clif_displaymessage(fd, atcmd_output);
 			}
 		}
+
+		// MYgene custom monsters: exact scripted reward display.
+        if (mob->id >= 31050 && mob->id <= 31055) {
+            clif_displaymessage(fd, "MYgene Special Drops (scripted; exact rates):");
+
+            auto show_special_drop = [&](t_itemid item_id, const char* rate) {
+                std::shared_ptr<item_data> item = item_db.find(item_id);
+                if (item != nullptr) {
+                    snprintf(atcmd_output2, sizeof(atcmd_output2),
+                        " - %s : %s",
+                        item_db.create_item_link(item).c_str(), rate);
+                    clif_displaymessage(fd, atcmd_output2);
+                }
+            };
+
+            switch (mob->id) {
+                case 31050:
+                    show_special_drop(31001, "0.05%");
+                    show_special_drop(31002, "0.01%");
+                    break;
+                case 31051:
+                    show_special_drop(31006, "0.05%");
+                    show_special_drop(31007, "0.01%");
+                    break;
+                case 31052:
+                    show_special_drop(60010, "0.05%");
+                    show_special_drop(60011, "0.01%");
+                    break;
+                case 31053:
+                    show_special_drop(60013, "0.05%");
+                    show_special_drop(60014, "0.01%");
+                    break;
+                case 31054:
+                    show_special_drop(60016, "0.05%");
+                    show_special_drop(60017, "0.01%");
+                    break;
+                case 31055:
+                    show_special_drop(60019, "0.05%");
+                    show_special_drop(60020, "0.01%");
+                    break;
+            }
+
+            clif_displaymessage(fd,
+                " - Random Gemstone (Red/Blue/Yellow): 70.00%");
+            clif_displaymessage(fd,
+                "   One color chosen equally (23.33% each)");
+
+            show_special_drop(969, "11.00%");
+            show_special_drop(31003, "0.50%");
+        }
+
 
 		// mvp
 		if( mob->get_bosstype() == BOSSTYPE_MVP ){
@@ -8754,7 +8884,7 @@ ACMD_FUNC(whereis)
 		clif_displaymessage(fd, msg_txt(sd,1288)); // Please enter a monster name/ID (usage: @whereis <monster_name_or_monster_ID>).
 		return -1;
 	}
-	
+
 	int32 i_message = atoi(message);
 	if (mobdb_checkid(i_message)) {
 		// ID given
@@ -8764,7 +8894,7 @@ ACMD_FUNC(whereis)
 		// Name given, get all monster associated whith this name
 		count = mobdb_searchname_array(message, mob_ids, MAX_SEARCH);
 	}
-	
+
 	if (count <= 0) {
 		clif_displaymessage(fd, msg_txt(sd,40)); // Invalid monster ID or name.
 		return -1;
@@ -8783,7 +8913,7 @@ ACMD_FUNC(whereis)
 		if(!mob) continue;
 		snprintf(atcmd_output, sizeof atcmd_output, msg_txt(sd,1289), mob->jname.c_str()); // %s spawns in:
 		clif_displaymessage(fd, atcmd_output);
-		
+
 		const std::vector<spawn_info> spawns = mob_get_spawns(mob_id);
 		if (spawns.size() <= 0) {
 			 // This monster does not spawn normally.
@@ -10102,7 +10232,7 @@ static void atcommand_commands_sub(map_session_data* sd, const int32 fd, AtComma
 		if ( count_bind )
 			clif_displaymessage(fd,line_buff);// last one
 		count += count_bind;
-		
+
 	}
 
 	sprintf(atcmd_output, msg_txt(sd,274), count); // "%d commands found."
@@ -10157,7 +10287,7 @@ ACMD_FUNC(accinfo) {
 
 /**
  * @set <variable name{[index]}>{ <value>}
- * 
+ *
  * Gets or sets a value of a non server variable.
  * If a value is specified it is used to set the variable's value,
  * if not the variable's value is read.
@@ -10651,11 +10781,11 @@ ACMD_FUNC(vip) {
 	char * modif_p;
 	int32 vipdifftime = 0;
 	time_t now=time(nullptr);
-	
+
 	nullpo_retr(-1, sd);
 
 	memset(atcmd_output, '\0', sizeof(atcmd_output));
-	
+
 	if (!message || !*message || sscanf(message, "%255s %23[^\n]",atcmd_output,atcmd_player_name) < 2) {
 		clif_displaymessage(fd, msg_txt(sd,700));	//Usage: @vip <timef> <character name>
 		return -1;
@@ -10688,7 +10818,7 @@ ACMD_FUNC(vip) {
 
 	if(pl_sd->vip.time==0) pl_sd->vip.time=now;
 	pl_sd->vip.time += vipdifftime; //increase or reduce VIP duration
-	
+
 	if (pl_sd->vip.time <= now) {
 		clif_displaymessage(pl_sd->fd, msg_txt(pl_sd,703)); // GM has removed your VIP time.
 
@@ -10699,7 +10829,7 @@ ACMD_FUNC(vip) {
 	} else {
 		int32 year,month,day,hour,minute,second;
 		char timestr[21];
-		
+
 		split_time((int32)(pl_sd->vip.time-now),&year,&month,&day,&hour,&minute,&second);
 		sprintf(atcmd_output,msg_txt(pl_sd,705),year,month,day,hour,minute,second); // Your VIP status is valid for %d years, %d months, %d days, %d hours, %d minutes and %d seconds.
 		clif_displaymessage(pl_sd->fd,atcmd_output);
@@ -10714,7 +10844,7 @@ ACMD_FUNC(vip) {
 			clif_displaymessage(fd,atcmd_output);
 		}
 	}
-	chrif_req_login_operation(pl_sd->status.account_id, pl_sd->status.name, CHRIF_OP_LOGIN_VIP, vipdifftime, 7, 0); 
+	chrif_req_login_operation(pl_sd->status.account_id, pl_sd->status.name, CHRIF_OP_LOGIN_VIP, vipdifftime, 7, 0);
 	return 0;
 #else
 	clif_displaymessage( fd, msg_txt( sd, 774 ) ); // This command is disabled via configuration.
@@ -10744,7 +10874,7 @@ ACMD_FUNC(showrate) {
 ACMD_FUNC(fullstrip) {
 	int32 i;
 	TBL_PC *tsd;
-	
+
 	nullpo_retr(-1,sd);
 
 	memset(atcmd_player_name, '\0', sizeof(atcmd_player_name));
@@ -10758,7 +10888,7 @@ ACMD_FUNC(fullstrip) {
 		clif_displaymessage(fd, msg_txt(sd,3)); // Character not found.
 		return -1;
 	}
-	
+
 	for( i = 0; i < EQI_MAX; i++ ) {
 		if( tsd->equip_index[ i ] >= 0 )
 			pc_unequipitem( tsd , tsd->equip_index[ i ] , 2 );
@@ -11515,6 +11645,7 @@ void atcommand_basecommands(void) {
 		ACMD_DEF(load),
 		ACMD_DEF(speed),
 		ACMD_DEF(storage),
+		ACMD_DEF(spacebox),
 		ACMD_DEF(guildstorage),
 		ACMD_DEF(option),
 		ACMD_DEF(hide), // + /hide

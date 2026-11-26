@@ -1,3 +1,4 @@
+// MYGENE_PUBLIC_RC1
 // Copyright (c) rAthena Dev Teams - Licensed under GNU GPL
 // For more information, see LICENCE in the main folder
 
@@ -6,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -1309,6 +1312,55 @@ int32 mob_target(mob_data *md,block_list *bl,int32 dist)
 }
 
 /*==========================================
+ * MYgene Attraction Potion:
+ * Players with a live 5-minute attraction effect have a 70% chance
+ * per passive-monster AI search to draw its aggro. Bosses and summoned mobs
+ * are excluded by the caller. The standard combat/KS safety checks apply.
+ *------------------------------------------*/
+static int32 mob_mygene_attraction_search(block_list *bl, va_list ap) {
+	mob_data *md = va_arg(ap, mob_data *);
+	block_list **target = va_arg(ap, block_list **);
+
+	if (*target != nullptr || bl->type != BL_PC)
+		return 0;
+	map_session_data *sd = BL_CAST(BL_PC, bl);
+	if (!sd || pc_isdead(sd))
+        return 0;
+
+    // Preserve native Gangster Paradise protection.
+    if (sd->state.gangsterparadise &&
+        !status_has_mode(&md->status, MD_STATUSIMMUNE))
+        return 0;
+
+    if (pc_readglobalreg(sd, add_str("MYGENE_ATTRACTION_UNTIL")) <= static_cast<int64>(time(nullptr)))
+		return 0;
+	if (rnd() % 100 >= 70)
+		return 0;
+	if (battle_check_target(md, bl, BCT_ENEMY) <= 0 || !status_check_skilluse(md, bl, 0, 0))
+		return 0;
+	if (!mob_can_reach(md, bl, md->db->range3))
+		return 0;
+	(*target) = bl;
+	md->target_id = bl->id;
+
+    if (pc_get_group_id(sd) == 99) {
+        ShowInfo(
+            "[MYGENE-ATTRACTION-V2] Map=%s Mob=%d Remaining=%lld seconds\n",
+            map_getmapdata(md->m)->name,
+            md->id,
+            static_cast<long long>(
+                pc_readglobalreg(
+                    sd,
+                    add_str("MYGENE_ATTRACTION_UNTIL")
+                ) - time(nullptr)
+            )
+        );
+    }
+
+    return 1;
+}
+
+/*==========================================
  * The ?? routine of an active monster
  *------------------------------------------*/
 static int32 mob_ai_sub_hard_activesearch(block_list *bl,va_list ap)
@@ -1838,8 +1890,214 @@ void mob_setstate(mob_data& md, MobSkillState skillstate) {
 /*==========================================
  * AI of MOB whose is near a Player
  *------------------------------------------*/
+static bool mygene_cq_ai(
+    mob_data* md,
+    t_tick tick
+) {
+    FreeBlockLock freeLock;
+
+    if (!mygene_cq_mentor_valid(md)) {
+
+        auto* owner =
+            map_id2sd(md->master_id);
+
+        auto* guardian =
+            map_id2md(md->mygene_cq_guardian);
+
+        // During initial map loading, wait without
+        // attacking or bypassing target protection.
+
+        if (md->mygene_cq_next_ai == 0 &&
+            DIFF_TICK(
+                md->mygene_cq_ready_deadline,
+                tick
+            ) > 0 &&
+            owner &&
+            owner->m == md->m &&
+            !pc_isdead(owner) &&
+            guardian &&
+            guardian->m == md->m &&
+            guardian->status.hp > 0) {
+
+            return true;
+        }
+
+        ShowInfo(
+            "[CONQUEST V32] Reject Role=%d GID=%d Map=%d ExpectedMap=%d\n",
+            md->mygene_cq_role,
+            md->id,
+            md->m,
+            md->mygene_cq_map
+        );
+
+        if (owner) {
+
+            ShowInfo(
+                "[CONQUEST V32] Owner Linked=%d Map=%d Dead=%d Class=%d\n",
+                owner->prev != nullptr,
+                owner->m,
+                pc_isdead(owner),
+                static_cast<int>(owner->status.class_)
+            );
+
+            ShowInfo(
+                "[CONQUEST V32] Route=%lld Cleared=%lld Active=%lld BossReg=%lld\n",
+                static_cast<long long>(
+                    pc_readreg2(owner,"MYGENE_NT_DEV_ROUTE")
+                ),
+                static_cast<long long>(
+                    pc_readreg2(owner,"MYGENE_NT_DEV_CLEARED")
+                ),
+                static_cast<long long>(
+                    pc_readreg2(owner,"@MYGENE_NT_CQ_ACTIVE")
+                ),
+                static_cast<long long>(
+                    pc_readreg2(owner,"@MYGENE_NT_CQ_BOSS")
+                )
+            );
+
+        } else {
+
+            ShowInfo(
+                "[CONQUEST V32] Owner missing.\n"
+            );
+        }
+
+        if (guardian) {
+
+            ShowInfo(
+                "[CONQUEST V32] Guardian ID=%d Linked=%d Map=%d HP=%lld Event=%s\n",
+                guardian->id,
+                guardian->prev != nullptr,
+                guardian->m,
+                static_cast<long long>(
+                    guardian->status.hp
+                ),
+                guardian->npc_event
+            );
+
+        } else {
+
+            ShowInfo(
+                "[CONQUEST V32] Guardian missing.\n"
+            );
+        }
+
+        unit_free(md,CLR_OUTSIGHT);
+        return true;
+    }
+
+    if (md->mygene_cq_next_ai == 0) {
+
+        ShowInfo(
+            "[CONQUEST V31] AI active. Role=%d GID=%d Job=%d X=%d Y=%d\n",
+            md->mygene_cq_role,
+            md->id,
+            md->vd->look[LOOK_BASE],
+            md->x,
+            md->y
+        );
+    }
+
+    if (!md->prev || !md->status.hp)
+        return true;
+
+    if (DIFF_TICK(
+        tick,md->mygene_cq_next_ai
+    ) < 0)
+        return true;
+
+    md->mygene_cq_next_ai = tick + 300;
+
+    if (md->ud.skilltimer != INVALID_TIMER)
+        return true;
+
+    auto* boss =
+        map_id2md(md->mygene_cq_guardian);
+
+    auto* owner =
+        map_id2sd(md->master_id);
+
+    if (!boss || !owner)
+        return true;
+
+    // Healer remains near the player.
+    if (md->mygene_cq_role == 4) {
+
+        unit_stop_attack(md);
+
+        if (distance_bl(md,owner) > 3) {
+
+            if (unit_can_move(md) &&
+                md->ud.walktimer == INVALID_TIMER) {
+
+                unit_walktobl(md,owner,2,0);
+            }
+
+            return true;
+        }
+
+        mob_setstate(*md,MSS_IDLE);
+
+        if (DIFF_TICK(
+            tick,md->last_skillcheck
+        ) >= 1000) {
+
+            mobskill_use(md,tick,-1);
+        }
+
+        return true;
+    }
+
+    // Other mentors independently engage the boss.
+
+    md->target_id = boss->id;
+
+    if (battle_check_target(
+        md,boss,BCT_ENEMY
+    ) <= 0)
+        return true;
+
+    mob_setstate(*md,MSS_BERSERK);
+
+    if (DIFF_TICK(
+        tick,md->last_skillcheck
+    ) >= 1000) {
+
+        if (mobskill_use(md,tick,-1))
+            return true;
+    }
+
+    if (battle_check_range(
+        md,boss,md->status.rhw.range
+    )) {
+
+        if (md->ud.target != boss->id ||
+            md->ud.attacktimer == INVALID_TIMER) {
+
+            const int32 stop =
+                unit_attack(md,boss->id,1);
+
+            if (stop != USW_NONE)
+                unit_stop_walking(md,stop);
+        }
+
+    } else if (unit_can_move(md) &&
+               md->ud.walktimer == INVALID_TIMER) {
+
+        unit_walktobl(
+            md,boss,md->status.rhw.range,2
+        );
+    }
+
+    return true;
+}
+
 static bool mob_ai_sub_hard(mob_data *md, t_tick tick)
 {
+    if (md && md->mygene_cq_role)
+        return mygene_cq_ai(md,tick);
+
 	block_list *tbl = nullptr, *abl = nullptr;
 	bool can_move;
 	int32 view_range, mode;
@@ -2019,6 +2277,26 @@ static bool mob_ai_sub_hard(mob_data *md, t_tick tick)
 			if (dist > 0)
 				map_foreachinshootrange(mob_ai_sub_hard_lootsearch, md, dist, BL_ITEM, md, &tbl);
 		}
+	}
+
+	// MYgene: passive field and dungeon monsters may seek a player
+	// using Attraction Potion, with a 70% roll per AI scan. Never alter
+	// towns, instances, competitive maps, bosses, or summoned monsters.
+	if (!(mode & MD_AGGRESSIVE) && (mode & MD_CANATTACK) && tbl == nullptr &&
+		md->master_id == 0 && md->get_bosstype() == BOSSTYPE_NONE &&
+		// MYGENE_ATTRACTION_V2
+        // Public fields and dungeons.
+        // Exclude private instances and safe maps.
+        map_getmapdata(md->m)->instance_id == 0 &&
+        !map_getmapflag(md->m, MF_TOWN) &&
+        !map_getmapflag(md->m, MF_RESTRICTED) &&
+        !map_getmapflag(md->m, MF_BATTLEGROUND) &&
+        !map_getmapflag(md->m, MF_GVG_CASTLE) &&
+        !map_getmapflag(md->m, MF_GVG_DUNGEON) &&
+        !map_getmapflag(md->m, MF_GVG_TE) &&
+        !map_getmapflag(md->m, MF_GVG_TE_CASTLE) &&
+		!map_getmapflag(md->m, MF_PVP) && !map_getmapflag(md->m, MF_GVG)) {
+		map_foreachinallrange(mob_mygene_attraction_search, md, view_range, BL_PC, md, &tbl);
 	}
 
 	if ((mode&MD_AGGRESSIVE && (!tbl || slave_lost_target)) || md->state.skillstate == MSS_FOLLOW)
@@ -2358,6 +2636,14 @@ static int32 mob_ai_sub_foreachclient(map_session_data *sd,va_list ap)
  *------------------------------------------*/
 static int32 mob_ai_sub_lazy(mob_data *md, va_list args)
 {
+    if (md && md->mygene_cq_role) {
+
+        t_tick cq_tick = va_arg(args,t_tick);
+
+        return mygene_cq_ai(md,cq_tick)
+            ? 1 : 0;
+    }
+
 	nullpo_ret(md);
 
 	if(md->prev == nullptr)
@@ -2606,7 +2892,7 @@ static void mob_item_drop(mob_data *md, std::shared_ptr<s_item_drop_list>& dlist
 			intif_broadcast_obtain_special_item(sd, ditem->item_data.nameid, md->mob_id, ITEMOBTAIN_TYPE_MONSTER_ITEM);
 
 		if (party_share_loot(party_search(sd->status.party_id),
-			sd, &ditem->item_data, sd->status.char_id) == 0
+			sd, &ditem->item_data, sd->status.char_id, true) == 0
 		) {
 			return;
 		}
@@ -2815,6 +3101,14 @@ void mob_damage(mob_data *md, block_list *src, int32 damage)
  * @param factor: factor which is applied to all multiplicative bonuses and upper bound caps
  * @return Modified drop rate
  */
+// MYgene Legendary Bubble Gum: a 15-second, per-player guaranteed drop
+// window, checked at monster death. All configured entries become certain.
+static bool mygene_legendary_gum_active(map_session_data* sd)
+{
+	return sd != nullptr &&
+		pc_readglobalreg(sd, add_str("MYGENE_LEGENDARY_GUM_UNTIL")) > static_cast<int64>(time(nullptr));
+}
+
 int32 mob_getdroprate(block_list *src, std::shared_ptr<s_mob_db> mob, int32 base_rate, int32 drop_modifier, mob_data* md, int32 factor)
 {
 	int32 drop_rate = base_rate;
@@ -3289,7 +3583,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 						//it's positive, then it goes as it is
 						drop_rate = it.rate;
 
-					if (rnd()%10000 >= drop_rate)
+					if (!mygene_legendary_gum_active(sd) && rnd()%10000 >= drop_rate)
 						continue;
 
 					std::shared_ptr<s_mob_drop> mobdrop = std::make_shared<s_mob_drop>();
@@ -3312,13 +3606,14 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 			}
 
 			// process script-granted zeny bonus (get_zeny_num) [Skotlex]
-			if( sd->bonus.get_zeny_num && rnd()%100 < sd->bonus.get_zeny_rate ) {
+			if( sd->bonus.get_zeny_num && (mygene_legendary_gum_active(sd) || rnd()%100 < sd->bonus.get_zeny_rate) ) {
 				i = sd->bonus.get_zeny_num > 0 ? sd->bonus.get_zeny_num : -md->level * sd->bonus.get_zeny_num;
 				if (!i) i = 1;
 				pc_getzeny(sd, 1+rnd()%i, LOG_TYPE_PICKDROP_MONSTER);
 			}
 		}
 
+		const bool mygene_guaranteed = mygene_legendary_gum_active(first_sd);
 		// Regular mob drops drop after script-granted drops
 		for( const std::shared_ptr<s_mob_drop>& entry : md->db->dropitem ){
 			if (entry->nameid == 0)
@@ -3331,9 +3626,11 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 
 			drop_rate = mob_getdroprate(src, md->db, entry->rate, drop_modifier, md);
 
-			// attempt to drop the item
-			if (rnd() % 10000 >= drop_rate)
+			// Active Legendary Gum makes every defined normal drop certain.
+			if (!mygene_guaranteed && rnd() % 10000 >= drop_rate)
 				continue;
+			if (mygene_guaranteed)
+				drop_rate = 10000;
 
 			if (first_sd != nullptr && it->type == IT_PETEGG) {
 				pet_create_egg(first_sd, entry->nameid);
@@ -3390,7 +3687,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 					final_rate = it.second->rate;
 				}
 
-				if( rnd_chance( final_rate, 100000u ) ){
+				if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
 					// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 					int32 map_drops_rate = max(1, (final_rate / 10));
 					std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3411,7 +3708,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 						final_rate = it.second->rate;
 					}
 
-					if( rnd_chance( final_rate, 100000u ) ){
+					if( mygene_guaranteed || rnd_chance( final_rate, 100000u ) ){
 						// 'Cheat' for autoloot command: rate is changed from n/100000 to n/10000
 						int32 map_drops_rate = max(1, (final_rate / 10));
 						std::shared_ptr<s_item_drop> ditem = mob_setdropitem( it.second, 1, md->mob_id );
@@ -3494,7 +3791,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				temp = cap_value( apply_rate( temp, penalty ), 0, 10000 );
 #endif
 
-				if (temp != 10000) {
+				if (!mygene_legendary_gum_active(mvp_sd) && temp != 10000) {
 					if(temp <= 0 && !battle_config.drop_rate0item)
 						temp = 1;
 					if(rnd()%10000 >= temp) //if ==0, then it doesn't drop
@@ -3528,7 +3825,7 @@ int32 mob_dead(mob_data *md, block_list *src, int32 type)
 				//Logs items, MVP prizes [Lupus]
 				log_pick_mob(md, LOG_TYPE_MVP, -1, &item);
 				//If item_drop_mvp_mode is not 2, then only one item should be granted
-				if(battle_config.item_drop_mvp_mode != 2) {
+				if(battle_config.item_drop_mvp_mode != 2 && !mygene_legendary_gum_active(mvp_sd)) {
 					break;
 				}
 			}
@@ -3904,7 +4201,10 @@ int32 mob_warpslave_sub(block_list *bl,va_list ap)
 	master = va_arg(ap, block_list*);
 	range = va_arg(ap, int32);
 
-	if(md->master_id!=master->id)
+	if (md->mygene_cq_role)
+        return 0;
+
+    if(md->master_id!=master->id)
 		return 0;
 
 	map_search_freecell(master, 0, &x, &y, range, range, 0);
@@ -4102,7 +4402,24 @@ int32 mob_getfriendhprate_sub(block_list *bl,va_list ap)
 	if ((*fr) != nullptr) //A friend was already found.
 		return 0;
 
-	if (battle_check_target(md,bl,BCT_ENEMY)>0)
+	if (md->mygene_cq_role == 4 &&
+        bl->id != md->master_id) {
+
+        if (bl->type != BL_MOB)
+            return 0;
+
+        auto* ally = static_cast<mob_data*>(bl);
+
+        if (!ally->mygene_cq_role ||
+            ally->master_id != md->master_id ||
+            ally->mygene_cq_guardian != md->mygene_cq_guardian)
+            return 0;
+    }
+
+    if (status_isdead(*bl))
+        return 0;
+
+    if (battle_check_target(md,bl,BCT_ENEMY)>0)
 		return 0;
 
 	rate = get_percentage(status_get_hp(bl), status_get_max_hp(bl));
@@ -4118,7 +4435,9 @@ static block_list *mob_getfriendhprate(mob_data *md,int64 min_rate,int64 max_rat
 
 	nullpo_retr(nullptr, md);
 
-	if (md->special_state.ai) //Summoned creatures. [Skotlex]
+	if (md->mygene_cq_role == 4)
+        type = BL_PC | BL_MOB;
+    else if (md->special_state.ai) //Summoned creatures. [Skotlex]
 		type = BL_PC;
 
 	map_foreachinallrange(mob_getfriendhprate_sub, md, 8, type,md,min_rate,max_rate,&fr);
@@ -4312,7 +4631,67 @@ bool mobskill_use(mob_data *md, t_tick tick, int32 event, int64 damage)
 			else
 				continue;
 		}
-		if (rnd() % 10000 > ms[i]->permillage) //Lupus (max value = 10000)
+		// MYGENE_CONQUEST_SKILL_DEMO_V33
+
+        const int32 cq_role = md->mygene_cq_role;
+
+        auto* cq_owner = cq_role
+            ? map_id2sd(md->master_id)
+            : nullptr;
+
+        const uint16 cq_skill = ms[i]->skill_id;
+
+        const bool wd_context =
+            cq_owner &&
+            pc_readreg2(
+                cq_owner,"MYGENE_NT_DEV_CLEARED"
+            ) == 2;
+
+        const bool wd_demo =
+            wd_context &&
+            mygene_cq_mentor_valid(md) &&
+            pc_readreg2(
+                cq_owner,"@MYGENE_NT_WD_DEMO_ROLE"
+            ) == cq_role &&
+            pc_readreg2(
+                cq_owner,"@MYGENE_NT_WD_DEMO_SKILL"
+            ) == cq_skill &&
+            !pc_readreg2(
+                cq_owner,"@MYGENE_NT_WD_DEMO_SEEN"
+            );
+
+        // Only the selected skill is demonstrated.
+        // Normal range and casting checks remain.
+
+        if (wd_context && !wd_demo)
+            continue;
+
+        const bool cq_signature =
+            (cq_role == 1 && cq_skill == SM_BASH) ||
+            (cq_role == 2 && cq_skill == MG_FIREBOLT) ||
+            (cq_role == 3 && cq_skill == AC_DOUBLE) ||
+            (cq_role == 4 &&
+                (cq_skill == AL_HEAL ||
+                 cq_skill == AL_BLESSING)) ||
+            (cq_role == 5 && cq_skill == TF_DOUBLE) ||
+            (cq_role == 6 && cq_skill == MC_MAMMONITE);
+
+        const bool cq_demo =
+            cq_owner &&
+            cq_signature &&
+            mygene_cq_mentor_valid(md) &&
+            pc_readreg2(
+                cq_owner,"@MYGENE_NT_CQ_DEMO_ROLE"
+            ) == cq_role &&
+            !pc_readreg2(
+                cq_owner,"@MYGENE_NT_CQ_DEMO_SEEN"
+            );
+
+        // Prioritize the first signature skill.
+        // Native range, cooldown and cast checks remain.
+
+        if (!cq_demo && !wd_demo &&
+            rnd() % 10000 > ms[i]->permillage)
 			continue;
 
 		if (ms[i]->cond1 == event)
@@ -4491,6 +4870,51 @@ bool mobskill_use(mob_data *md, t_tick tick, int32 event, int64 damage)
 			}
 		}
 		//Skill used. Post-setups...
+
+        if (wd_demo) {
+
+            auto* owner = map_id2sd(md->master_id);
+
+            if (owner &&
+                mygene_cq_mentor_valid(md)) {
+
+                pc_setreg2(
+                    owner,
+                    "@MYGENE_NT_WD_DEMO_SEEN",
+                    static_cast<int64>(time(nullptr))
+                );
+
+                ShowInfo(
+                    "[WISDOM V3] Cast started. Role=%d Skill=%u\n",
+                    cq_role,
+                    static_cast<unsigned int>(cq_skill)
+                );
+            }
+        }
+
+        if (cq_demo) {
+
+            auto* owner = map_id2sd(md->master_id);
+
+            if (owner &&
+                mygene_cq_mentor_valid(md) &&
+                pc_readreg2(
+                    owner,"@MYGENE_NT_CQ_DEMO_ROLE"
+                ) == cq_role) {
+
+                pc_setreg2(
+                    owner,
+                    "@MYGENE_NT_CQ_DEMO_SEEN",
+                    static_cast<int64>(time(nullptr))
+                );
+
+                ShowInfo(
+                    "[CONQUEST V33] Signature cast started. Role=%d Skill=%u\n",
+                    cq_role,
+                    static_cast<unsigned int>(cq_skill)
+                );
+            }
+        }
 		if ( ms[i]->msg_id ){ //Display color message [SnakeDrak]
 			mob_chat_display_message(*md, ms[i]->msg_id);
 		}
@@ -4789,6 +5213,471 @@ int32 mob_clone_spawn(map_session_data *sd, int16 m, int16 x, int16 y, const cha
 	mob_spawn(md);
 
 	return md->id;
+}
+
+// MYGENE_CONQUEST_AI_V3
+
+// MYGENE_WISDOM_LIVE_AI_V3
+
+static bool mygene_mentor_encounter_valid(
+    const map_session_data* owner,
+    int32 guardian
+) {
+    if (!owner ||
+        pc_isdead(owner) ||
+        owner->status.class_ != JOB_NOVICE ||
+        !map_getmapdata(owner->m)->instance_id ||
+        pc_readreg2(owner,"MYGENE_NT_DEV_ROUTE") != 2)
+        return false;
+
+    auto* boss = map_id2md(guardian);
+
+    if (!boss ||
+        !boss->prev ||
+        boss->m != owner->m ||
+        boss->status.hp == 0)
+        return false;
+
+    const auto cleared = pc_readreg2(
+        owner,"MYGENE_NT_DEV_CLEARED"
+    );
+
+    // Preserve original Conquest validation.
+
+    if (cleared == 3) {
+
+        return
+            pc_readreg2(owner,"@MYGENE_NT_CQ_ACTIVE") &&
+            pc_readreg2(owner,"@MYGENE_NT_CQ_BOSS") == guardian &&
+            strcmp(
+                boss->npc_event,
+                "MYgene_NT_Conquest::OnGuardianDead"
+            ) == 0;
+    }
+
+    // Separate Wisdom demonstration context.
+
+    if (cleared == 2) {
+
+        return
+            pc_readreg2(owner,"@MYGENE_NT_WD_ACTIVE") &&
+            pc_readreg2(owner,"@MYGENE_NT_WD_DEMO_ACTIVE") &&
+            pc_readreg2(owner,"@MYGENE_NT_WD_DEMO_TARGET") == guardian &&
+            strcmp(
+                boss->npc_event,
+                "MYgene_NT_Wisdom::OnDemoDead"
+            ) == 0;
+    }
+
+    return false;
+}
+
+bool mygene_cq_mentor_valid(const mob_data* md)
+{
+    if (!md ||
+        md->mygene_cq_role < 1 ||
+        md->mygene_cq_role > 6 ||
+        md->m != md->mygene_cq_map ||
+        md->master_id <= 0)
+        return false;
+
+    auto* owner = map_id2sd(md->master_id);
+
+    if (!owner ||
+        !owner->prev ||
+        owner->m != md->m)
+        return false;
+
+    return mygene_mentor_encounter_valid(
+        owner,md->mygene_cq_guardian
+    );
+}
+
+
+int32 mygene_cq_spawn(
+    map_session_data* sd,
+    int32 role,
+    int32 guardian
+) {
+    if (!sd ||
+        role < 1 ||
+        role > 6 ||
+        sd->m < 0 ||
+        pc_readreg2(sd,"@MYGENE_NT_TIME_INSTANCE") !=
+            map_getmapdata(sd->m)->instance_id ||
+        !mygene_mentor_encounter_valid(sd,guardian))
+        return 0;
+
+    const bool wisdom =
+        pc_readreg2(
+            sd,"MYGENE_NT_DEV_CLEARED"
+        ) == 2;
+
+    int32 id;
+
+    ARR_FIND(
+        MOB_CLONE_START,
+        MOB_CLONE_END,
+        id,
+        !mob_db.exists(id)
+    );
+
+    if (id >= MOB_CLONE_END)
+        return 0;
+
+    const char* names[] = {
+        "Swordman Mentor",
+        "Mage Mentor",
+        "Archer Mentor",
+        "Acolyte Mentor",
+        "Thief Mentor",
+        "Merchant Mentor"
+    };
+
+
+
+    auto db = std::make_shared<s_mob_db>();
+
+    db->id = id;
+    db->name = names[role-1];
+    db->jname = names[role-1];
+    db->sprite = names[role-1];
+
+    db->lv = 15;
+    db->base_exp = 0;
+    db->job_exp = 0;
+    db->mexp = 0;
+    db->range2 = AREA_SIZE;
+    db->range3 = AREA_SIZE;
+
+    // Fixed tutorial statistics.
+    // Never copy player equipment or stats.
+
+    auto& st = db->status;
+
+    const int64 owner_hp =
+        sd->battle_status.max_hp;
+
+    st.max_hp = static_cast<uint32>(
+        std::clamp<int64>(
+            owner_hp * (role == 1 ? 3 : 2),
+            300,
+            1500
+        )
+    );
+
+    st.hp = st.max_hp;
+    st.max_sp = 200;
+    st.sp = 200;
+
+    st.str = 8;
+    st.agi = 8;
+    st.vit = role == 1 ? 20 : 8;
+    st.int_ = (role == 2 || role == 4) ? 20 : 5;
+    st.dex = 30;
+    st.luk = 1;
+
+    st.race = RC_DEMIHUMAN;
+    st.ele_lv = 1;
+    st.def_ele = ELE_NEUTRAL;
+
+    st.mode = static_cast<e_mode>(
+        MD_CANMOVE |
+        MD_CANATTACK |
+        MD_AGGRESSIVE
+    );
+
+    st.speed = 150;
+
+    st.amotion =
+        role == 5 ? 450 :
+        role == 6 ? 850 : 650;
+
+    st.adelay = st.amotion * 2;
+    st.clientamotion = st.amotion;
+    st.dmotion = 400;
+
+    st.batk = 1;
+    st.hit = 100;
+    st.flee = 15;
+    st.def = role == 1 ? 15 : 3;
+    st.def2 = 5;
+
+    st.rhw.atk = role == 6 ? 8 : 4;
+    st.rhw.atk2 = role == 6 ? 12 : 7;
+
+    st.rhw.range =
+        role == 3 ? 6 :
+        role == 2 ? 4 : 1;
+
+    st.matk_min = 12;
+    st.matk_max = 18;
+
+    // Native first-job sprites.
+    // Job IDs 1 through 6 match the six mentors.
+
+    // MYGENE_CONQUEST_VISUAL_V31
+    db->vd = {};
+
+    // Correct classic first-job class mapping.
+    const int32 mentor_jobs[] = {
+        1,2,3,4,6,5
+    };
+
+    db->vd.look[LOOK_BASE] = mentor_jobs[role-1];
+    db->vd.look[LOOK_BODY2] = 0;
+    db->vd.look[LOOK_HAIR] = 1;
+    db->vd.look[LOOK_HAIR_COLOR] = 0;
+    // MYGENE_CONQUEST_EQUIPMENT_V34
+
+    // Order: Swordman, Mage, Archer,
+    // Acolyte, Thief, Merchant.
+
+    const uint32 mentor_weapons[] = {
+        1101,
+        1601,
+        1701,
+        1501,
+        1201,
+        1301
+    };
+
+    const uint32 mentor_shields[] = {
+        2101,
+        0,
+        0,
+        2101,
+        0,
+        0
+    };
+
+    db->vd.look[LOOK_WEAPON] =
+        mentor_weapons[role-1];
+
+    db->vd.look[LOOK_SHIELD] =
+        mentor_shields[role-1];
+
+    ShowInfo(
+        "[CONQUEST V34] Role=%d Weapon=%u Shield=%u\n",
+        role,
+        mentor_weapons[role-1],
+        mentor_shields[role-1]
+    );
+    db->vd.sex = SEX_MALE;
+
+    // Real skills executed by native monster AI.
+
+    auto add_skill = [&](
+        uint16 skill,
+        uint16 level,
+        int32 chance,
+        int32 cast,
+        int32 delay,
+        int16 target,
+        int16 cond,
+        int64 threshold
+    ) {
+        if (!skill_get_index(skill))
+            return;
+
+        auto ms =
+            std::make_shared<s_mob_skill>();
+
+        ms->skill_id = skill;
+        ms->skill_lv = level;
+
+        ms->state =
+            target == MST_TARGET
+                ? MSS_ANYTARGET
+                : MSS_ANY;
+
+        ms->permillage = chance;
+        ms->casttime = cast;
+        ms->delay = delay;
+        ms->target = target;
+        ms->cond1 = cond;
+        ms->cond2 = threshold;
+        ms->cancel = 1;
+        ms->emotion = -1;
+
+        db->skill.push_back(ms);
+    };
+
+    switch (role) {
+
+    case 1:
+        add_skill(
+            SM_PROVOKE,1,10000,0,8000,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+
+        add_skill(
+            SM_BASH,2,2500,0,4000,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+        break;
+
+    case 2:
+        add_skill(
+            MG_FIREBOLT,2,5000,700,3500,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+        break;
+
+    case 3:
+        add_skill(
+            AC_DOUBLE,2,3500,0,3500,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+        break;
+
+    case 4:
+        add_skill(
+            AL_HEAL,2,10000,0,4000,
+            MST_MASTER,MSC_MASTERHPLTMAXRATE,75
+        );
+
+        add_skill(
+            AL_HEAL,2,7500,0,4000,
+            MST_FRIEND,MSC_FRIENDHPLTMAXRATE,65
+        );
+
+        add_skill(
+            AL_BLESSING,3,3000,0,20000,
+            MST_MASTER,MSC_ALWAYS,0
+        );
+        break;
+
+    case 5:
+        add_skill(
+            TF_DOUBLE,3,1500,0,1000,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+        break;
+
+    case 6:
+        add_skill(
+            MC_MAMMONITE,1,2500,0,5000,
+            MST_TARGET,MSC_ALWAYS,0
+        );
+        break;
+    }
+
+    // Wisdom-only skills. Conquest keeps its
+    // original skill list and balance.
+
+    if (wisdom) {
+
+        switch (role) {
+
+        case 1:
+            add_skill(
+                SM_ENDURE,1,10000,0,5000,
+                MST_SELF,MSC_ALWAYS,0
+            );
+            break;
+
+        case 2:
+            add_skill(
+                MG_COLDBOLT,2,10000,700,3000,
+                MST_TARGET,MSC_ALWAYS,0
+            );
+
+            add_skill(
+                MG_LIGHTNINGBOLT,2,10000,700,3000,
+                MST_TARGET,MSC_ALWAYS,0
+            );
+            break;
+
+        case 3:
+            add_skill(
+                AC_SHOWER,2,10000,500,3000,
+                MST_TARGET,MSC_ALWAYS,0
+            );
+            break;
+
+        case 4:
+            add_skill(
+                AL_INCAGI,3,10000,0,3000,
+                MST_MASTER,MSC_ALWAYS,0
+            );
+            break;
+
+        case 5:
+            add_skill(
+                TF_HIDING,1,10000,0,3000,
+                MST_SELF,MSC_ALWAYS,0
+            );
+            break;
+
+        default:
+            break;
+        }
+    }
+
+    mob_db.put(id,db);
+
+    int16 x = sd->x;
+    int16 y = sd->y;
+
+    if (!map_search_freecell(
+        sd,sd->m,&x,&y,3,3,1
+    )) {
+        x = sd->x;
+        y = sd->y;
+    }
+
+    auto* md = mob_once_spawn_sub(
+        sd,
+        sd->m,
+        x,y,
+        names[role-1],
+        id,
+        "",
+        SZ_SMALL,
+        AI_NONE
+    );
+
+    if (!md) {
+        mob_db.erase(id);
+        return 0;
+    }
+
+    md->special_state.clone = 1;
+    md->special_state.ai = AI_ATTACK;
+    md->master_id = sd->id;
+
+    md->mygene_cq_role = role;
+    md->mygene_cq_guardian = guardian;
+    md->mygene_cq_map = sd->m;
+
+    // MYGENE_CONQUEST_INIT_V32
+    md->mygene_cq_ready_deadline =
+        gettick() + 5000;
+
+    md->deletetimer = add_timer(
+        gettick() + 1800000,
+        mob_timer_delete,
+        md->id,
+        0
+    );
+
+    if (mob_spawn(md) != 0) {
+        unit_free(md,CLR_OUTSIGHT);
+        return 0;
+    }
+
+    md->target_id = guardian;
+
+    ShowInfo(
+        "[CONQUEST AI] Spawned %s GID=%d Guardian=%d Owner=%d\n",
+        names[role-1],
+        md->id,
+        guardian,
+        sd->id
+    );
+
+    return md->id;
 }
 
 int32 mob_clone_delete(mob_data *md){

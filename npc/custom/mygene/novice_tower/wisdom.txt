@@ -1,0 +1,795 @@
+// MYGENE_PUBLIC_RC1
+// MYGENE_WISDOM_LIVE_V3
+
+function	script	MYgene_NT_WD_DemoCleanup	{
+
+    @MYGENE_NT_WD_DEMO_ACTIVE = 0;
+
+    deltimer "MYgene_NT_Wisdom::OnDemo";
+
+    if (@MYGENE_NT_WD_DEMO_MENTOR > 0)
+        mygenecqremove @MYGENE_NT_WD_DEMO_MENTOR;
+
+    @MYGENE_NT_WD_DEMO_MENTOR = 0;
+
+    if (@MYGENE_NT_WD_DEMO_TARGET > 0 &&
+        instance_id(IM_CHAR) > 0 &&
+        instance_id(IM_CHAR) == @MYGENE_NT_WD_INSTANCE &&
+        strcharinfo(3) == @MYGENE_NT_WD_DEMO_MAP$) {
+
+        killmonster strcharinfo(3),
+            "MYgene_NT_Wisdom::OnDemoDead";
+    }
+
+    @MYGENE_NT_WD_DEMO_TARGET = 0;
+    @MYGENE_NT_WD_DEMO_SKILL = 0;
+
+    return;
+}
+
+function	script	MYgene_NT_WD_DemoStart	{
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        return;
+
+    callfunc "MYgene_NT_WD_DemoCleanup";
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return;
+
+    setarray .@ox[0],3,-3,0,0,2,-2,2,-2;
+    setarray .@oy[0],0,0,3,-3,2,2,-2,-2;
+
+    .@found = 0;
+
+    for (.@i = 0; .@i < 8; .@i++) {
+
+        .@sx = .@x + .@ox[.@i];
+        .@sy = .@y + .@oy[.@i];
+
+        if (checkcell(
+            .@map$,.@sx,.@sy,cell_chkpass
+        )) {
+            .@found = 1;
+            break;
+        }
+    }
+
+    if (!.@found) {
+
+        dispbottom "No space for the demonstration.";
+        dispbottom "Re-enter Wisdom to retry.";
+
+        return;
+    }
+
+    killmonster .@map$,
+        "MYgene_NT_Wisdom::OnDemoDead";
+
+    setmapflag .@map$,MF_NOBASEEXP;
+    setmapflag .@map$,MF_NOJOBEXP;
+    setmapflag .@map$,MF_NOMOBLOOT;
+
+    monster .@map$,.@sx,.@sy,
+        "Job Academy Dummy",1002,1,
+        "MYgene_NT_Wisdom::OnDemoDead";
+
+    .@gid = $@mobid[0];
+
+    if (.@gid <= 0 || !unitexists(.@gid)) {
+
+        dispbottom "Training target unavailable.";
+        dispbottom "Re-enter Wisdom to retry.";
+
+        return;
+    }
+
+    setunitdata .@gid,UMOB_MODE,0;
+    setunitdata .@gid,UMOB_MAXHP,3000;
+    setunitdata .@gid,UMOB_HP,3000;
+    setunitdata .@gid,UMOB_FLEE,1;
+    setunitdata .@gid,UMOB_DEF,0;
+    setunitdata .@gid,UMOB_MDEF,0;
+    setunitdata .@gid,UMOB_ELELEVEL,1;
+
+    @MYGENE_NT_WD_DEMO_MAP$ = .@map$;
+    @MYGENE_NT_WD_DEMO_TARGET = .@gid;
+    @MYGENE_NT_WD_DEMO_ACTIVE = 1;
+    @MYGENE_NT_WD_DEMO_ROLE = 1;
+    @MYGENE_NT_WD_DEMO_INDEX = 0;
+    @MYGENE_NT_WD_DEMO_SKILL = 0;
+    @MYGENE_NT_WD_DEMO_SEEN = 0;
+
+    dispbottom "=== LIVE JOB ACADEMY ===";
+    dispbottom "Observe the mentors and their abilities.";
+    dispbottom "The training dummy cannot harm you.";
+
+    addtimer 1000,"MYgene_NT_Wisdom::OnDemo";
+
+    return;
+}
+
+// MYGENE_WISDOM_V2
+// Floor 3 - Wisdom Academy
+// GM-only development stage.
+
+function	script	MYgene_NT_Wisdom_Valid	{
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        getcharid(1) != 0)
+        return 0;
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 2)
+        return 0;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        return 0;
+
+    if (strcharinfo(3) !=
+        instance_mapname("1@tower",.@id))
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_Tower_Wisdom	{
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid")) {
+
+        mes "[Wisdom Academy]";
+        mes "Complete Survival first.";
+        mes "Enter your private Tower arena.";
+
+        return;
+    }
+
+    callfunc "MYgene_NT_WD_DemoCleanup";
+
+    deltimer "MYgene_NT_Wisdom::OnStart";
+    deltimer "MYgene_NT_Wisdom::OnPoll";
+
+    @MYGENE_NT_WD_ACTIVE = 1;
+    @MYGENE_NT_WD_INSTANCE = instance_id(IM_CHAR);
+
+    addtimer 1500,"MYgene_NT_Wisdom::OnStart";
+
+    return;
+}
+
+function	script	MYgene_NT_Wisdom_Question	{
+
+    while (1) {
+
+        mes "[Wisdom Examination]";
+        mes getarg(0);
+        next;
+
+        .@answer = select(getarg(1));
+
+        if (.@answer == getarg(2)) {
+
+            mes "^339933Correct!^000000";
+            next;
+
+            return 1;
+        }
+
+        mes getarg(3);
+        next;
+    }
+}
+
+function	script	MYgene_NT_Wisdom_Reward	{
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid") ||
+        !MYGENE_NT_F3_PASSED)
+        return;
+
+    if (!MYGENE_NT_F3_REWARDED) {
+
+        setarray .@items[0],569,506;
+        setarray .@amounts[0],20,5;
+
+        if (!checkweight2(.@items,.@amounts)) {
+
+            mes "[Tower Instructor]";
+            mes "Free some inventory space.";
+            mes "Your examination is saved.";
+            mes "Re-enter Wisdom to claim rewards.";
+
+            close2;
+
+            @MYGENE_NT_WD_ACTIVE = 0;
+
+            warp "prontera",158,176;
+
+            return;
+        }
+
+        if (BaseLevel < 15)
+            BaseLevel = 15;
+
+        if (JobLevel < 7)
+            JobLevel = 7;
+
+        getitem 569,20;
+        getitem 506,5;
+
+        if (!#MYGENE_NT_ZENY_F3) {
+            #MYGENE_NT_ZENY_F3 = 1;
+            Zeny += 1500;
+            dispbottom "Account training bonus: 1500 Zeny.";
+        } else {
+            dispbottom "Account Zeny bonus already claimed.";
+        }
+
+        MYGENE_NT_F3_REWARDED = 1;
+    }
+
+    MYGENE_NT_DEV_CLEARED = 3;
+
+    @MYGENE_NT_WD_ACTIVE = 0;
+
+    percentheal 100,100;
+
+    debugmes "[WISDOM V2] Floor 3 completed.";
+
+    mes "[Tower Instructor]";
+    mes "^339933Wisdom completed!^000000";
+    mes "Progress: 3/5.";
+    mes "Your rewards and progress are saved.";
+    next;
+
+    mes "[Wisdom Rewards]";
+    mes "Base Level target: 15.";
+    mes "Job Level target: 7.";
+    mes "20 Novice Potions.";
+    mes "5 Green Potions.";
+    mes "First account clear: 1,500 Zeny.";
+    next;
+
+    mes "[Tower Instructor]";
+    mes "Next: Floor 4 - Conquest.";
+    mes "Ready to continue?";
+    next;
+
+    .@choice = select(
+        "Continue to Floor 4:Stop and return to Prontera"
+    );
+
+    close2;
+
+    .@id = instance_id(IM_CHAR);
+    .@map$ = strcharinfo(3);
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        MYGENE_NT_DEV_CLEARED != 3 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        .@id <= 0 ||
+        .@id != @MYGENE_NT_WD_INSTANCE ||
+        .@map$ != instance_mapname("1@tower",.@id))
+        return;
+
+    if (.@choice == 1) {
+
+        dispbottom "Entering Floor 4 - Conquest...";
+
+        callfunc "MYgene_NT_Conquest_Start",.@map$;
+
+    } else {
+
+        dispbottom "Your Tower progress is saved.";
+
+        warp "prontera",158,176;
+    }
+
+    return;
+}
+
+function	script	MYgene_NT_Wisdom_Mentors	{
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        return;
+
+    mes "[Element Academy]";
+    mes "Monsters have elemental properties.";
+    mes "Choose the right element to";
+    mes "increase damage against them.";
+    next;
+
+    mes "[Fire]";
+    mes "Fire is effective against Earth.";
+    mes "Fire is weaker against Water.";
+    next;
+
+    mes "[Water]";
+    mes "Water is effective against Fire.";
+    mes "Water is weaker against Wind.";
+    next;
+
+    mes "[Wind and Earth]";
+    mes "Wind is effective against Water.";
+    mes "Earth is effective against Wind.";
+    next;
+
+    mes "[Other Elements]";
+    mes "Holy attacks are useful";
+    mes "against many Undead targets.";
+    mes "Element level also affects damage.";
+    mes "Not every element matchup is equal.";
+    next;
+
+    mes "[Job Academy]";
+    mes "Meet six first-job mentors.";
+    mes "You will remain a Novice today.";
+    next;
+
+    mes "Watch each mentor demonstrate their job.";
+
+    close2;
+
+    callfunc "MYgene_NT_WD_DemoStart";
+
+    return;
+}
+
+function	script	MYgene_NT_Wisdom_Exam	{
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        return;
+
+    mes "[Wisdom Examination]";
+    mes "Answer six questions.";
+    mes "Mistakes are allowed.";
+    next;
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which element is strong against Earth?",
+        "Water:Fire:Wind",
+        2,
+        "Hint: Fire burns Earth.";
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which element is strong against Fire?",
+        "Water:Earth:Wind",
+        1,
+        "Hint: Water extinguishes Fire.";
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which job specializes in elemental magic?",
+        "Thief:Merchant:Mage",
+        3,
+        "Hint: Fire Bolt and Cold Bolt.";
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which job specializes in ranged attacks?",
+        "Swordman:Archer:Acolyte",
+        2,
+        "Hint: Bows and arrows.";
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which job specializes in recovery?",
+        "Acolyte:Thief:Merchant",
+        1,
+        "Hint: Heal and Blessing.";
+
+    callfunc "MYgene_NT_Wisdom_Question",
+        "Which job learns Discount?",
+        "Mage:Archer:Merchant",
+        3,
+        "Hint: Trading and economy.";
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        return;
+
+    mes "[Wisdom Complete]";
+    mes "^339933Examination passed: 6/6.^000000";
+    mes "You have met all six mentors.";
+    next;
+
+    mes "[Your Future]";
+    mes "Which first job interests you?";
+    mes "You can change your mind later.";
+    mes "No job change will happen now.";
+    next;
+
+    setarray .@jobs[0],
+        Job_Swordman,
+        Job_Mage,
+        Job_Archer,
+        Job_Acolyte,
+        Job_Thief,
+        Job_Merchant;
+
+    .@choice = select(
+        "Swordman:Mage:Archer:Acolyte:Thief:Merchant:Undecided"
+    );
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        return;
+
+    if (.@choice <= 6)
+        MYGENE_NT_DEV_JOB = .@jobs[.@choice-1];
+    else
+        MYGENE_NT_DEV_JOB = 0;
+
+    MYGENE_NT_F3_PASSED = 1;
+
+    mes "[Tower Instructor]";
+    mes "Your preference has been recorded.";
+    mes "You may choose freely at graduation.";
+    next;
+
+    callfunc "MYgene_NT_Wisdom_Reward";
+
+    return;
+}
+
+-	script	MYgene_NT_Wisdom	-1,{
+
+OnStart:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_WD_ACTIVE ||
+        !callfunc("MYgene_NT_Wisdom_Valid"))
+        end;
+
+    if (MYGENE_NT_F3_PASSED) {
+
+        callfunc "MYgene_NT_Wisdom_Reward";
+
+        end;
+    }
+
+    dispbottom "=== FLOOR 3: WISDOM ===";
+
+    mes "[Skill Academy]";
+    mes "Job levels provide skill points.";
+    mes "Skills unlock new abilities.";
+    mes "Plan your skills carefully.";
+    next;
+
+    mes "[Novice Basic Skill]";
+    mes "Basic Skill unlocks useful";
+    mes "features for every adventurer.";
+    mes "You need Level 9 to graduate.";
+    next;
+
+    mes "[Practical Lesson]";
+    mes "Your Skill window will open.";
+    mes "Increase Basic Skill.";
+    mes "Default shortcut: Alt + S.";
+    mes "You can also use its close button.";
+
+    close2;
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid"))
+        end;
+
+    @MYGENE_NT_WD_SKILL =
+        getskilllv(1);
+
+    mygenetowerskills;
+
+    if (getskilllv(1) >= 9 ||
+        (SkillPoint <= 0 &&
+         getskilllv(1) > 0)) {
+
+        @MYGENE_NT_WD_STAGE = 2;
+
+        dispbottom "Existing Basic Skill training recognized.";
+        dispbottom "Close your Skill window.";
+
+        addtimer 4000,
+            "MYgene_NT_Wisdom::OnPoll";
+
+    } else {
+
+        @MYGENE_NT_WD_STAGE = 1;
+
+        dispbottom "Increase Basic Skill by one level.";
+
+        addtimer 1000,
+            "MYgene_NT_Wisdom::OnPoll";
+    }
+
+    end;
+
+OnPoll:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_WD_ACTIVE ||
+        !callfunc("MYgene_NT_Wisdom_Valid"))
+        end;
+
+    if (instance_id(IM_CHAR) !=
+        @MYGENE_NT_WD_INSTANCE)
+        end;
+
+    if (@MYGENE_NT_WD_STAGE == 1) {
+
+        if (getskilllv(1) >
+            @MYGENE_NT_WD_SKILL) {
+
+            @MYGENE_NT_WD_STAGE = 2;
+
+            dispbottom "Skill allocation verified!";
+            dispbottom "Close your Skill window.";
+            dispbottom "Element Academy unlocked.";
+
+            addtimer 4000,
+                "MYgene_NT_Wisdom::OnPoll";
+
+        } else {
+
+            addtimer 1000,
+                "MYgene_NT_Wisdom::OnPoll";
+        }
+
+        end;
+    }
+
+    if (@MYGENE_NT_WD_STAGE == 2) {
+
+        @MYGENE_NT_WD_STAGE = 3;
+
+        callfunc "MYgene_NT_Wisdom_Mentors";
+    }
+
+    end;
+
+OnDemo:
+
+    if (!playerattached())
+        end;
+
+    if (!callfunc("MYgene_NT_Wisdom_Valid") ||
+        !@MYGENE_NT_WD_DEMO_ACTIVE ||
+        instance_id(IM_CHAR) != @MYGENE_NT_WD_INSTANCE)
+        goto L_DemoStop;
+
+    .@gid = @MYGENE_NT_WD_DEMO_TARGET;
+
+    if (.@gid <= 0 || !unitexists(.@gid))
+        goto L_DemoStop;
+
+    .@role = @MYGENE_NT_WD_DEMO_ROLE;
+
+    if (.@role > 6) {
+
+        callfunc "MYgene_NT_WD_DemoCleanup";
+
+        percentheal 100,100;
+
+        dispbottom "=== JOB DEMONSTRATIONS COMPLETE ===";
+
+        callfunc "MYgene_NT_Wisdom_Exam";
+
+        close;
+    }
+
+    if (@MYGENE_NT_WD_DEMO_MENTOR <= 0) {
+
+        .@mentor = mygenecqspawn(.@role,.@gid);
+
+        if (.@mentor <= 0)
+            goto L_DemoStop;
+
+        @MYGENE_NT_WD_DEMO_MENTOR = .@mentor;
+
+        switch (.@role) {
+
+        case 1:
+            dispbottom "[Swordman] STR, VIT and DEX.";
+            dispbottom "I fight on the front line.";
+            break;
+
+        case 2:
+            dispbottom "[Mage] INT and DEX.";
+            dispbottom "I exploit elemental weaknesses.";
+            break;
+
+        case 3:
+            dispbottom "[Archer] DEX and AGI.";
+            dispbottom "Distance is my advantage.";
+            break;
+
+        case 4:
+            dispbottom "[Acolyte] INT, VIT and DEX.";
+            dispbottom "I heal and strengthen allies.";
+            break;
+
+        case 5:
+            dispbottom "[Thief] AGI, STR and DEX.";
+            dispbottom "I specialize in speed and evasion.";
+            break;
+
+        case 6:
+            dispbottom "[Merchant] STR and DEX.";
+            dispbottom "I specialize in combat and trade.";
+            break;
+        }
+
+    } else if (!unitexists(
+        @MYGENE_NT_WD_DEMO_MENTOR
+    )) {
+        goto L_DemoStop;
+    }
+
+    .@now = gettimetick(2);
+
+    // Wait for the current native skill.
+
+    if (@MYGENE_NT_WD_DEMO_SKILL > 0) {
+
+        if (@MYGENE_NT_WD_DEMO_SEEN) {
+
+            if (.@now <
+                @MYGENE_NT_WD_DEMO_SEEN + 4)
+                goto L_DemoWait;
+
+        } else {
+
+            if (.@now < @MYGENE_NT_WD_DEMO_TIMEOUT)
+                goto L_DemoWait;
+
+            debugmes "[WISDOM V3] Cast timeout: "+
+                @MYGENE_NT_WD_DEMO_SKILL;
+
+            dispbottom "This skill could not be demonstrated.";
+        }
+
+        @MYGENE_NT_WD_DEMO_SKILL = 0;
+        @MYGENE_NT_WD_DEMO_INDEX++;
+    }
+
+    // Classic skill IDs, grouped by mentor.
+
+    switch (.@role) {
+
+    case 1:
+        setarray .@skills[0],5,6,8;
+        setarray .@names$[0],
+            "Bash","Provoke","Endure";
+        break;
+
+    case 2:
+        setarray .@skills[0],19,14,20;
+        setarray .@names$[0],
+            "Fire Bolt","Cold Bolt","Lightning Bolt";
+        break;
+
+    case 3:
+        setarray .@skills[0],46,47;
+        setarray .@names$[0],
+            "Double Strafe","Arrow Shower";
+        break;
+
+    case 4:
+        setarray .@skills[0],28,34,29;
+        setarray .@names$[0],
+            "Heal","Blessing","Increase AGI";
+        break;
+
+    case 5:
+        setarray .@skills[0],48,51;
+        setarray .@names$[0],
+            "Double Attack","Hiding";
+        break;
+
+    case 6:
+        setarray .@skills[0],42;
+        setarray .@names$[0],"Mammonite";
+        break;
+    }
+
+    .@index = @MYGENE_NT_WD_DEMO_INDEX;
+
+    if (.@index >= getarraysize(.@skills)) {
+
+        if (.@role == 4)
+            percentheal 100,100;
+
+        if (.@role == 6) {
+
+            dispbottom "Discount lowers buying prices.";
+            dispbottom "Overcharge increases selling prices.";
+            dispbottom "Pushcart expands carrying capacity.";
+        }
+
+        mygenecqremove @MYGENE_NT_WD_DEMO_MENTOR;
+
+        @MYGENE_NT_WD_DEMO_MENTOR = 0;
+        @MYGENE_NT_WD_DEMO_INDEX = 0;
+        @MYGENE_NT_WD_DEMO_ROLE++;
+
+        setunitdata .@gid,UMOB_ELETYPE,0;
+        setunitdata .@gid,UMOB_HP,3000;
+
+        addtimer 2000,"MYgene_NT_Wisdom::OnDemo";
+
+        end;
+    }
+
+    .@skill = .@skills[.@index];
+
+    // Element matchups for Mage demonstrations.
+    // Water=1 Earth=2 Fire=3.
+
+    if (.@role == 2) {
+
+        switch (.@skill) {
+
+        case 19:
+            setunitdata .@gid,UMOB_ELETYPE,2;
+            dispbottom "Fire is strong against Earth.";
+            break;
+
+        case 14:
+            setunitdata .@gid,UMOB_ELETYPE,3;
+            dispbottom "Water is strong against Fire.";
+            break;
+
+        case 20:
+            setunitdata .@gid,UMOB_ELETYPE,1;
+            dispbottom "Wind is strong against Water.";
+            break;
+        }
+    }
+
+    // Create a safe healing demonstration.
+
+    if (.@skill == 28) {
+
+        percentheal 100,0;
+        percentheal -40,0;
+
+        dispbottom "Watch the Acolyte restore your HP.";
+    }
+
+    if (.@skill == 42)
+        dispbottom "Mammonite spends Zeny on powerful attacks.";
+
+    @MYGENE_NT_WD_DEMO_SEEN = 0;
+    @MYGENE_NT_WD_DEMO_TIMEOUT = .@now + 15;
+    @MYGENE_NT_WD_DEMO_SKILL = .@skill;
+
+    dispbottom "Demonstration: "+.@names$[.@index];
+
+L_DemoWait:
+
+    addtimer 1000,"MYgene_NT_Wisdom::OnDemo";
+
+    end;
+
+OnDemoDead:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_WD_DEMO_ACTIVE)
+        end;
+
+    if (killedgid != @MYGENE_NT_WD_DEMO_TARGET)
+        end;
+
+    goto L_DemoStop;
+
+OnPCDieEvent:
+OnPCLogoutEvent:
+
+    if (!@MYGENE_NT_WD_DEMO_ACTIVE)
+        end;
+
+L_DemoStop:
+
+    callfunc "MYgene_NT_WD_DemoCleanup";
+
+    dispbottom "Demonstration interrupted.";
+    dispbottom "Re-enter Wisdom to retry.";
+
+    end;
+}

@@ -122,7 +122,7 @@ uint64 AchievementDatabase::parseBodyNode(const ryml::NodeRef& node){
 
 				target = std::make_shared<achievement_target>();
 			}
-			
+
 			if( this->nodeExists( targetNode, "Count" ) ){
 				uint32 count;
 
@@ -316,8 +316,8 @@ uint64 AchievementDatabase::parseBodyNode(const ryml::NodeRef& node){
 				return 0;
 			}
 
-			if (title < TITLE_BASE || title > TITLE_MAX) {
-				this->invalidWarning(rewardNode["TitleId"], "Reward Title ID %u does not exist (%hu~%hu), skipping.\n", title, TITLE_BASE, TITLE_MAX);
+			if ((title < TITLE_BASE || title > TITLE_MAX) && (title < MYGENE_TITLE_BASE || title > MYGENE_TITLE_MAX)) {
+				this->invalidWarning(rewardNode["TitleId"], "Reward Title ID %u is outside supported ranges (%hu~%hu or 2000~2099), skipping.\n", title, TITLE_BASE, TITLE_MAX);
 				return 0;
 			}
 
@@ -745,7 +745,7 @@ void achievement_get_titles(uint32 char_id)
 				std::shared_ptr<s_achievement_db> adb = achievement_db.find( sd->achievement_data.achievements[i].achievement_id );
 
 				// If the achievement has a title and is complete, give it to the player
-				if( adb != nullptr && adb->rewards.title_id && sd->achievement_data.achievements[i].completed > 0 ){
+				if( adb != nullptr && adb->rewards.title_id && sd->achievement_data.achievements[i].completed > 0 && ((adb->rewards.title_id < MYGENE_TITLE_BASE || adb->rewards.title_id > MYGENE_TITLE_MAX) || sd->achievement_data.achievements[i].rewarded > 0) ){
 					sd->titles.push_back( adb->rewards.title_id );
 				}
 			}
@@ -1216,4 +1216,51 @@ s_achievement_db::ach_reward::~ach_reward()
 {
 	if (script)
 		script_free_code(script);
+}
+
+
+// MYgene: synchronize the account-wide Hidden Burden reward.
+void mygene_spacebox_sync_achievement(map_session_data* sd)
+{
+    if (!sd ||
+        pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1)
+        return;
+
+    const int32 achievement_id = 900002;
+
+    if (!achievement_db.exists(achievement_id))
+        return;
+
+    int32 index;
+
+    ARR_FIND(0, sd->achievement_data.count, index,
+        sd->achievement_data.achievements[index].achievement_id ==
+        achievement_id);
+
+    if (index == sd->achievement_data.count) {
+        if (!achievement_add(sd, achievement_id))
+            return;
+    }
+
+    achievement_update_achievement(sd, achievement_id, true);
+
+    ARR_FIND(0, sd->achievement_data.count, index,
+        sd->achievement_data.achievements[index].achievement_id ==
+        achievement_id);
+
+    if (index == sd->achievement_data.count)
+        return;
+
+    auto& entry = sd->achievement_data.achievements[index];
+
+    if (entry.completed > 0 && entry.rewarded == 0) {
+        entry.rewarded = time(nullptr);
+
+        sd->achievement_data.save = true;
+
+        clif_achievement_update(
+            sd, &entry,
+            sd->achievement_data.count -
+            sd->achievement_data.incompleteCount);
+    }
 }

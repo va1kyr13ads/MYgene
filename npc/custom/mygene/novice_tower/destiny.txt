@@ -1,0 +1,566 @@
+// MYGENE_PUBLIC_RC1
+
+function	script	MYgene_NT_Grad_Stats	{
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 5 ||
+        !MYGENE_NT_DEV_GRAD_DONE ||
+        !MYGENE_NT_GRAD_STAT_RESET ||
+        MYGENE_NT_GRAD_BUILD ||
+        Class != MYGENE_NT_DEV_JOB)
+        return;
+
+    // STR, AGI, VIT, INT, DEX, LUK
+
+    setarray .@stats[0],
+        bStr,bAgi,bVit,bInt,bDex,bLuk;
+
+    setarray .@names$[0],
+        "STR","AGI","VIT","INT","DEX","LUK";
+
+    switch (Class) {
+
+        case Job_Swordman:
+            .@job$ = "Swordman";
+            setarray .@weights[0],40,10,30,0,20,0;
+            break;
+
+        case Job_Mage:
+            .@job$ = "Mage";
+            setarray .@weights[0],0,0,15,55,30,0;
+            break;
+
+        case Job_Archer:
+            .@job$ = "Archer";
+            setarray .@weights[0],0,35,10,0,55,0;
+            break;
+
+        case Job_Acolyte:
+            .@job$ = "Acolyte";
+            setarray .@weights[0],0,0,25,50,25,0;
+            break;
+
+        case Job_Thief:
+            .@job$ = "Thief";
+            setarray .@weights[0],30,45,5,0,20,0;
+            break;
+
+        case Job_Merchant:
+            .@job$ = "Merchant";
+            setarray .@weights[0],50,10,20,0,20,0;
+            break;
+
+        default:
+            return;
+    }
+
+    mes "[New Beginning]";
+    mes "Congratulations, "+.@job$+"!";
+    mes "Your Novice attributes have been reset.";
+    mes "Available status points: "+StatusPoint;
+    mes "Would you like help with your new build?";
+    next;
+
+    .@choice = select(
+        "Recommended build:Allocate attributes myself"
+    );
+
+    if (.@choice == 1) {
+
+        mes "[Recommended Build]";
+        mes "Suggested "+.@job$+" distribution:";
+
+        for (.@i = 0; .@i < 6; .@i++) {
+
+            if (.@weights[.@i] > 0)
+                mes .@names$[.@i]+": "+
+                    .@weights[.@i]+"%";
+        }
+
+        mes "These are stat point spending targets.";
+        mes "You can customize your build later.";
+        next;
+
+        .@choice = select(
+            "Apply recommended build:Allocate attributes myself"
+        );
+    }
+
+    // Manual allocation.
+
+    if (.@choice == 2) {
+
+        MYGENE_NT_GRAD_BUILD = 1;
+
+        mes "[New Beginning]";
+        mes "All available points are yours to spend.";
+        mes "Use the Status window to raise attributes.";
+        next;
+
+        debugmes "[DESTINY V21] Manual build selected.";
+
+        return;
+    }
+
+    // Do not apply the build if points have already
+    // been manually spent after the reset.
+
+    if (StatusPoint != MYGENE_NT_GRAD_STAT_BUDGET) {
+
+        MYGENE_NT_GRAD_BUILD = 1;
+
+        mes "[New Beginning]";
+        mes "Your attributes have already been adjusted.";
+        mes "Continue allocating your points manually.";
+        next;
+
+        return;
+    }
+
+    // Record the chosen mode before allocation.
+    // Prevent repeated automatic spending.
+
+    MYGENE_NT_GRAD_BUILD = 2;
+
+    .@budget = StatusPoint;
+
+    // Spend real status points through the
+    // native statusup command.
+
+    for (.@step = 0;
+        .@step < 1000 && StatusPoint > 0;
+        .@step++) {
+
+        .@best = -1;
+        .@bestscore = -2147483647;
+
+        for (.@i = 0; .@i < 6; .@i++) {
+
+            if (.@weights[.@i] <= 0 ||
+                .@blocked[.@i])
+                continue;
+
+            // Prioritize the attribute furthest
+            // below its target spending budget.
+
+            .@score = .@budget * .@weights[.@i] -
+                100 * .@spent[.@i];
+
+            if (.@best == -1 ||
+                .@score > .@bestscore) {
+
+                .@best = .@i;
+                .@bestscore = .@score;
+            }
+        }
+
+        if (.@best == -1)
+            break;
+
+        .@before = StatusPoint;
+
+        statusup .@stats[.@best];
+
+        .@cost = .@before - StatusPoint;
+
+        if (.@cost <= 0) {
+
+            // Native allocation rejected the increase:
+            // insufficient points or maximum attribute.
+
+            .@blocked[.@best] = 1;
+
+        } else {
+
+            .@spent[.@best] += .@cost;
+        }
+    }
+
+    mes "[Build Complete]";
+    mes "Your recommended "+.@job$+" build is ready.";
+    mes "Points spent: "+(.@budget-StatusPoint);
+    mes "Remaining points: "+StatusPoint;
+    mes "Check your Status window.";
+    next;
+
+    debugmes "[DESTINY V21] Recommended build: "+
+        .@job$+" Spent: "+(.@budget-StatusPoint)+
+        " Remaining: "+StatusPoint;
+
+    return;
+}
+
+// MYgene Novice Tower
+// Floor 5: Destiny V1 - graduation staging
+
+function	script	MYgene_NT_Destiny	{
+
+    if (Class != Job_Novice || !callfunc("MYgene_NT_PublicInside"))
+        return;
+
+    mes "[Destiny]";
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4) {
+
+        mes "Complete the first four floors.";
+        return;
+    }
+
+    // MYGENE_DESTINY_V2
+
+    // Recover unclaimed rewards for earlier testers.
+
+    if (!callfunc("MYgene_NT_CQ_Claim"))
+        return;
+
+    if (JobLevel < 10)
+        JobLevel = 10;
+
+    mes "You have conquered the Guardian.";
+    mes "Your journey is almost complete.";
+    next;
+
+    mes "[Graduation Requirements]";
+    mes "Floors cleared: 4/4";
+    mes "Job Level: " + JobLevel + "/10";
+    mes "Basic Skill: " + getskilllv(1) + "/9";
+
+    if (JobLevel < 10) {
+        mes "Job level preparation failed.";
+        return;
+    }
+
+    if (getskilllv(1) < 9) {
+
+        next;
+
+        mes "[Final Skill Training]";
+        mes "Your Skill window will open.";
+        mes "Raise Basic Skill to Level 9.";
+        mes "Use your remaining skill points.";
+        mes "Alt + S opens or closes Skills.";
+
+        close2;
+
+        @MYGENE_NT_DS_MAP$ = strcharinfo(3);
+
+        deltimer "MYgene_NT_DestinyGuide::OnPoll";
+
+        mygenetowerskills;
+
+        dispbottom "Learn Basic Skill Level 9.";
+
+        addtimer 1000,
+            "MYgene_NT_DestinyGuide::OnPoll";
+
+        end;
+    }
+
+    next;
+
+    setarray .@names$[0],
+        "Swordman",
+        "Mage",
+        "Archer",
+        "Acolyte",
+        "Thief",
+        "Merchant";
+
+    setarray .@jobs[0],
+        Job_Swordman,
+        Job_Mage,
+        Job_Archer,
+        Job_Acolyte,
+        Job_Thief,
+        Job_Merchant;
+
+    while (1) {
+
+        mes "[Choose Your Destiny]";
+        mes "Choose your first job.";
+
+        if (MYGENE_NT_DEV_JOB > 0) {
+
+            for (.@i = 0; .@i < 6; .@i++) {
+
+                if (.@jobs[.@i] == MYGENE_NT_DEV_JOB)
+                    mes "Saved choice: " + .@names$[.@i];
+            }
+        }
+
+        next;
+
+        .@choice = select(
+            "Swordman:Mage:Archer:Acolyte:Thief:Merchant:Leave"
+        );
+
+        if (.@choice == 7)
+            return;
+
+        .@index = .@choice - 1;
+
+        mes "[" + .@names$[.@index] + "]";
+
+        switch (.@choice) {
+
+            case 1:
+                mes "Strength, courage and melee combat.";
+                break;
+
+            case 2:
+                mes "Intelligence and elemental magic.";
+                break;
+
+            case 3:
+                mes "Precision and ranged combat.";
+                break;
+
+            case 4:
+                mes "Faith, healing and protection.";
+                break;
+
+            case 5:
+                mes "Agility, evasion and swift attacks.";
+                break;
+
+            case 6:
+                mes "Trade, wealth and opportunity.";
+                break;
+        }
+
+        next;
+
+        mes "[Confirm Destiny]";
+        mes "Become a " + .@names$[.@index] + "?";
+        next;
+
+        if (select("Confirm:Back") == 2)
+            continue;
+
+        MYGENE_NT_DEV_JOB = .@jobs[.@index];
+
+        mes "[Destiny]";
+        mes "Selected job: " + .@names$[.@index];
+        mes "Your graduation choice is saved.";
+        mes "Graduation title:";
+        mes "^B8860BNovice Tower Conqueror^000000";
+        mes "Permanent job advancement is now available.";
+        next;
+
+        mes "[Final Confirmation]";
+        mes "This will permanently change your character's job.";
+        mes "Selected job: " + .@names$[.@index];
+        next;
+
+        if (select("Graduate now:Cancel") != 1) {
+            mes "Your choice is saved.";
+            mes "Graduation cancelled.";
+            return;
+        }
+
+        callfunc "MYgene_NT_Graduate_Test",.@jobs[.@index];
+        return;
+
+        debugmes "[DESTINY] Saved job choice: " +
+            MYGENE_NT_DEV_JOB;
+
+        return;
+    }
+}
+
+// Verify graduation and settle interrupted checkpoints.
+
+function	script	MYgene_NT_Grad_Finalize	{
+
+    if (MYGENE_NT_DEV_ROUTE != 2)
+        return 0;
+
+    .@job = MYGENE_NT_DEV_GRAD_PENDING;
+
+    if (.@job < 1 || .@job > 6)
+        return 0;
+
+    if (MYGENE_NT_DEV_CLEARED < 4 ||
+        MYGENE_NT_DEV_CLEARED > 5)
+        return 0;
+
+    if (Class != .@job ||
+        MYGENE_NT_DEV_JOB != .@job)
+        return 0;
+
+    // MYGENE_DESTINY_STATS_V21
+
+    if (!MYGENE_NT_GRAD_STAT_RESET) {
+
+        // Native stat reset restores the normal
+        // level-based status point entitlement.
+
+        resetstatus;
+
+        MYGENE_NT_GRAD_STAT_BUDGET = StatusPoint;
+        MYGENE_NT_GRAD_STAT_RESET = 1;
+
+        debugmes "[DESTINY V21] Stat reset complete. Points: "+
+            StatusPoint;
+    }
+
+    MYGENE_NT_DEV_CLEARED = 5;
+    MYGENE_NT_DEV_GRAD_DONE = 1;
+    MYGENE_NT_DEV_GRAD_PENDING = 0;
+    callfunc "MYgene_NT_AwardTitle";
+
+    debugmes "[DESTINY] Graduation complete. Class: " + Class;
+
+    return 1;
+}
+
+// Permanent first-job advancement - GM staging.
+
+function	script	MYgene_NT_Graduate_Test	{
+
+    .@job = getarg(0);
+
+    if (Class != Job_Novice || !callfunc("MYgene_NT_PublicInside"))
+        return;
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4 ||
+        MYGENE_NT_DEV_GRAD_DONE) {
+
+        mes "Graduation is unavailable.";
+        return;
+    }
+
+    if (JobLevel < 10 || getskilllv(1) < 9) {
+        mes "Graduation requirements are not met.";
+        return;
+    }
+
+    if (.@job < 1 || .@job > 6 ||
+        MYGENE_NT_DEV_JOB != .@job) {
+
+        mes "Invalid first-job selection.";
+        return;
+    }
+
+    // Public graduation requires earned rewards.
+    if (!getgmlevel() &&
+        (!MYGENE_NT_F1_REWARDED ||
+         !MYGENE_NT_F2_REWARDED ||
+         !MYGENE_NT_F3_REWARDED ||
+         !MYGENE_NT_F4_REWARDED ||
+         !MYGENE_NT_F4_VICTORY)) {
+
+        mes "Complete all required training first.";
+        return;
+    }
+
+    // Save the intended class before changing jobs.
+
+    MYGENE_NT_DEV_GRAD_PENDING = .@job;
+
+    debugmes "[DESTINY] BEFORE JOB CHANGE: " + .@job;
+
+    jobchange .@job;
+
+    debugmes "[DESTINY] AFTER JOB CHANGE: " + Class;
+
+    if (!callfunc("MYgene_NT_Grad_Finalize")) {
+        mes "Graduation could not be finalized.";
+        mes "Your recorded choice remains saved.";
+        return;
+    }
+
+    callfunc "MYgene_NT_Grad_Stats";
+
+    percentheal 100,100;
+
+    mes "[Graduation Complete]";
+    mes "^B8860BCongratulations!^000000";
+    mes "You have conquered the Novice Tower.";
+    mes "All five floors cleared.";
+    mes "Your first job has been granted.";
+    mes "Check your achievement window for the Conqueror reward.";
+    next;
+
+    mes "[Tower Instructor]";
+    mes "Your journey has just begun.";
+    mes "Welcome to MYgene!";
+    mes "You will now return to Prontera.";
+
+    close2;
+
+    dispbottom "=== NOVICE TOWER GRADUATION ===";
+    dispbottom "All five floors cleared.";
+
+    warp "prontera",158,176;
+
+    addtimer 1500,
+        "MYgene_NT_DestinyGuide::OnGradStatus";
+
+    end;
+}
+
+-	script	MYgene_NT_DestinyGuide	-1,{
+
+OnStart:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_PublicInside") ||
+        Class != Job_Novice ||
+        Hp <= 0 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4)
+        end;
+
+    callfunc "MYgene_NT_Destiny";
+
+    close;
+
+OnGradStatus:
+
+    if (!playerattached())
+        end;
+
+    if (!MYGENE_NT_DEV_GRAD_DONE ||
+        MYGENE_NT_DEV_CLEARED != 5 ||
+        !MYGENE_NT_GRAD_STAT_RESET ||
+        Class != MYGENE_NT_DEV_JOB)
+        end;
+
+    mygenetowerstatus;
+
+    dispbottom "Review your attributes.";
+    dispbottom "Alt + A opens or closes Status.";
+
+    end;
+
+OnPoll:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_PublicInside") ||
+        Class != Job_Novice ||
+        Hp <= 0 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4 ||
+        strcharinfo(3) != @MYGENE_NT_DS_MAP$)
+        end;
+
+    if (getskilllv(1) < 9) {
+
+        addtimer 1000,
+            "MYgene_NT_DestinyGuide::OnPoll";
+
+        end;
+    }
+
+    dispbottom "Basic Skill Level 9 verified!";
+    dispbottom "Alt + S: Close your Skill window.";
+    dispbottom "Graduation unlocked.";
+
+    addtimer 4000,
+        "MYgene_NT_DestinyGuide::OnStart";
+
+    end;
+}

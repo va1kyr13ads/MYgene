@@ -1,0 +1,310 @@
+# MYgene - Yellow Fabre encounter.
+# Custom normal drops are rolled by npc/custom/mygene/yellow_fabre.txt at exact
+# probabilities; vanilla Fabre drops below use the server's usual drop settings.
+Header:
+  Type: MOB_DB
+  Version: 5
+
+Body:
+  - Id: 31050
+    AegisName: MYGENE_YELLOW_FABRE
+    Name: Yellow Fabre
+    Level: 8
+    Hp: 3000
+    BaseExp: 30
+    JobExp: 25
+    Attack: 22
+    Attack2: 30
+    Agi: 5
+    Vit: 8
+    Dex: 10
+    Luk: 7
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Insect
+    Element: Earth
+    ElementLevel: 1
+    WalkSpeed: 340
+    AttackDelay: 1672
+    AttackMotion: 672
+    ClientAttackMotion: 192
+    DamageMotion: 480
+    Ai: 01
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Fluff
+        Rate: 6500
+      - Item: Feather
+        Rate: 500
+      - Item: Club_
+        Rate: 80
+      - Item: Azure_Jewel
+        Rate: 5
+      - Item: Green_Herb
+        Rate: 700
+      - Item: Clover
+        Rate: 1000
+      - Item: Club
+        Rate: 200
+      - Item: Fabre_Card
+        Rate: 1
+        StealProtected: true
+
+  # MYgene Red Thief Bug: new normal monster, using Yellow Fabre's
+  # combat/stat baseline exactly. Normal drops mirror Thief Bug (1051);
+  # independent exclusive reward rolls are in npc/custom/mygene/red_thief_bug.txt.
+  - Id: 31051
+    AegisName: MYGENE_RED_THIEF_BUG
+    Name: Red Thief Bug
+    Level: 8
+    Hp: 3000
+    BaseExp: 30
+    JobExp: 25
+    Attack: 22
+    Attack2: 30
+    Agi: 5
+    Vit: 8
+    Dex: 10
+    Luk: 7
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Insect
+    Element: Earth
+    ElementLevel: 1
+    WalkSpeed: 150
+    AttackDelay: 1288
+    AttackMotion: 288
+    ClientAttackMotion: 720
+    DamageMotion: 768
+    Ai: 07
+    Modes:
+      Detector: true
+    # Vanilla Thief Bug (1051) drops from db/pre-re/mob_db.yml.
+    # These use the normal configured server multiplier, unlike special
+    # rewards rolled at fixed rates in red_thief_bug.txt.
+    Drops:
+      - Item: Worm_Peelings
+        Rate: 2500
+      - Item: Leather_Jacket_
+        Rate: 80
+      - Item: Red_Herb
+        Rate: 350
+      - Item: Jellopy
+        Rate: 2000
+      - Item: Leather_Jacket
+        Rate: 120
+      - Item: Iron_Ore
+        Rate: 250
+      - Item: Thief_Bug_Card
+        Rate: 1
+        StealProtected: true
+
+  - Id: 31052
+    Sprite: CHONCHON
+    AegisName: MYGENE_BLUE_CHON_CHON
+    Name: Blue Chon Chon
+    Level: 30
+    Hp: 3000
+    BaseExp: 450
+    JobExp: 300
+    Attack: 110
+    Attack2: 145
+    Defense: 25
+    MagicDefense: 10
+    Str: 24
+    Agi: 55
+    Vit: 25
+    Int: 8
+    Dex: 45
+    Luk: 12
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Insect
+    Element: Wind
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1076
+    AttackMotion: 576
+    ClientAttackMotion: 288
+    DamageMotion: 480
+    Ai: 04
+    Modes:
+      Detector: true
+    Drops:
+      - Item: Iron
+        Rate: 50
+      - Item: Shell
+        Rate: 6500
+      - Item: Jellopy
+        Rate: 1500
+      - Item: Cutter_
+        Rate: 55
+      - Item: Wing_Of_Fly
+        Rate: 100
+      - Item: Chonchon_Doll
+        Rate: 5
+      - Item: Iron_Ore
+        Rate: 150
+      - Item: Chonchon_Card
+        Rate: 1
+        StealProtected: true
+
+
+  - Id: 31053
+    Sprite: WILOW
+    AegisName: MYGENE_PURPLE_WILLOW
+    Name: Purple Willow
+    Level: 4
+    Hp: 3000
+    BaseExp: 5
+    JobExp: 4
+    Attack: 9
+    Attack2: 12
+    Defense: 5
+    MagicDefense: 15
+    Agi: 4
+    Vit: 8
+    Int: 30
+    Dex: 9
+    Luk: 10
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Medium
+    Race: Plant
+    Element: Earth
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1672
+    AttackMotion: 672
+    ClientAttackMotion: 288
+    DamageMotion: 432
+    Ai: 01
+    Drops:
+      - Item: Tree_Root
+        Rate: 9000
+      - Item: Wooden_Block
+        Rate: 100
+      - Item: Resin
+        Rate: 1500
+      - Item: Sweet_Potato
+        Rate: 700
+      - Item: Tree_Of_Archer_3
+        Rate: 3500
+      - Item: Tree_Of_Archer_2
+        Rate: 2000
+      - Item: Tree_Of_Archer_1
+        Rate: 1000
+      - Item: Wilow_Card
+        Rate: 1
+        StealProtected: true
+
+
+  - Id: 31054
+    Sprite: RIDEWORD
+    AegisName: MYGENE_ORANGE_RIDEWORD
+    Name: Orange Rideword
+    Level: 59
+    Hp: 3000
+    BaseExp: 2007
+    JobExp: 3106
+    Attack: 584
+    Attack2: 804
+    Defense: 5
+    MagicDefense: 35
+    Str: 48
+    Agi: 75
+    Vit: 10
+    Int: 20
+    Dex: 120
+    Luk: 45
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Small
+    Race: Formless
+    Element: Neutral
+    ElementLevel: 3
+    WalkSpeed: 150
+    AttackDelay: 864
+    AttackMotion: 500
+    ClientAttackMotion: 468
+    DamageMotion: 192
+    Ai: 21
+    Drops:
+      - Item: Worn_Out_Page
+        Rate: 4850
+      - Item: Book_Of_Billows
+        Rate: 4
+      - Item: Book_Of_Mother_Earth
+        Rate: 4
+      - Item: Book_Of_Blazing_Sun
+        Rate: 2
+      - Item: Book_Of_Gust_Of_Wind
+        Rate: 2
+      - Item: Bookclip_In_Memory
+        Rate: 300
+      - Item: Old_Magic_Book
+        Rate: 20
+      - Item: Rideword_Card
+        Rate: 1
+        StealProtected: true
+
+
+  - Id: 31055
+    Sprite: ORK_WARRIOR
+    AegisName: MYGENE_DARK_ORC
+    Name: Dark Orc
+    Level: 24
+    Hp: 3000
+    BaseExp: 408
+    JobExp: 160
+    Attack: 104
+    Attack2: 126
+    Defense: 10
+    MagicDefense: 5
+    Agi: 24
+    Vit: 48
+    Int: 25
+    Dex: 34
+    Luk: 10
+    AttackRange: 1
+    SkillRange: 10
+    ChaseRange: 12
+    Size: Medium
+    Race: Demihuman
+    RaceGroups:
+      Orc: true
+    Element: Earth
+    ElementLevel: 1
+    WalkSpeed: 200
+    AttackDelay: 1864
+    AttackMotion: 864
+    ClientAttackMotion: 672
+    DamageMotion: 288
+    Ai: 04
+    Drops:
+      - Item: Iron
+        Rate: 210
+      - Item: Orcish_Voucher
+        Rate: 9000
+      - Item: Oridecon_Stone
+        Rate: 40
+      - Item: Cigar
+        Rate: 3
+      - Item: Battle_Axe_
+        Rate: 10
+      - Item: Orcish_Axe
+        Rate: 5
+      - Item: Axe
+        Rate: 100
+      - Item: Orc_Warrior_Card
+        Rate: 1
+        StealProtected: true

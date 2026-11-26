@@ -85,6 +85,7 @@ void storage_guild_storagesaved(int32 guild_id); //Ack from char server that gui
 
 // Premium Storage [Cydh]
 void storage_premiumStorage_open(map_session_data *sd);
+bool storage_spacebox_autoloot(map_session_data* sd, struct item* it);
 bool storage_premiumStorage_load(map_session_data *sd, uint8 num, uint8 mode);
 void storage_premiumStorage_save(map_session_data *sd);
 void storage_premiumStorage_close(map_session_data *sd);

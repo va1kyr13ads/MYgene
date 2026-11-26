@@ -1,0 +1,145 @@
+//! The announcement bar: server broadcasts in boxes across the top of the screen, as well as in the chat; three at
+//! most, each for 20 seconds.
+
+use std::collections::VecDeque;
+use std::time::{Duration, Instant};
+
+use rustnarok_client::text::Font;
+
+use crate::render::{Gpu, Texture};
+use crate::{Layer, overhead, screen};
+
+/// The bar's top, below the top of the screen.
+const TOP: f32 = 51.0;
+const LASTS: Duration = Duration::from_secs(20);
+const MOST: usize = 3;
+/// Wrapped at this many bytes a line (EUC-KR, as the client counts).
+const LINE_BYTES: usize = 72;
+/// Text starts this far inside its box; lines are the text's height plus `LINE_GAP` apart; messages `MESSAGE_GAP`.
+const INSET: f32 = 6.0;
+const LINE_GAP: f32 = 4.0;
+const MESSAGE_GAP: f32 = 10.0;
+pub const SIZE: u16 = 12;
+/// Each box: black at a quarter opacity inside a 1 px grey border with cut corners. Its text has a black shadow 1 px
+/// right and down.
+const FILL: [u8; 4] = [0, 0, 0, 0x40];
+const EDGE: [u8; 4] = [0x5C, 0x5C, 0x5C, 0xFF];
+
+struct Announcement {
+    text: String,
+    color: [u8; 3],
+    size: u16,
+    at: Instant,
+    /// Its lines as the last frame drew them, each in black (the shadow) and in its color.
+    lines: Option<Vec<[Texture; 2]>>,
+}
+
+#[derive(Default)]
+pub struct Bar {
+    messages: VecDeque<Announcement>,
+    /// The fill and the border.
+    background: Option<[Texture; 2]>,
+}
+
+/// `text` cut into lines of at most `LINE_BYTES` bytes in the data's code page (2 for a Hangul letter), whole letters.
+pub fn wrap(text: &str) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    let mut bytes = 0;
+    for character in text.chars() {
+        let width = rustnarok_client::net::text_bytes(character);
+        if bytes + width > LINE_BYTES {
+            lines.push(String::new());
+            bytes = 0;
+        }
+        lines.last_mut().unwrap().push(character);
+        bytes += width;
+    }
+    lines
+}
+
+impl Bar {
+    /// A broadcast: the oldest goes when there are already three.
+    pub fn push(&mut self, text: String, color: [u8; 3], size: u16, now: Instant) {
+        if self.messages.len() == MOST {
+            self.messages.pop_front();
+        }
+        self.messages.push_back(Announcement { text, color, size, at: now, lines: None });
+    }
+
+    /// Takes off the messages whose time is up.
+    pub fn expire(&mut self, now: Instant) {
+        self.messages.retain(|message| now.saturating_duration_since(message.at) < LASTS);
+    }
+
+    /// The texts showing, oldest first.
+    pub fn texts(&self) -> Vec<String> {
+        self.messages.iter().map(|message| message.text.clone()).collect()
+    }
+
+    /// The announcements showing: text, color, and size, oldest first.
+    #[cfg(test)]
+    pub fn entries(&self) -> Vec<(&str, [u8; 3], u16)> {
+        self.messages.iter().map(|message| (message.text.as_str(), message.color, message.size)).collect()
+    }
+
+    /// The lines' textures for this frame: the UI's text, at the screen's own pixel size (and so as sharp as the chat's
+    /// on a scaled canvas), kept by `gpu` between frames.
+    pub fn prepare(&mut self, gpu: &Gpu, font: &Font) {
+        self.background.get_or_insert_with(|| [gpu.solid(FILL), gpu.solid(EDGE)]);
+        for message in &mut self.messages {
+            let (color, size) = (message.color, f32::from(message.size));
+            let lines = wrap(&message.text).into_iter().map(|line| [[0; 3], color].map(|color| gpu.text_sized(font, &line, color, size)));
+            message.lines = Some(lines.collect());
+        }
+    }
+
+    pub fn draw<'a>(&'a self, layer: &mut Layer<'a>) {
+        let Some([fill, edge]) = &self.background else { return };
+        let mut top = TOP;
+        for message in &self.messages {
+            let Some(lines) = &message.lines else { continue };
+            let width = lines.iter().map(|[_, line]| line.size[0]).fold(0.0, f32::max) + 2.0 * INSET;
+            let height: f32 = lines.iter().map(|[_, line]| line.size[1] + LINE_GAP).sum::<f32>() + 2.0 * INSET - LINE_GAP;
+            let left = ((screen()[0] - width) / 2.0).floor();
+            layer.sprites.push((fill, [left + 1.0, top + 1.0], [width - 2.0, height - 2.0]));
+            for (at, size) in overhead::border([width, height]) {
+                layer.sprites.push((edge, [left + at[0], top + at[1]], size));
+            }
+            let mut y = top + INSET;
+            for [shadow, line] in lines {
+                layer.sprites.push((shadow, [left + INSET + 1.0, y + 1.0], shadow.size));
+                layer.sprites.push((line, [left + INSET, y], line.size));
+                y += line.size[1] + LINE_GAP;
+            }
+            top += height + MESSAGE_GAP;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wraps_at_72_bytes() {
+        let lines = wrap(&"x".repeat(150));
+        assert_eq!(lines.iter().map(String::len).collect::<Vec<_>>(), [72, 72, 6]);
+        // Hangul counts two bytes a letter.
+        assert_eq!(wrap(&"가".repeat(40)).iter().map(|line| line.chars().count()).collect::<Vec<_>>(), [36, 4]);
+        assert_eq!(wrap("Hello"), ["Hello"]);
+    }
+
+    #[test]
+    fn keeps_the_newest_three_for_20_seconds() {
+        let mut bar = Bar::default();
+        let now = Instant::now();
+        for (n, text) in ["One", "Two", "Three", "Four"].into_iter().enumerate() {
+            bar.push(text.into(), [255, 255, 0], SIZE, now + Duration::from_secs(n as u64));
+        }
+        assert_eq!(bar.texts(), ["Two", "Three", "Four"]);
+        bar.expire(now + Duration::from_millis(21_500));
+        assert_eq!(bar.texts(), ["Three", "Four"], "Two came at 1 s");
+        bar.expire(now + Duration::from_secs(24));
+        assert!(bar.texts().is_empty());
+    }
+}

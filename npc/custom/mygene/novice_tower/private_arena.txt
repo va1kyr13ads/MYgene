@@ -1,0 +1,349 @@
+// MYGENE_PUBLIC_RC1
+// MYgene Novice Tower
+// V3 - Direct private map warp diagnostic
+
+function	script	MYgene_Tower_Private	{
+
+    if (!callfunc("MYgene_NT_PublicEligible"))
+        return;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        return;
+
+    .@map$ = instance_mapname("1@tower",.@id);
+
+    if (.@map$ == "" || .@map$ == "1@tower")
+        return;
+
+    if (getmapusers(.@map$) != 0) {
+        dispbottom "Your private Tower is occupied. Please retry.";
+        return;
+    }
+
+    debugmes "[TOWER V3] BEFORE WARP";
+
+    warp .@map$,50,355;
+
+    debugmes "[TOWER V3] AFTER WARP";
+
+    // MYGENE_TIME_ENTRY_FIX_V131
+
+    // Set to 0 after accelerated testing.
+    @MYGENE_NT_TIME_TEST = 0;
+
+    if (MYGENE_NT_DEV_ROUTE == 0) {
+
+        MYGENE_NT_DEV_ROUTE = 2;
+
+        debugmes "[GUARDIAN V131] Tower route initialized.";
+    }
+
+    @MYGENE_NT_TIME_INSTANCE = instance_id(IM_CHAR);
+
+    debugmes "[GUARDIAN V131] Registered CID: "+
+        getcharid(0)+
+        " Route: "+MYGENE_NT_DEV_ROUTE+
+        " Instance: "+@MYGENE_NT_TIME_INSTANCE+
+        " Cleared: "+MYGENE_NT_DEV_CLEARED;
+    @MYGENE_NT_TIME_ENTRY = gettimetick(2);
+    @MYGENE_NT_TIME_PHASE = 0;
+    @MYGENE_NT_TIME_WARNED = 0;
+    @MYGENE_NT_TIME_DEADLINE = 0;
+
+    callfunc "MYgene_NT_TimePause";
+
+    dispbottom "Welcome to MYgene Novice Tower.";
+    dispbottom "Use @towerleave to take a break.";
+    if (MYGENE_NT_DEV_ROUTE == 2 &&
+        MYGENE_NT_DEV_CLEARED == 1) {
+
+        callfunc "MYgene_NT_Survival_Start",.@map$;
+
+    } else if (MYGENE_NT_DEV_ROUTE == 2 &&
+        MYGENE_NT_DEV_CLEARED == 2) {
+
+        callfunc "MYgene_Tower_Wisdom";
+
+    } else if (MYGENE_NT_DEV_ROUTE == 2 &&
+        MYGENE_NT_DEV_CLEARED == 3) {
+
+        callfunc "MYgene_NT_Conquest_Start",.@map$;
+
+    } else if (MYGENE_NT_DEV_ROUTE == 2 &&
+        MYGENE_NT_DEV_CLEARED == 4) {
+
+        addtimer 1500,
+            "MYgene_NT_DestinyGuide::OnStart";
+
+    } else if (MYGENE_NT_DEV_ROUTE == 2 &&
+        MYGENE_NT_DEV_CLEARED >= 2) {
+
+        dispbottom "Continue your next floor at the Herald.";
+
+    } else {
+
+        callfunc "MYgene_NT_Awakening_Start",.@map$;
+    }
+
+    end;
+}
+
+function	script	MYgene_NT_TimeValid	{
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0 ||
+        .@id != @MYGENE_NT_TIME_INSTANCE ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED >= 5 ||
+        Class != Job_Novice)
+        return 0;
+
+    if (strcharinfo(3) !=
+        instance_mapname("1@tower",.@id))
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_NT_TimePause	{
+
+    if (!callfunc("MYgene_NT_TimeValid"))
+        return;
+
+    @MYGENE_NT_AW_ACTIVE = 0;
+    @MYGENE_NT_SV_ACTIVE = 0;
+    @MYGENE_NT_SV_STEP = 0;
+    @MYGENE_NT_WD_ACTIVE = 0;
+    @MYGENE_NT_CQ_ACTIVE = 0;
+
+    deltimer "MYgene_NT_Awakening::OnPoll";
+    deltimer "MYgene_NT_Conquest::OnFinish";
+    deltimer "MYgene_NT_Conquest::OnPoll";
+    deltimer "MYgene_NT_DestinyGuide::OnGradStatus";
+    deltimer "MYgene_NT_DestinyGuide::OnPoll";
+    deltimer "MYgene_NT_DestinyGuide::OnStart";
+    deltimer "MYgene_NT_Survival::OnPoll";
+    deltimer "MYgene_NT_Wisdom::OnDemo";
+    deltimer "MYgene_NT_Wisdom::OnPoll";
+    deltimer "MYgene_NT_Wisdom::OnStart";
+
+    callfunc "MYgene_NT_CQ_Cleanup";
+    callfunc "MYgene_NT_WD_DemoCleanup";
+
+    // Private solo instance only.
+    // Default killmonsterall strips death events.
+
+    killmonsterall strcharinfo(3);
+
+    percentheal 100,100;
+
+    return;
+}
+
+function	script	MYgene_NT_TimeResume	{
+
+    if (!callfunc("MYgene_NT_TimeValid"))
+        return;
+
+    .@map$ = strcharinfo(3);
+
+    mygenetimevanish;
+
+    @MYGENE_NT_TIME_PHASE = 0;
+    @MYGENE_NT_TIME_ENTRY = gettimetick(2);
+    @MYGENE_NT_TIME_WARNED = 0;
+    @MYGENE_NT_TIME_DEADLINE = 0;
+
+    dispbottom "[Guardian of Time] Welcome back.";
+    dispbottom "Resuming your unfinished floor.";
+
+    switch (MYGENE_NT_DEV_CLEARED) {
+
+        case 0:
+            callfunc "MYgene_NT_Awakening_Start",.@map$;
+            break;
+
+        case 1:
+            callfunc "MYgene_NT_Survival_Start",.@map$;
+            break;
+
+        case 2:
+            callfunc "MYgene_Tower_Wisdom";
+            break;
+
+        case 3:
+            callfunc "MYgene_NT_Conquest_Start",.@map$;
+            break;
+
+        case 4:
+            addtimer 1500,
+                "MYgene_NT_DestinyGuide::OnStart";
+            break;
+    }
+
+    return;
+}
+
+-	script	MYgene_NT_TimeGuardian	-1,{
+
+OnOffer:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_TimeValid") ||
+        @MYGENE_NT_TIME_PHASE != 1)
+        end;
+
+    callfunc "MYgene_NT_TimePause";
+
+    getmapxy(.@map$,.@x,.@y,BL_PC);
+
+    .@gx = .@x + 2;
+    .@gy = .@y;
+
+    if (!checkcell(
+        .@map$,.@gx,.@gy,cell_chkpass
+    )) {
+
+        .@gx = .@x;
+        .@gy = .@y;
+    }
+
+    setmapflag .@map$,MF_NOBASEEXP;
+    setmapflag .@map$,MF_NOJOBEXP;
+    setmapflag .@map$,MF_NOMOBLOOT;
+
+    // Raydric appearance.
+    // Peaceful guardian, not a combat encounter.
+
+    monster .@map$,.@gx,.@gy,
+        "Guardian of Time",1163,1,
+        "MYgene_NT_TimeGuardian::OnRemoved";
+
+    .@gid = $@mobid[0];
+
+    @MYGENE_NT_TIME_GID = .@gid;
+
+    if (.@gid > 0 && unitexists(.@gid)) {
+
+        setunitdata .@gid,UMOB_MODE,0;
+        setunitdata .@gid,UMOB_MAXHP,100000;
+        setunitdata .@gid,UMOB_HP,100000;
+    }
+
+    // MYGENE_GUARDIAN_DIALOG_V134
+
+    mes "[Guardian of Time]";
+    mes "Young adventurer, you seem weary.";
+    mes "Would you like to continue your training,";
+    mes "or rest outside the Tower?";
+    mes "^339933Your completed lessons are safe.^000000";
+    mes "Please respond within "+(@MYGENE_NT_TIME_DEADLINE-gettimetick(2))+" seconds.";
+
+    .@choice = select(
+        "Continue my training:Leave the Tower"
+    );
+
+    if (@MYGENE_NT_TIME_PHASE != 1)
+        end;
+
+    if (.@choice == 1) {
+
+        clear;
+
+        mes "[Guardian of Time]";
+        mes "Very well, adventurer.";
+        mes "Let your training continue.";
+
+        close2;
+
+        if (@MYGENE_NT_TIME_PHASE != 1)
+            end;
+
+        callfunc "MYgene_NT_TimeResume";
+
+        end;
+    }
+
+    @MYGENE_NT_TIME_PHASE = 2;
+    @MYGENE_NT_TIME_DEADLINE = gettimetick(2)+10;
+
+    clear;
+
+    goto L_Farewell;
+
+OnFarewell:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_TimeValid") ||
+        @MYGENE_NT_TIME_PHASE != 2)
+        end;
+
+L_Farewell:
+
+    mes "[Guardian of Time]";
+    clear;
+
+    mes "[Guardian of Time]";
+    mes "It seems you require more rest.";
+    mes "I shall return you to Prontera.";
+    mes "^339933Your progress is safe.^000000";
+    mes "Return when you are ready.";
+
+    // No Next button. Close only.
+    // Native timer also forces the exit.
+
+    close2;
+
+    if (@MYGENE_NT_TIME_PHASE != 2)
+        end;
+
+    mygenetimevanish;
+
+    warp "prontera",158,176;
+
+    end;
+
+OnRemoved:
+
+    end;
+
+OnPCLoginEvent:
+
+    if (Class != Job_Novice ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED >= 5)
+        end;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        end;
+
+    if (strcharinfo(3) !=
+        instance_mapname("1@tower",.@id))
+        end;
+
+    @MYGENE_NT_TIME_INSTANCE = .@id;
+    @MYGENE_NT_TIME_ENTRY = gettimetick(2);
+    @MYGENE_NT_TIME_PHASE = 0;
+    @MYGENE_NT_TIME_WARNED = 0;
+    @MYGENE_NT_TIME_DEADLINE = 0;
+
+    addtimer 2000,"MYgene_NT_TimeGuardian::OnRecover";
+
+    end;
+
+OnRecover:
+
+    if (!playerattached() ||
+        !callfunc("MYgene_NT_TimeValid"))
+        end;
+
+    callfunc "MYgene_NT_TimePause";
+    callfunc "MYgene_NT_TimeResume";
+
+    end;
+}

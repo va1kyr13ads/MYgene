@@ -1,0 +1,20 @@
+
+base_exp_rate: 700
+job_exp_rate: 700
+item_rate_common: 400
+item_rate_common_boss: 300
+item_rate_common_mvp: 200
+item_rate_heal: 400
+item_rate_heal_boss: 300
+item_rate_heal_mvp: 200
+item_rate_use: 400
+item_rate_use_boss: 300
+item_rate_use_mvp: 200
+item_rate_equip: 400
+item_rate_equip_boss: 300
+item_rate_equip_mvp: 200
+item_rate_card: 400
+item_rate_card_boss: 300
+item_rate_card_mvp: 200
+item_rate_mvp: 200
+item_auto_get: yes

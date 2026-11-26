@@ -1,0 +1,323 @@
+//! Which window is in front. The game keeps its windows in one list: a window that opens goes on top, and so does one
+//! that's pressed. Message boxes, the menus, the tooltips and the world map stay over every window; the screen's own
+//! things (the small minimap, the quest icon, the level-up buttons) stay under them.
+
+use crate::Top;
+use crate::escape::WindowId;
+
+/// Where something drawn on the screen sits.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum Place {
+    /// Under every window.
+    #[default]
+    Under,
+    /// A window, in `Front`'s order. One key for all of a window's parts (the mail's three, every dragged-out member).
+    Window(Top),
+    /// Over every window.
+    Over,
+}
+
+/// Where `top` sits.
+pub fn place(top: Top) -> Place {
+    use WindowId::*;
+    match top {
+        Top::Slot | Top::GuildReason | Top::TradeAsked | Top::BookingAsked | Top::SpecialPopup => Place::Over,
+        Top::Esc(
+            WorldMap | Menu | Notice | PartyAsked | SaveAsked | MemorialAsked | PackageAsked | SkillApplyAsked | Amount | PartyInvite | AdoptAsked | QueueAsked
+            | FriendAsked | DismissAsked | HomunculusAsked | LeaderAsked | BindAsked | ExpansionAsked | PetAsked | GuildInvite | GuildAsked | CashShopBuy,
+        ) => Place::Over,
+        Top::SmallMinimap | Top::QuestIcon | Top::LevelUp | Top::RouletteIcon | Top::GoldPc => Place::Under,
+        Top::Esc(MailWrite | MailRead) => Place::Window(Top::Esc(Mailbox)),
+        Top::Esc(PartyCreate | PartyInviteName) => Place::Window(Top::Esc(PartySetup)),
+        Top::PartyHp(_) => Place::Window(Top::PartyHp(0)),
+        window => Place::Window(window),
+    }
+}
+
+/// The windows from the bottom up, and whether the NPC windows are due back in their rank (`settle_npc`).
+#[derive(Debug, Default)]
+pub struct Front(Vec<Top>, bool);
+
+impl Front {
+    /// Drops the windows that closed and puts the ones newly shown on top, in the order they're drawn.
+    pub fn sync(&mut self, shown: &[Top]) {
+        self.0.retain(|key| shown.contains(key));
+        for key in shown {
+            if !self.0.contains(key) {
+                self.0.push(*key);
+            }
+        }
+        if std::mem::take(&mut self.1) {
+            self.settle();
+        }
+    }
+
+    /// The NPC's text or Next came, or a cut-in was made: the cut-in goes over every ordinary window and the say window
+    /// over the cut-in, the others keeping their order. It holds from the next `sync`, when a window just made is
+    /// listed; after that a window that opens or is pressed goes over them again, until the next time.
+    pub fn settle_npc(&mut self) {
+        self.1 = true;
+    }
+
+    fn settle(&mut self) {
+        for key in [Top::Panel(crate::Panel::Cutin), Top::NpcDialog] {
+            if self.0.contains(&key) {
+                self.raise(key);
+            }
+        }
+    }
+
+    /// Puts the window `top` is part of on top (anything else stays where it is).
+    pub fn raise(&mut self, top: Top) {
+        if let Place::Window(key) = place(top) {
+            self.0.retain(|&other| other != key);
+            self.0.push(key);
+        }
+    }
+
+    /// How high the window is: higher is nearer the top, -1 for one not listed yet.
+    pub fn rank(&self, key: Top) -> isize {
+        self.0.iter().position(|&other| other == key).map_or(-1, |at| at as isize)
+    }
+
+    /// Where a press lands, among the things under it listed top first as they're drawn by default: the first that's
+    /// over the windows, else the highest window (the first listed of equals), else the first under them.
+    pub fn pick(&self, hits: impl IntoIterator<Item = Top>) -> Option<Top> {
+        let (mut window, mut under) = (None::<(isize, Top)>, None);
+        for hit in hits {
+            match place(hit) {
+                Place::Over => return Some(hit),
+                Place::Window(key) => {
+                    let rank = self.rank(key);
+                    if window.is_none_or(|(best, _)| rank > best) {
+                        window = Some((rank, hit));
+                    }
+                }
+                Place::Under => {
+                    under.get_or_insert(hit);
+                }
+            }
+        }
+        window.map(|(_, hit)| hit).or(under)
+    }
+
+    /// The order to draw pieces in: under first, then the windows bottom up, then what's over them; equals keep their
+    /// order.
+    pub fn draw_key(&self, place: Place) -> (u8, isize) {
+        match place {
+            Place::Under => (0, 0),
+            Place::Window(key) => (1, self.rank(key)),
+            Place::Over => (2, 0),
+        }
+    }
+
+    /// The windows from the bottom up.
+    pub fn windows(&self) -> &[Top] {
+        &self.0
+    }
+}
+
+/// F11 ("Close Tabs"): its stage (0 after a map load) and the windows it hid. The first press does only the basic
+/// close; then a press closes every window Esc can close, or, with none to close, hides every window; hidden, a
+/// press closes or hides what opened since, or with nothing new shows the hidden ones again.
+#[derive(Debug, Default)]
+pub struct CloseTabs {
+    pub stage: u8,
+    /// The windows hidden (by their `Place::Window` key); a window that closes leaves the list (`drawn`).
+    pub hidden: Vec<Top>,
+}
+
+/// What one F11 press does: the windows to close as Esc does, and whether the basic close follows.
+#[derive(Debug, Default, PartialEq)]
+pub struct CloseStep {
+    pub close: Vec<WindowId>,
+    pub basic: bool,
+}
+
+impl CloseTabs {
+    /// One press. `shown` is every window drawn now (hidden or not, `Front::windows`), `closable` every window Esc
+    /// can close now with the key it's drawn under.
+    pub fn press(&mut self, shown: &[Top], closable: &[(WindowId, Top)]) -> CloseStep {
+        self.drawn(shown);
+        let all = |keep: &dyn Fn(Top) -> bool| closable.iter().filter(|(_, key)| keep(*key)).map(|(id, _)| *id).collect::<Vec<_>>();
+        match self.stage {
+            0 => {
+                self.stage = 1;
+                CloseStep { close: Vec::new(), basic: true }
+            }
+            1 if !closable.is_empty() => CloseStep { close: all(&|_| true), basic: true },
+            1 => {
+                self.hidden = shown.to_vec();
+                self.stage = 2;
+                CloseStep::default()
+            }
+            _ => {
+                // Opened since the interface went: what Esc can close closes, the rest is hidden with the others.
+                // ponytail: the game closes a new window Esc can't close too, without telling the server (a storage
+                // opened again would stay open there); hiding it keeps the two in step.
+                let close = all(&|key| !self.hidden.contains(&key));
+                let hide: Vec<Top> =
+                    shown.iter().copied().filter(|key| !self.hidden.contains(key) && !closable.iter().any(|(_, other)| other == key)).collect();
+                if close.is_empty() && hide.is_empty() {
+                    self.hidden.clear();
+                    self.stage = 1;
+                    return CloseStep::default();
+                }
+                self.hidden.extend(hide);
+                CloseStep { close, basic: true }
+            }
+        }
+    }
+
+    /// The windows drawn this frame: a hidden one that closed leaves the list, so it shows when it opens again.
+    pub fn drawn(&mut self, shown: &[Top]) {
+        self.hidden.retain(|key| shown.contains(key));
+    }
+
+    /// The interface is hidden (the small minimap goes too).
+    pub fn hiding(&self) -> bool {
+        self.stage == 2
+    }
+
+    /// `top` is part of a hidden window: not drawn, not pressed.
+    pub fn hides(&self, top: Top) -> bool {
+        matches!(place(top), Place::Window(key) if self.hidden.contains(&key))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Panel;
+
+    #[test]
+    fn f11_closes_then_hides_then_shows() {
+        const CASH: Top = Top::Esc(WindowId::CashShop);
+        const STORAGE: Top = Top::Panel(Panel::Storage);
+        let cash = (WindowId::CashShop, CASH);
+        let mail = (WindowId::Mailbox, MAIL);
+        let mut tabs = CloseTabs::default();
+        // Stage 0: the basic close only, even with the cash shop open.
+        assert_eq!(tabs.press(&[Top::Chat, STORAGE, CASH], &[cash]), CloseStep { close: vec![], basic: true });
+        assert_eq!(tabs.stage, 1);
+        // Stage 1 with something Esc can close: it closes, then the basic close; the storage stays.
+        assert_eq!(tabs.press(&[Top::Chat, STORAGE, CASH, MAIL], &[cash, mail]), CloseStep { close: vec![WindowId::CashShop, WindowId::Mailbox], basic: true });
+        assert_eq!((tabs.stage, tabs.hidden.len()), (1, 0));
+        // Stage 1 with nothing to close: every window is hidden, nothing closes.
+        assert_eq!(tabs.press(&[Top::Chat, STORAGE], &[]), CloseStep::default());
+        assert_eq!((tabs.stage, tabs.hidden.as_slice()), (2, [Top::Chat, STORAGE].as_slice()));
+        assert!(tabs.hiding() && tabs.hides(Top::Chat) && tabs.hides(STORAGE) && !tabs.hides(INVENTORY));
+        // Stage 2 with windows opened since: what Esc can close closes, the rest is hidden too; still hidden.
+        assert_eq!(tabs.press(&[Top::Chat, STORAGE, MAIL, Top::NpcDialog], &[mail]), CloseStep { close: vec![WindowId::Mailbox], basic: true });
+        assert_eq!((tabs.stage, tabs.hidden.as_slice()), (2, [Top::Chat, STORAGE, Top::NpcDialog].as_slice()));
+        // A hidden window that closes leaves the list: opened again, it shows.
+        tabs.drawn(&[Top::Chat, STORAGE]);
+        assert!(!tabs.hides(Top::NpcDialog));
+        // Stage 2 with nothing new: the hidden windows show again, stage 1.
+        assert_eq!(tabs.press(&[Top::Chat, STORAGE], &[]), CloseStep::default());
+        assert_eq!((tabs.stage, tabs.hidden.len()), (1, 0));
+        assert!(!tabs.hiding() && !tabs.hides(Top::Chat));
+        // A map load starts it over at stage 0.
+        tabs = CloseTabs::default();
+        assert_eq!(tabs.press(&[Top::Chat], &[]), CloseStep { close: vec![], basic: true });
+    }
+
+    const INVENTORY: Top = Top::Panel(Panel::Inventory);
+    const MAIL: Top = Top::Esc(WindowId::Mailbox);
+    const BANK: Top = Top::Esc(WindowId::Bank);
+
+    #[test]
+    fn a_window_that_opens_or_is_pressed_goes_on_top() {
+        let mut front = Front::default();
+        front.sync(&[INVENTORY, MAIL]);
+        assert_eq!(front.windows(), [INVENTORY, MAIL]);
+        // The bank opens: on top; the inventory is pressed: on top of it.
+        front.sync(&[INVENTORY, MAIL, BANK]);
+        front.raise(INVENTORY);
+        assert_eq!(front.windows(), [MAIL, BANK, INVENTORY]);
+        // A part of the mail raises the whole mail; a message box raises nothing.
+        front.raise(Top::Esc(WindowId::MailWrite));
+        front.raise(Top::Esc(WindowId::SaveAsked));
+        assert_eq!(front.windows(), [BANK, INVENTORY, MAIL]);
+        // The bank closes and opens again: on top again.
+        front.sync(&[INVENTORY, MAIL]);
+        front.sync(&[INVENTORY, MAIL, BANK]);
+        assert_eq!(front.windows(), [INVENTORY, MAIL, BANK]);
+    }
+
+    #[test]
+    fn the_npcs_text_puts_the_cutin_and_the_say_window_back_on_top() {
+        const CUTIN: Top = Top::Panel(Panel::Cutin);
+        let shown = [INVENTORY, CUTIN, Top::NpcDialog, MAIL];
+        let mut front = Front::default();
+        front.sync(&shown);
+        front.raise(INVENTORY);
+        assert_eq!(front.windows(), [CUTIN, Top::NpcDialog, MAIL, INVENTORY]);
+        // The ordinary windows keep their order; the cut-in, then the say window, go on top at the next sync.
+        front.settle_npc();
+        assert_eq!(front.windows(), [CUTIN, Top::NpcDialog, MAIL, INVENTORY]);
+        front.sync(&shown);
+        assert_eq!(front.windows(), [MAIL, INVENTORY, CUTIN, Top::NpcDialog]);
+        // A press after that puts the window over the say window, until the next text.
+        front.raise(INVENTORY);
+        front.sync(&shown);
+        assert_eq!(front.windows(), [MAIL, CUTIN, Top::NpcDialog, INVENTORY]);
+        front.settle_npc();
+        front.sync(&shown);
+        assert_eq!(front.windows(), [MAIL, INVENTORY, CUTIN, Top::NpcDialog]);
+        // Only what is there moves; a say window made in the same frame is listed first, then settled.
+        let mut front = Front::default();
+        front.sync(&[INVENTORY, CUTIN, MAIL]);
+        front.settle_npc();
+        front.sync(&[INVENTORY, CUTIN, MAIL]);
+        assert_eq!(front.windows(), [INVENTORY, MAIL, CUTIN]);
+        let mut front = Front::default();
+        front.sync(&[Top::NpcDialog, INVENTORY]);
+        front.raise(INVENTORY);
+        front.settle_npc();
+        front.sync(&[Top::NpcDialog, INVENTORY, CUTIN]);
+        assert_eq!(front.windows(), [INVENTORY, CUTIN, Top::NpcDialog]);
+    }
+
+    #[test]
+    fn the_pickup_popup_is_a_window_in_the_order() {
+        const HOTBAR: Top = Top::Panel(Panel::Hotkeys);
+        let mut front = Front::default();
+        front.sync(&[HOTBAR, INVENTORY]);
+        // It shows: on top of the hotbar and the rest. A press on the hotbar after that puts the hotbar over it.
+        front.sync(&[Top::Pickup, HOTBAR, INVENTORY]);
+        assert_eq!(front.windows(), [HOTBAR, INVENTORY, Top::Pickup]);
+        front.raise(HOTBAR);
+        assert_eq!(front.windows(), [INVENTORY, Top::Pickup, HOTBAR]);
+        // Its five seconds over, the next one is on top again.
+        front.sync(&[HOTBAR, INVENTORY]);
+        front.sync(&[Top::Pickup, HOTBAR, INVENTORY]);
+        assert_eq!(front.windows(), [INVENTORY, HOTBAR, Top::Pickup]);
+    }
+
+    #[test]
+    fn a_press_goes_to_the_highest_window_under_message_boxes() {
+        let mut front = Front::default();
+        front.sync(&[INVENTORY, MAIL]);
+        // Listed as the default drawing has them (the mail over the inventory), but the inventory was raised.
+        front.raise(INVENTORY);
+        assert_eq!(front.pick([MAIL, INVENTORY, Top::SmallMinimap]), Some(INVENTORY));
+        // A message box over both takes it; with no window there, what's under the windows does.
+        assert_eq!(front.pick([MAIL, Top::Esc(WindowId::SaveAsked), INVENTORY]), Some(Top::Esc(WindowId::SaveAsked)));
+        assert_eq!(front.pick([Top::SmallMinimap, Top::LevelUp]), Some(Top::SmallMinimap));
+        // Windows not listed yet keep the default order: the first listed.
+        assert_eq!(Front::default().pick([BANK, MAIL]), Some(BANK));
+        // Member windows share one key, and keep their own account in the press.
+        front.sync(&[INVENTORY, MAIL, Top::PartyHp(0)]);
+        assert_eq!(front.pick([INVENTORY, Top::PartyHp(7)]), Some(Top::PartyHp(7)));
+    }
+
+    #[test]
+    fn draws_under_then_windows_bottom_up_then_over() {
+        let mut front = Front::default();
+        front.sync(&[MAIL, INVENTORY]);
+        let mut pieces = [Place::Over, Place::Window(INVENTORY), Place::Under, Place::Window(MAIL)];
+        pieces.sort_by_key(|&place| front.draw_key(place));
+        assert_eq!(pieces, [Place::Under, Place::Window(MAIL), Place::Window(INVENTORY), Place::Over]);
+    }
+}

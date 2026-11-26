@@ -1,0 +1,81 @@
+// MYgene Red Thief Bug: Thief Bug-family counterpart to Yellow Fabre.
+// Eligible family: Thief Bug Egg (1048), Thief Bug (1051),
+// Thief Bug Female (1053), Thief Bug Male (1054).
+// 30 qualifying kills on ONE map spawn Red Thief Bug at the final kill.
+// Per-map state is independent. An active Red Thief Bug blocks another
+// spawn on that map until killed; its death counts as one next-cycle kill.
+// Fixed exclusive rewards mirror Yellow Fabre and do not use global drop rates.
+// Normal Thief Bug material drops are in db/import/mob_db.yml.
+-	script	MYgene_Red_Thief_Bug	-1,{
+OnInit:
+    .MapCount = 0;
+    end;
+
+OnNPCKillEvent:
+    // Unlabeled special mobs (for example, @monster 31051) otherwise skip
+    // the encounter-specific death callback. OnNPCKillEvent only runs for
+    // monsters WITHOUT an attached death event, so no double reward roll.
+    if (killedrid == 31051) {
+        callsub S_RedRewards;
+        end;
+    }
+    if (killedrid != 1048 && killedrid != 1051 && killedrid != 1053 && killedrid != 1054)
+        end;
+    .@map$ = strcharinfo(3);
+    if (.@map$ == "")
+        end;
+
+    .@slot = -1;
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .@slot = .@i;
+            break;
+        }
+    }
+    if (.@slot < 0) {
+        .@slot = .MapCount;
+        .MapCount++;
+        .MapName$[.@slot] = .@map$;
+        .KillCount[.@slot] = 0;
+        .RedActive[.@slot] = 0;
+    }
+    if (.RedActive[.@slot])
+        end;
+    .KillCount[.@slot]++;
+    if (.KillCount[.@slot] < 30)
+        end;
+
+    .@located = 0;
+    if (killedgid > 0 && unitexists(killedgid)) {
+        getunitdata killedgid,.@mob_data;
+        .@death_map$ = mapid2name(.@mob_data[UMOB_MAPID]);
+        if (.@death_map$ == .@map$ && .@mob_data[UMOB_X] > 0 && .@mob_data[UMOB_Y] > 0) {
+            .@x = .@mob_data[UMOB_X];
+            .@y = .@mob_data[UMOB_Y];
+            .@located = 1;
+        }
+    }
+    if (!.@located && getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        end;
+    .KillCount[.@slot] = 0;
+    .RedActive[.@slot] = 1;
+    monster .@map$,.@x,.@y,"Red Thief Bug",31051,1,"MYgene_Red_Thief_Bug::OnRedThiefBugDead";
+    mapannounce .@map$,"A Red Thief Bug has appeared",bc_map,0xFF5555;
+    end;
+
+OnRedThiefBugDead:
+    .@map$ = strcharinfo(3);
+    for (.@i = 0; .@i < .MapCount; .@i++) {
+        if (.MapName$[.@i] == .@map$) {
+            .RedActive[.@i] = 0;
+            .KillCount[.@i] = 1;
+            break;
+        }
+    }
+    callsub S_RedRewards;
+    end;
+
+S_RedRewards:
+    callfunc "F_MYgeneExclusiveRoll",31006,31007;
+    return;
+}

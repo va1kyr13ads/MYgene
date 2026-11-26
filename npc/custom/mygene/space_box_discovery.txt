@@ -1,0 +1,78 @@
+// MYgene Exclusive - The Hidden Burden
+
+prontera,155,285,4	script	Mysterious Keeper::MYgeneSpaceKeeper	4_M_SAGE_C,{
+
+    if (#MYgeneSBCount < 50)
+        end;
+
+    if (#MYgeneSpaceBoxUnlocked == 1)
+        end;
+
+    mes "[Mysterious Keeper]";
+    mes "Ah... You finally heard my voice.";
+    next;
+
+    mes "[Mysterious Keeper]";
+    mes "You have carried the burdens of this world far too often.";
+    mes "Yet you continued your journey.";
+    next;
+
+    mes "[Mysterious Keeper]";
+    mes "Beyond this world lies a dimension where weight holds no meaning.";
+    next;
+
+    mes "[Mysterious Keeper]";
+    mes "I shall grant you access to that forgotten space.";
+    mes "This gift belongs to your entire account.";
+    next;
+
+    mes "[Mysterious Keeper]";
+    mes "Even an endless dimension must have its boundaries.";
+    next;
+
+    set #MYgeneSpaceBoxUnlocked,1;
+
+    achievementcomplete(900002);
+
+    mes "^22AA66[Space Box Unlocked]^000000";
+    mes "600 shared storage slots.";
+    mes "Stackable limit: 700.";
+    mes "Non-stackable limit: 50.";
+    mes "Weight capacity: Unlimited.";
+    next;
+
+    mes "^AA66CC[Hidden Achievement]^000000";
+    mes "The Hidden Burden";
+    mes " ";
+    mes "Title acquired:";
+    mes "^AA66CCDimensional Wanderer^000000";
+    mes "Unburdened by the laws of this world.";
+    next;
+
+    mes "[Mysterious Keeper]";
+    mes "Use @spacebox to enter your dimensional storage.";
+    mes "Our paths need not cross again.";
+    close2;
+
+    dispbottom "[Space Box] Permanent account access unlocked!";
+    dispbottom "[Space Box] Use @spacebox to open.";
+    dispbottom "[Achievement] The Hidden Burden completed.";
+    dispbottom "[Title] Dimensional Wanderer unlocked.";
+
+    cloakonnpcself "MYgeneSpaceKeeper";
+    end;
+}
+
+-	script	MYgeneSpaceDiscovery	-1,{
+
+OnPCLoginEvent:
+
+    if (#MYgeneSBCount >= 50) {
+        if (#MYgeneSpaceBoxUnlocked != 1) {
+            dispbottom "[Mysterious Voice] I am still waiting, adventurer.";
+            dispbottom "Seek the Mysterious Keeper near Prontera's northern gate.";
+        }
+    }
+
+    end;
+}

@@ -486,6 +486,8 @@ public:
 
 	// Item Storages
 	struct s_storage storage, premiumStorage;
+	bool mygene_spacebox_loot = false;
+	bool mygene_spacebox_pending = false;
 	struct s_storage inventory;
 	struct s_storage cart;
 
@@ -1687,6 +1689,10 @@ TIMER_FUNC(map_day_timer); // by [yor]
 TIMER_FUNC(map_night_timer); // by [yor]
 
 // Rental System
+// MYGENE_AWAKENING_V1071
+bool pc_mygene_is_awakened(const struct item* it);
+bool pc_mygene_awakening_test(map_session_data* sd, bool renew);
+
 void pc_inventory_rentals(map_session_data *sd);
 void pc_inventory_rental_clear(map_session_data *sd);
 void pc_inventory_rental_add(map_session_data *sd, uint32 seconds);

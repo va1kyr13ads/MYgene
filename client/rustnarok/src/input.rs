@@ -1,0 +1,4715 @@
+//! The app's input: mouse buttons, the wheel, the pointer, keys and shortcuts, on every scene.
+
+use super::*;
+
+impl App {
+    pub(crate) fn click(&mut self, _event_loop: &ActiveEventLoop) {
+        use Top::Esc;
+        use escape::WindowId as W;
+        let Some(assets) = &self.assets else { return };
+        let cursor = self.cursor;
+        let shift = self.modifiers.shift_key();
+        let hit = |position: [f32; 2], images: &ButtonImages| contains(position, images[0].size, cursor);
+        // The window drawn on top under the click (`top_at`) is the one whose arm below takes it. The arms' order matters
+        // only for those that take every click while they're up: the deal box, the world map, the game menu, a
+        // right-click menu, the amount box.
+        let top = match &self.scene {
+            Scene::Game(game) => game.top_at(cursor, assets.message.size),
+            _ => None,
+        };
+        let on = |reached: Top| top == Some(reached);
+        // A click anywhere but the storage's search field takes the caret from it.
+        if let Scene::Game(game) = &mut self.scene {
+            game.storage.typing = false;
+            game.pet_window.typing = false;
+            game.homunculus_window.typing = false;
+            game.quest_window.typing = false;
+            if let Some(trade) = &mut game.trade {
+                trade.typing = false;
+            }
+            if let Some(bank) = &mut game.bank {
+                bank.typing = false;
+            }
+            // A double click on a speaker's line in the log: whisper them (the click still reaches the world), not
+            // through a window over it.
+            if top.is_none()
+                && let Some(name) = game.chat.log_click(cursor)
+            {
+                game.chat.whisper_to(&name);
+            }
+        }
+        match &mut self.scene {
+            Scene::Login => {
+                let local = offset(cursor, login_position().map(|value| -value));
+                let part = login_part(local, self.account_list);
+                self.account_list = false;
+                match part {
+                    Some(LoginPart::Start) => self.submit_login(),
+                    // The close X keeps the Save ID choice, then asks before quitting.
+                    Some(LoginPart::Exit) => {
+                        if std::env::var_os("RUSTNAROK_CLIENT_LOGIN").is_none() {
+                            remember_id(self.save_id.then_some(self.fields[0].as_str()));
+                        }
+                        self.ask(QUIT_MESSAGE, Then::Quit);
+                    }
+                    Some(LoginPart::Save) => self.save_id = !self.save_id,
+                    Some(LoginPart::Drop) => self.account_list = true,
+                    Some(LoginPart::Account(row)) => self.account_kind = row,
+                    Some(LoginPart::Field(field)) => {
+                        self.focus = field;
+                        self.blink_start = Instant::now();
+                    }
+                    // ponytail: a rathena server has no page for Opening or Sign Up to open; they show dimmed.
+                    Some(LoginPart::Opening | LoginPart::SignUp) | None => {}
+                }
+            }
+            // The server list: pick one, OK goes on to the login window, Cancel leaves the game.
+            Scene::Connections { selected } => {
+                let service = service_position(&assets.service);
+                let list = offset(service, SERVER_LIST);
+                if let Some(row) = (0..self.connections.len()).find(|&row| contains(offset(list, [0.0, row as f32 * SERVER_ROW[1]]), SERVER_ROW, cursor)) {
+                    *selected = row;
+                } else if hit(offset(service, LEFT_BUTTON), &assets.ok) {
+                    let picked = *selected;
+                    self.choose_connection(picked);
+                } else if hit(offset(service, RIGHT_BUTTON), &assets.cancel) {
+                    self.quitting = true;
+                }
+            }
+            Scene::ServerSelect { accepted, selected, scroll } => {
+                let place = servers::place(screen());
+                let list = offset(place, servers::LIST);
+                let local = [cursor[0] - place[0], cursor[1] - place[1]];
+                let frame = window::Frame::new(place, servers::WIDTH);
+                // ponytail: the shared title bar's close does what Cancel does; minimize does nothing on this step.
+                if contains([0.0, 0.0], [servers::WIDTH, window::TITLE_HEIGHT], local) {
+                    if frame.title_hit(local) == Some(window::TitleHit::Close) {
+                        self.scene = Scene::Login;
+                    }
+                } else if let Some(row) = servers::shown(*scroll, accepted.char_servers.len())
+                    .find(|&row| contains(offset(list, [0.0, (row - *scroll) as f32 * servers::ROW]), [servers::LIST_SIZE[0], servers::ROW], cursor))
+                {
+                    let enter = self.server_clicks.double(row as u16);
+                    *selected = row;
+                    if enter {
+                        self.confirm_server();
+                    }
+                } else if hit(offset(place, servers::OK), &assets.ok) {
+                    self.confirm_server();
+                } else if hit(offset(place, servers::CANCEL), &assets.cancel) {
+                    self.scene = Scene::Login;
+                }
+            }
+            Scene::CharSelect(select) => {
+                if let Some(pad) = &mut select.pin_pad {
+                    if let Some(button) = pad.hit(cursor) {
+                        let action = pad.press(button);
+                        self.apply_pin_action(action);
+                    }
+                } else if select.unlocked() {
+                    let action = if select.menu.is_some() { select.click_menu(cursor) } else { select.hit(cursor).and_then(|hit| select.click(hit)) };
+                    if let Some(action) = action {
+                        self.select_action(action);
+                    }
+                } else if select.hit(cursor) == Some(char_select::Hit::Close) {
+                    self.select_action(char_select::Action::Close);
+                }
+            }
+            Scene::CharMake(make, _) => {
+                if let Some(action) = make.hit(cursor).and_then(|hit| make.click(hit, &self.grf, &self.look_tables)) {
+                    self.make_action(action);
+                }
+            }
+            // A link in the chat log or the NPC window: an item's information, or a navigation to the place.
+            Scene::Game(game) if takes_link(top) && game.link_at(cursor).is_some() => {
+                match game.link_at(cursor).cloned().unwrap() {
+                    links::Target::Item(item) => {
+                        let card = self.card_pictures.name(item.id).is_some();
+                        game.toggle_item(iteminfo::Shown::of_link(item.id, item.refine, item.cards, card, &self.items).with_link(&item));
+                    }
+                    links::Target::Navi { map, cell, rest } => match navigation::linked(rest) {
+                        Some(navigation::Linked::Go { kind, services, window, monster }) => {
+                            let target = navigation::target_of(&self.navi_tables, &map, kind, cell, monster);
+                            if game.navigate(&self.navi_tables, &self.messages, &self.grf, target, services) && window {
+                                game.open_navigation();
+                            }
+                        }
+                        // The window, with the map's name looked up.
+                        Some(navigation::Linked::Search) => {
+                            let window = game.open_navigation();
+                            (window.text, window.typing) = (navigation::map_key(&map), false);
+                            window.search(&self.navi_tables);
+                        }
+                        None => {}
+                    },
+                    // A place a player shared: the window, with that place picked.
+                    links::Target::Place { map, cell } => {
+                        if let Some(place) = navigation::place_found(&self.navi_tables, &map, cell) {
+                            let window = game.open_navigation();
+                            window.choose(place);
+                        }
+                    }
+                    links::Target::Url(address) => {
+                        if let Some(page) = links::page(&address) {
+                            open_page(game, page);
+                        }
+                    }
+                    // The quest window at that quest, or a notice that no list has it.
+                    links::Target::Quest(id) => {
+                        if !game.quest_window.show_quest(id, &game.quests, &self.quest_texts) {
+                            game.question_box = Some(BoxQuestion::Said(format!("Not found Quest Info = {id}")));
+                        }
+                    }
+                    links::Target::Tip | links::Target::Picture(_) | links::Target::Emotion(_) => {}
+                }
+            }
+            Scene::Game(game) if game.deal_choice.is_some() => match shop::deal_hit(game.deal_frame.position, cursor) {
+                Some(shop::DealHit::Buy) => game.choose_deal(false),
+                Some(shop::DealHit::Sell) => game.choose_deal(true),
+                Some(shop::DealHit::Cancel) => game.close_deal_choice(),
+                _ => {}
+            },
+            // The world map covers the screen; its close button closes it.
+            Scene::Game(game) if game.world_map.is_some() => {
+                if game.world_map.as_ref().unwrap().closes(cursor) {
+                    game.world_map = None;
+                }
+            }
+            // The skill window's Apply asks first: OK sends the pending levels; Cancel keeps them pending.
+            Scene::Game(game) if on(Esc(W::SkillApplyAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_apply(yes);
+                    }
+                }
+            }
+            // Destroy asks first. OK sends the command; Cancel stays in the dungeon window.
+            Scene::Game(game) if on(Esc(W::MemorialAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.memorial_asked = false;
+                        if yes {
+                            let _ = game.session.memorial_command(net::COMMAND_MEMORIALDUNGEON_DESTROY_FORCE);
+                        }
+                    }
+                }
+            }
+            // A package's Confirm asks first. OK takes the set out of the box and closes the pick; Cancel goes back to it.
+            Scene::Game(game) if on(Esc(W::PackageAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        if yes {
+                            // The game sends the picked row's place in the list (rathena reads it as the group).
+                            if let Some(pick) = &game.package_pick
+                                && let Some(row) = pick.picked
+                            {
+                                let _ = game.session.use_package(pick.index, game.account_id, pick.item, row as u32);
+                            }
+                            game.close_esc(W::PackagePick);
+                        } else {
+                            game.close_esc(W::PackageAsked);
+                            if let Some(pick) = &mut game.package_pick {
+                                pick.asked = false;
+                            }
+                        }
+                    }
+                }
+            }
+            // Save point asks first. OK goes; Cancel stays.
+            Scene::Game(game) if on(Esc(W::SaveAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.save_asked = false;
+                        if yes {
+                            game.escape = None;
+                            let _ = game.session.restart(false);
+                        }
+                    }
+                }
+            }
+            // Confirm Deal: Buy sends the vendor's deal; either button closes it.
+            Scene::Game(game) if on(Top::ConfirmDeal) => {
+                if let Some(buy) = game.deal_confirm.as_ref().unwrap().hit(cursor).unwrap() {
+                    let confirm = game.deal_confirm.take().unwrap();
+                    if buy {
+                        let _ = confirm.shop.send(&mut game.session);
+                    }
+                }
+            }
+            // The message box, over every window: OK (alone when it only tells) or Cancel.
+            Scene::Game(game) if matches!(top, Some(Esc(W::Notice | W::PartyAsked))) => {
+                let dialog = dialog_position(&assets.message);
+                let asks = game.question_box.as_ref().is_some_and(BoxQuestion::asks);
+                for (place, yes) in box_buttons(asks) {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_box(yes, &self.messages);
+                    }
+                }
+                if std::mem::take(&mut game.reset_settings) {
+                    game_settings::reset(&mut self.sound, &mut self.graphics);
+                    if let Some(audio) = &mut self.audio {
+                        audio.set(&self.sound);
+                    }
+                    self.sound.save();
+                    self.graphics.save();
+                }
+            }
+            // The option menu keeps the pointer until it's closed (`menu_takes`).
+            // ponytail: a click off its buttons does nothing.
+            Scene::Game(game) if game.menu_takes(cursor) => {
+                let menu = game.escape.as_ref().unwrap();
+                let choice = if menu.on_close(cursor) { Some(escape::Choice::Return) } else { menu.hit(cursor, game.can_resurrect()).flatten() };
+                match choice {
+                    Some(escape::Choice::SavePoint) => game.save_asked = true,
+                    Some(escape::Choice::CharSelect) => {
+                        game.escape = None;
+                        let _ = game.session.restart(true);
+                    }
+                    Some(escape::Choice::Exit) => {
+                        game.escape = None;
+                        let _ = game.session.quit();
+                    }
+                    Some(escape::Choice::Return) => game.escape = None,
+                    Some(escape::Choice::Resurrect) => {
+                        game.escape = None;
+                        let _ = game.session.standing_resurrection();
+                    }
+                    // Game settings and shortcut settings open or shut their window; the menu stays up.
+                    Some(escape::Choice::GameSettings) => {
+                        let fullscreen = self.gpu.as_ref().is_some_and(|gpu| gpu.window.fullscreen().is_some());
+                        game.settings_window = toggled(game.settings_window.take(), || game_settings::GameSettings::new(screen(), fullscreen));
+                        game.sync_esc();
+                    }
+                    Some(escape::Choice::Shortcuts) => {
+                        game.shortcuts_window = toggled(game.shortcuts_window.take(), || shortcut_window::ShortcutWindow::new(&self.keybinds, screen()));
+                        game.sync_esc();
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if matches!(top, Some(Esc(W::AwayMessage | W::Whisper | W::BlockList | W::FriendSetup))) => {
+                game.whisper_click(cursor);
+            }
+            // Game Settings: the sound and the effect switches change at once, the screen mode on Apply (the sliders go on
+            // press).
+            // ponytail: Apply sets the screen mode at once; the game asks first (3168) and restarts.
+            Scene::Game(game) if on(Esc(W::GameSettings)) => {
+                let window = game.settings_window.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                match window.click(hit, &mut self.sound, &mut self.graphics) {
+                    Some(game_settings::Action::Sound) => {
+                        if let Some(audio) = &mut self.audio {
+                            audio.set(&self.sound);
+                        }
+                        self.sound.save();
+                    }
+                    Some(game_settings::Action::Graphics) => self.graphics.save(),
+                    Some(game_settings::Action::AskReset) => game.question_box = Some(BoxQuestion::ResetSettings),
+                    Some(game_settings::Action::Screen(fullscreen)) => {
+                        self.graphics.fullscreen = fullscreen;
+                        self.graphics.save();
+                        if let Some(gpu) = &self.gpu {
+                            gpu.window.set_fullscreen(fullscreen.then_some(winit::window::Fullscreen::Borderless(None)));
+                        }
+                    }
+                    Some(game_settings::Action::Close) => game.settings_window = None,
+                    None => {}
+                }
+            }
+            // Shortcut Settings: OK makes the draft the shortcuts and writes UserKeys.lua; Reset goes back to the data's keys.
+            Scene::Game(game) if on(Esc(W::ShortcutSettings)) => {
+                let window = game.shortcuts_window.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                match window.click(hit, &self.keybinds) {
+                    Some(shortcut_window::Click::Save) => {
+                        self.keybinds = window.draft.clone();
+                        self.keybinds.save();
+                        game.shortcuts_window = None;
+                        game.chat_line(self.messages.get(shortcut_window::SAVED).cloned().unwrap_or_default(), [255, 255, 0]);
+                    }
+                    Some(shortcut_window::Click::Reset) => window.draft = shortcuts::Shortcuts::defaults(&self.grf),
+                    Some(shortcut_window::Click::BattleMode) => game.client_command(chat::Command::BattleMode, &self.messages, &mut self.graphics),
+                    Some(shortcut_window::Click::Close) => game.shortcuts_window = None,
+                    None => {}
+                }
+            }
+            // The quest window: tabs, quests, their locks, and the picked one's details.
+            Scene::Game(game) if on(Esc(W::Achievements)) => {
+                let hit = game.achievement_window.hit(cursor, &self.achievement_info, &game.achievements).unwrap();
+                if let Some(id) = game.achievement_window.click(hit) {
+                    let _ = game.session.claim_achievement(id);
+                }
+            }
+            // The quest details' NPC picture: navigation to it, as a <NAVI> link.
+            Scene::Game(game) if on(Esc(W::Quests)) && game.quest_window.hit(cursor, &game.quests, &self.quest_texts) == Some(quest::Hit::DetailNpc) => {
+                if let Some((map, cell)) = game.quest_window.npc_place(&self.quest_texts) {
+                    let map = navigation::map_key(&map);
+                    let name = self.navi_tables.maps.get(&map).cloned().unwrap_or_else(|| map.clone());
+                    let cell = (cell != [0, 0]).then(|| cell.map(|value| value.clamp(0, i32::from(u16::MAX)) as u16));
+                    game.navigate(&self.navi_tables, &self.messages, &self.grf, Ok(navigation::Target { cell, monster: None, name, map }), NAVI_SERVICES);
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Quests)) => {
+                let hit = game.quest_window.hit(cursor, &game.quests, &self.quest_texts).unwrap();
+                let tracker = game.quest_window.tracker;
+                if let Some((id, active)) = game.quest_window.click(hit, &game.quests, &self.quest_texts) {
+                    let _ = game.session.set_quest_active(id, active);
+                }
+                // The tracker's checkbox is kept with the settings.
+                if game.quest_window.tracker != tracker
+                    && let Some(path) = settings_path("quest_tracker")
+                {
+                    let _ = path
+                        .parent()
+                        .map_or(Ok(()), std::fs::create_dir_all)
+                        .and_then(|()| std::fs::write(path, if game.quest_window.tracker { "1" } else { "0" }));
+                }
+            }
+            // The mail windows: the mailbox, a mail read, one written, and the new-mail icon.
+            Scene::Game(game) if matches!(top, Some(Esc(W::Mailbox | W::MailRead | W::MailWrite))) => {
+                let hit = game.mail.hit(cursor).unwrap();
+                if let Some(action) = game.mail.click(hit)
+                    && let Some(id) = game.mail_action(action)
+                {
+                    game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR);
+                }
+            }
+            // Setting up a shop: its name, its goods and prices, OK or cancel.
+            Scene::Game(game) if on(Esc(W::VendSetup)) => {
+                let setup = game.vend_setup.as_mut().unwrap();
+                let Some(hit) = setup.hit(cursor) else { return };
+                match setup.click(hit) {
+                    Some(vend::Action::Open) => game.open_vending(),
+                    Some(vend::Action::AskFree) => game.question_box = Some(BoxQuestion::FreeGoods),
+                    Some(vend::Action::Refused(message)) => game.question_box = Some(BoxQuestion::Notice(message)),
+                    Some(vend::Action::Cancel) => {
+                        let _ = game.session.open_shop("", false, &[]);
+                        game.vend_setup = None;
+                    }
+                    None => {}
+                }
+            }
+            // Our open shop: the tick box, and closing it closes the shop.
+            Scene::Game(game) if on(Esc(W::MyShop)) => {
+                let shop = game.my_shop.as_mut().unwrap();
+                match shop.hit(cursor) {
+                    Some(vend::ShopHit::Notify) => shop.notify = !shop.notify,
+                    Some(vend::ShopHit::Close | vend::ShopHit::Title(TitleHit::Close)) => game.close_my_shop(),
+                    Some(vend::ShopHit::Title(title)) => shop.frame.click_title(title),
+                    _ => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::SellHistory)) => {
+                if game.sell_history.as_ref().unwrap().hit(cursor) == Some(true) {
+                    game.sell_history = None;
+                }
+            }
+            // Setting up a buying store: its name, zeny limit, wanted items, OK or cancel.
+            Scene::Game(game) if game.amount.is_none() && on(Esc(W::BuyingStoreSetup)) => {
+                let setup = game.buying_setup.as_mut().unwrap();
+                let hit = setup.hit(cursor, &game.inventory.items).unwrap();
+                match setup.click(hit, &game.inventory.items) {
+                    Some(buying::Action::Price(index, item_id)) => {
+                        game.amount = Some(window::Amount::price(Asked::BuyingPrice(index, item_id)));
+                    }
+                    // Refusals in the message box.
+                    Some(buying::Action::Open) => {
+                        let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32;
+                        match setup.validate(&game.inventory.items, zeny) {
+                            Ok((limit, items)) => {
+                                let name = setup.name.clone();
+                                let _ = game.session.open_buying_store(&name, limit, true, &items);
+                            }
+                            Err(Some((msg_id, Some(item_id)))) => {
+                                let item_name = inventory::item_name(&self.items, item_id, true, 0);
+                                let line = rustnarok_client::messages::fill(self.messages.get(msg_id).map_or("", String::as_str), &[&item_name]);
+                                game.question_box = Some(BoxQuestion::Said(line));
+                            }
+                            Err(Some((msg_id, None))) => game.question_box = Some(BoxQuestion::Notice(msg_id)),
+                            Err(None) => game.question_box = Some(BoxQuestion::Notice(buying::NO_NAME)),
+                        }
+                    }
+                    Some(buying::Action::Refused(msg_id)) => game.question_box = Some(BoxQuestion::Notice(msg_id)),
+                    Some(buying::Action::Cancel) => {
+                        let _ = game.session.open_buying_store("", 0, false, &[]);
+                        game.buying_setup = None;
+                    }
+                    None => {}
+                }
+            }
+            // Our open buying store: closing it closes the store and drops the sign.
+            Scene::Game(game) if game.amount.is_none() && on(Esc(W::MyBuyingStore)) => {
+                if game.my_buying_store.as_ref().unwrap().hit(cursor) == Some(true) {
+                    let _ = game.session.close_buying_store();
+                    game.my_buying_store = None;
+                    game.signs.remove(&game.account_id);
+                }
+            }
+            // A card's picture: its close button. A click anywhere on it stays there.
+            Scene::Game(game) if on(Esc(W::CardPicture)) => {
+                if game.card_view.as_ref().unwrap().hit(cursor) == Some(iteminfo::ViewHit::Close) {
+                    game.card_view = None;
+                }
+            }
+            // A card's own window, over the description: its close button or its picture.
+            Scene::Game(game) if on(Esc(W::CardInfo)) => match game.card_window.as_ref().unwrap().hit(cursor) {
+                Some(iteminfo::Hit::Close) => game.card_window = None,
+                Some(iteminfo::Hit::View) => {
+                    let card = game.card_window.as_ref().unwrap().shown.item;
+                    game.toggle_card_view(card, &self.card_pictures, &self.items);
+                }
+                _ => {}
+            },
+            // The item description window: its close button or a card's picture (a click on a card in the strip does nothing).
+            Scene::Game(game) if on(Esc(W::ItemInfo)) => match game.item_window.as_ref().unwrap().hit(cursor) {
+                Some(iteminfo::Hit::Close) => {
+                    game.item_window = None;
+                    game.card_view = None;
+                }
+                Some(iteminfo::Hit::View) => {
+                    let item = game.item_window.as_ref().unwrap().shown.item;
+                    game.toggle_card_view(item, &self.card_pictures, &self.items);
+                }
+                _ => {}
+            },
+            // The right-click menu takes the next click, wherever it lands.
+            Scene::Game(game) if game.menu.is_some() => match game.menu.take().unwrap().hit(cursor).flatten() {
+                // Not while talking to an NPC or in its shop.
+                Some(Choice::Trade(_)) if game.dialog.is_some() || game.shop.is_some() => {
+                    game.chat_line(self.messages.get(TASK_IN_PROGRESS).cloned().unwrap_or_default(), CHAT_WHITE);
+                }
+                Some(Choice::Trade(id)) => {
+                    game.trade_with = game.units.get(&id).map(|actor| actor.name.clone()).unwrap_or_default();
+                    let _ = game.session.request_trade(id);
+                }
+                Some(Choice::ViewEquipment(id)) => {
+                    let _ = game.session.view_equipment(id);
+                }
+                // Their name in the chat's name box, as the friend list's whisper does.
+                Some(Choice::Uninstall(kind)) => drop(game.session.uninstall(kind)),
+                Some(Choice::Whisper(id)) => {
+                    if let Some(actor) = game.units.get(&id) {
+                        game.chat.whisper = actor.name.clone();
+                        game.chat.naming = false;
+                    }
+                }
+                Some(Choice::Mail(id)) => {
+                    if let Some(name) = game.units.get(&id).map(|actor| actor.name.clone()) {
+                        let _ = game.session.start_mail(&name);
+                    }
+                }
+                // As /ex: their whispers blocked.
+                Some(Choice::Block(id)) => {
+                    if let Some(name) = game.units.get(&id).map(|actor| actor.name.clone())
+                        && game.session.set_whisper(&name, false).is_ok()
+                    {
+                        game.whisper_asked.push_back(name);
+                    }
+                }
+                Some(Choice::HomunculusStatus) => {
+                    let _ = game.session.homunculus_command(net::HOMUNCULUS_STATUS);
+                    game.homunculus_window.frame.toggle();
+                    game.raise(Panel::Homunculus);
+                    game.sync_esc();
+                }
+                Some(Choice::HomunculusFeed) => game.homunculus_asked = Some(HomunculusAsked::Feed),
+                Some(Choice::HomunculusStandBy) => game.homunculus_steering.following = !game.homunculus_steering.following,
+                Some(Choice::MercenaryStatus) => {
+                    game.mercenary_window.frame.toggle();
+                    game.raise(Panel::Mercenary);
+                    game.sync_esc();
+                }
+                // As Ctrl+T.
+                Some(Choice::MercenaryStandBy) => game.steering.following = !game.steering.following,
+                Some(Choice::CloseStall) => game.close_my_shop(),
+                Some(Choice::Invite(id)) => {
+                    if let Some(actor) = game.units.get(&id) {
+                        let _ = game.session.invite_to_party(&actor.name.clone());
+                    }
+                }
+                Some(Choice::Adopt(id)) => {
+                    let _ = game.session.ask_adoption(id);
+                }
+                // Sent: "Send (name) a Guild Invitation" in cyan.
+                Some(Choice::GuildInvite(id)) => {
+                    if let Some(name) = game.units.get(&id).map(|actor| actor.name.clone())
+                        && game.session.invite_to_guild(&name).is_ok()
+                    {
+                        let line = rustnarok_client::messages::fill(self.messages.get(GUILD_CHOICE).map_or("", String::as_str), &[&name]);
+                        game.chat_line(line, [0x00, 0xFF, 0xFF]);
+                    }
+                }
+                Some(Choice::Ally(id)) => {
+                    let _ = game.session.ask_alliance(id, game.account_id, game.me.id);
+                }
+                Some(Choice::Antagonist(id)) => {
+                    let _ = game.session.set_antagonist(id);
+                }
+                // Feeding asks first; the status opens the pet window.
+                Some(Choice::Pet(net::PET_FEED)) => game.ask_feed(&self.messages),
+                // Check Pet Status asks for the news and opens or shuts the window.
+                Some(Choice::Pet(net::PET_INFO)) => {
+                    let _ = game.session.pet_command(net::PET_INFO);
+                    game.pet_window.frame.toggle();
+                    game.raise(Panel::Pet);
+                }
+                Some(Choice::Pet(command)) => game.pet_command(command),
+                Some(Choice::Member(choice, account)) => game.member_choice(choice, account, &self.messages),
+                Some(Choice::RoomOwner(row)) => {
+                    if let Some(name) = game.room.as_ref().and_then(|room| room.member_choices(row, &game.me.name)) {
+                        let _ = game.session.hand_over_chat_room(&name);
+                    }
+                }
+                Some(Choice::RoomKick(row)) => {
+                    if let Some(name) = game.room.as_ref().and_then(|room| room.member_choices(row, &game.me.name)) {
+                        let _ = game.session.kick_from_chat_room(&name);
+                    }
+                }
+                // The owner's Room Setup: the make window, filled from the room.
+                Some(Choice::RoomSetup) => game.room_make = game.room.as_ref().map(|room| chatroom::Make::from_sign(&room.sign)),
+                // The details alone, beside the list when it's open, else in the middle.
+                Some(Choice::QuestInfo(id)) => {
+                    game.quest_window.pick(id, screen());
+                    game.sync_esc();
+                }
+                Some(Choice::QuestAside(id)) => {
+                    let _ = game.session.set_quest_active(id, false);
+                }
+                Some(Choice::EndRelation(id, antagonist)) => {
+                    let _ = game.session.end_relation(id, antagonist);
+                }
+                // A guild skill's description, where the menu was.
+                Some(Choice::GuildSkillInfo(id)) => {
+                    let lines = self.skill_descriptions.get(&id).cloned().unwrap_or_default();
+                    let active = game.skill_active(id);
+                    game.skill_description =
+                        Some(skill_descript::SkillDescription::new(id, &lines, true, active, |height| skill_descript::at_window(cursor, height)));
+                    game.sync_esc();
+                }
+                Some(Choice::GuildMember(choice, index)) => {
+                    if let Some(member) = game.guild.as_ref().and_then(|guild| guild.members.get(index)).cloned() {
+                        match choice {
+                            guild::MemberChoice::Leave => game.reason_box = Some(guild::ReasonBox::new(guild::Reasoned::Leave)),
+                            guild::MemberChoice::Expel => {
+                                game.reason_box = Some(guild::ReasonBox::new(guild::Reasoned::Expel(member.account, member.character)))
+                            }
+                            guild::MemberChoice::Assign => {
+                                game.question_box = Some(BoxQuestion::GuildLeader { account: member.account, character: member.character, name: member.name })
+                            }
+                            guild::MemberChoice::PartyInvite => {
+                                let _ = game.session.invite_to_party(&member.name);
+                            }
+                            guild::MemberChoice::Whisper => game.whisper_member(&member.name),
+                            guild::MemberChoice::Mail => {
+                                let _ = game.session.start_mail(&member.name);
+                            }
+                        }
+                    }
+                }
+                Some(Choice::Befriend(id)) => {
+                    if let Some(actor) = game.units.get(&id) {
+                        let _ = game.session.add_friend(&actor.name.clone());
+                    }
+                }
+                None => {}
+            },
+            // The room maker's fields and buttons.
+            // The emotion list: a click shows that emotion.
+            Scene::Game(game) if on(Esc(W::EmotionList)) => match game.emotion_list.as_ref().unwrap().hit(cursor) {
+                Some(emotion_list::Hit::Title(TitleHit::Close)) => game.emotion_list = None,
+                Some(emotion_list::Hit::Emotion(kind)) => {
+                    let _ = game.session.emote(kind);
+                }
+                _ => {}
+            },
+            // The macro window: a line's field takes the typing.
+            Scene::Game(game) if on(Esc(W::Macros)) => match game.macro_window.as_ref().unwrap().hit(cursor) {
+                Some(macros::Hit::Title(TitleHit::Close)) => game.toggle_macro_window(),
+                Some(macros::Hit::Line(line)) => game.macro_window.as_mut().unwrap().editing = Some(line),
+                _ => game.macro_window.as_mut().unwrap().editing = None,
+            },
+            Scene::Game(game) if on(Esc(W::RoomMake)) => {
+                let make = game.room_make.as_mut().unwrap();
+                let hit = make.hit(cursor).unwrap();
+                if make.click(hit) {
+                    game.make_room();
+                } else if hit == chatroom::MakeHit::Cancel {
+                    game.room_make = None;
+                }
+            }
+            // The room we're in: closing it leaves.
+            Scene::Game(game) if on(Esc(W::ChatRoom)) => {
+                let room = game.room.as_mut().unwrap();
+                match room.hit(cursor) {
+                    Some(chatroom::RoomHit::Title(TitleHit::Close)) => {
+                        let _ = game.session.leave_chat_room();
+                    }
+                    Some(chatroom::RoomHit::Title(title)) => room.frame.click_title(title),
+                    _ => {}
+                }
+            }
+            // A chat room's sign: open rooms let us in, locked ones ask for the password. Not through a window over it.
+            Scene::Game(game)
+                if game.room.is_none()
+                    && !game.on_window(cursor, assets.message.size)
+                    && game.sign_rects.iter().any(|(rect, ..)| contains([rect[0], rect[1]], [rect[2] - rect[0], rect[3] - rect[1]], cursor)) =>
+            {
+                let &(_, id, kind) =
+                    game.sign_rects.iter().rev().find(|(rect, ..)| contains([rect[0], rect[1]], [rect[2] - rect[0], rect[3] - rect[1]], cursor)).unwrap();
+                let now = crate::control::now();
+                let open = game.shop.as_ref().and_then(|shop| shop.vendor.as_ref().map(|vendor| vendor.0).or(shop.buying_store.map(|store| store.0)));
+                let since = game.shop_asked.map(|at| now.saturating_duration_since(at));
+                let last = game.sign_clicked.replace((id, now)).map(|(sign, at)| (sign, now.saturating_duration_since(at)));
+                let _ = match kind {
+                    // /shopping off: one click on a shop's sign does nothing, a double click opens it.
+                    chatroom::SHOP if !vend::sign_opens(game.shopping, id, last) => Ok(()),
+                    // A vendor's or buyer's sign opens their shop.
+                    chatroom::SHOP | chatroom::BUYING_STORE if !vend::may_ask(id, game.account_id, game.player.dead, open, since) => Ok(()),
+                    chatroom::SHOP => {
+                        game.shop_asked = Some(now);
+                        game.session.browse_vendor(id)
+                    }
+                    chatroom::BUYING_STORE => {
+                        game.shop_asked = Some(now);
+                        game.session.click_buying_store(id)
+                    }
+                    // A chat room's sign takes a double click: one click does nothing.
+                    kind if kind != chatroom::SHOP && kind != chatroom::BUYING_STORE && !vend::sign_opens(false, id, last) => Ok(()),
+                    0 => {
+                        game.amount = Some(window::Amount::name(Asked::RoomPassword(id), ROOM_PASSWORD));
+                        Ok(())
+                    }
+                    _ => game.session.enter_chat_room(id, ""),
+                };
+            }
+            // A guild invites us: OK or cancel.
+            // At the party invitation's place; accepting closes the Guild Companion.
+            Scene::Game(game) if on(Esc(W::GuildInvite)) => {
+                let dialog = party::invitation_at(screen());
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        let (guild, _) = game.guild_invite.take().unwrap();
+                        let _ = game.session.answer_guild(guild, accept);
+                        if accept {
+                            game.guild_companion.close();
+                        }
+                    }
+                }
+            }
+            // A guild question: OK or cancel. Whoever is asked for an alliance answers either way.
+            Scene::Game(game) if on(Esc(W::GuildAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        let GuildAsked::Ally { id, .. } = game.guild_asked.take().unwrap();
+                        let _ = game.session.answer_alliance(id, yes);
+                    }
+                }
+            }
+            // Wearing an item that binds: OK wears it.
+            Scene::Game(game) if on(Esc(W::BindAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_bind(yes);
+                    }
+                }
+            }
+            // Growing the inventory: OK or cancel.
+            Scene::Game(game) if on(Esc(W::ExpansionAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.expansion_asked = None;
+                        let _ = game.session.answer_expansion(yes);
+                    }
+                }
+            }
+            // A queue question: OK applies, leaves the queue or enters the battle; Cancel doesn't (or declines entering).
+            Scene::Game(game) if on(Esc(W::QueueAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        let _ = match game.queue_asked.take().unwrap() {
+                            QueueAsked::Apply(kind, name) if yes => game.session.apply_to_queue(kind, &name),
+                            QueueAsked::Cancel(name) if yes => game.session.leave_queue(&name),
+                            QueueAsked::Lobby(name, _) => game.session.answer_lobby(yes, &name),
+                            _ => Ok(()),
+                        };
+                    }
+                }
+            }
+            // The attendance check: today's slot asks for its reward; the button closes.
+            Scene::Game(game) if on(Esc(W::Attendance)) => {
+                let Some(window) = &game.attendance else { return };
+                match window.hit(cursor) {
+                    Some(hit) if window.claims(hit) => {
+                        let _ = game.session.attendance_reward();
+                    }
+                    Some(attendance::Hit::Close) => {
+                        game.attendance = None;
+                        game.sync_esc();
+                    }
+                    _ => {}
+                }
+            }
+            // The memorial window: drag is a press; a click closes, or asks before Destroy.
+            Scene::Game(game) if on(Esc(W::Memorial)) => match game.memorial.hit(cursor) {
+                Some(memorial::Hit::Title(title)) => {
+                    game.memorial.frame.click_title(title);
+                    if !game.memorial.frame.open {
+                        game.memorial_asked = false;
+                        escape::remove(&mut game.esc_order, escape::WindowId::Memorial);
+                    }
+                }
+                Some(memorial::Hit::Destroy) => game.memorial_asked = true,
+                _ => {}
+            },
+            // The package pick: Close (either), or Confirm with a set picked, which asks first.
+            // ponytail: the game's checks when the answer is yes (trade open, busy, hidden, …) aren't made.
+            Scene::Game(game) if on(Esc(W::PackagePick)) => match game.package_pick.as_ref().and_then(|pick| pick.hit(cursor)) {
+                Some(package::Hit::Close) => game.close_esc(W::PackagePick),
+                Some(package::Hit::Confirm) => {
+                    if let Some(pick) = game.package_pick.as_mut().filter(|pick| pick.picked.is_some()) {
+                        pick.asked = true;
+                        escape::touch(&mut game.esc_order, W::PackageAsked);
+                    }
+                }
+                _ => {}
+            },
+            // The queue window: a battleground picked, applying, cancelling.
+            Scene::Game(game) if on(Esc(W::BattleQueue)) && game.queue_window.hit(cursor, &self.battlegrounds, game.queued.is_some()).is_some() => {
+                match game.queue_window.hit(cursor, &self.battlegrounds, game.queued.is_some()) {
+                    Some(battle_queue::Hit::Title(title)) => game.queue_window.frame.click_title(title),
+                    Some(battle_queue::Hit::Row(row)) => game.queue_window.picked = Some(row),
+                    Some(battle_queue::Hit::Apply(kind)) => {
+                        if let Some(entry) = game.queue_window.picked.and_then(|row| self.battlegrounds.get(row)) {
+                            game.queue_asked = Some(QueueAsked::Apply(kind, entry.name.clone()));
+                        }
+                    }
+                    Some(battle_queue::Hit::Cancel) => {
+                        if let Some((name, _)) = &game.queued {
+                            game.queue_asked = Some(QueueAsked::Cancel(name.clone()));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // The big minimap: a click on it, before the small one's buttons (it can cover them).
+            Scene::Game(game) if on(Esc(W::Minimap)) => {
+                let size = [game.world.gat.width as u32, game.world.gat.height as u32];
+                let quests = game.big_minimap_quests();
+                let pins = minimap_window::Pins { player: game.player.cell, party: &[], guild: &[], boss: None, quests: &quests };
+                match game.minimap_window.hit(cursor, size, &pins) {
+                    // A quest NPC: navigation to its cell on this map.
+                    Some(minimap_window::Hit::Quest(cell)) => {
+                        let map = navigation::map_key(&game.map);
+                        let name = self.navi_tables.maps.get(&map).cloned().unwrap_or_else(|| map.clone());
+                        let target = navigation::Target { cell: Some(cell.map(|value| value as u16)), monster: None, name, map };
+                        game.navigate(&self.navi_tables, &self.messages, &self.grf, Ok(target), NAVI_SERVICES);
+                    }
+                    Some(hit) => {
+                        game.minimap_window.click(hit);
+                        game.sync_esc();
+                    }
+                    None => {}
+                }
+            }
+            // The minimap's bottom row: zoom (kept with the settings), the big map, the route flag.
+            // A click elsewhere on the minimap does nothing.
+            Scene::Game(game) if on(Top::SmallMinimap) => match minimap::button_at(cursor) {
+                Some(button @ ("plus" | "minus")) => {
+                    game.minimap_zoom = if button == "plus" { minimap::zoom_in(game.minimap_zoom) } else { minimap::zoom_out(game.minimap_zoom) };
+                    if let Some(path) = settings_path("minimap_zoom") {
+                        let _ = path.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(path, game.minimap_zoom.to_string()));
+                    }
+                }
+                Some("mini") => {
+                    if let Some(gpu) = &self.gpu {
+                        toggle_big_minimap(game, gpu, &self.grf, &self.minimap_exceptions);
+                    }
+                }
+                // ponytail: #276 draws the navigation route when this is on. The route itself is not drawn here.
+                Some("object") => game.navigation_route = !game.navigation_route,
+                // View On: the world map, open or closed, as its shortcut does.
+                Some("viewon") => toggle_world_map(game, self.gpu.as_ref(), &self.grf, &self.worlds),
+                _ => {}
+            },
+            // The new-quest icon: the quest window.
+            Scene::Game(game) if on(Top::QuestIcon) => {
+                game.quest_window.open();
+                game.quest_icon = false;
+                game.sync_esc();
+            }
+            // A level up button: the status window (base level) or the skill window (job level), restored if minimised.
+            Scene::Game(game) if on(Top::LevelUp) => {
+                match game.level_ups.hit(cursor).unwrap() {
+                    level_up::Button::Base => {
+                        game.status_window.frame.open = true;
+                        game.status_window.frame.minimized = false;
+                        game.raise(Panel::Status);
+                    }
+                    level_up::Button::Job => {
+                        game.skill_window.frame.open = true;
+                        game.skill_window.frame.minimized = false;
+                        game.raise(Panel::Skills);
+                    }
+                }
+                game.sync_esc();
+            }
+            // A skill's description: its delay button opens or closes the delays beside it, its close button closes it;
+            // a click elsewhere on it does nothing.
+            Scene::Game(game) if on(Esc(W::SkillDescription)) => {
+                if let Some(window) = game.skill_description.as_mut().filter(|window| window.on_delay(cursor)) {
+                    window.delays = !window.delays;
+                    game.sync_esc();
+                } else if game.skill_description.as_ref().is_some_and(|window| window.on_close(cursor)) {
+                    game.skill_description = None;
+                    game.sync_esc();
+                }
+            }
+            // The store search: the kind, the fields, searching, paging, and a row twice to find its store.
+            // A store it opened stands over it.
+            Scene::Game(game) if on(Esc(W::Catalog)) => {
+                let hit = game.catalog.as_ref().and_then(|catalog| catalog.hit(cursor));
+                game.click_catalog(hit.unwrap(), &self.items, &self.card_names);
+            }
+            // The ranking board: another ranking, or closing it.
+            Scene::Game(game) if on(Esc(W::Ranking)) => match game.ranking.as_ref().and_then(|board| board.hit(cursor)) {
+                Some(ranking::Hit::Kind(kind)) => {
+                    let _ = game.session.ask_ranking(kind);
+                }
+                Some(ranking::Hit::Title(TitleHit::Close)) => game.ranking = None,
+                Some(ranking::Hit::Title(title)) => game.ranking.as_mut().unwrap().frame.click_title(title),
+                _ => {}
+            },
+            // The party booking board.
+            Scene::Game(game) if on(Top::PartyBooking) => {
+                let window = game.booking.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                if let Some(action) = window.click(hit) {
+                    game.booking_action(action);
+                }
+            }
+            // Someone asks to join through our post: OK lets them in.
+            Scene::Game(game) if on(Top::BookingAsked) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        let (character, account, ..) = game.booking_asked.take().unwrap();
+                        let _ = game.session.answer_join(character, account, accept);
+                    }
+                }
+            }
+            // The navigation window: the search, a row or a place picked (its map's picture comes with it), Find.
+            Scene::Game(game) if on(Esc(W::Navigation)) => {
+                let window = game.navi_window.as_mut().unwrap();
+                match window.hit(cursor).unwrap() {
+                    navi_window::Hit::Title(TitleHit::Close) | navi_window::Hit::Close => game.close_navigation(),
+                    navi_window::Hit::Search => {
+                        window.click(navi_window::Hit::Search);
+                        window.search(&self.navi_tables);
+                    }
+                    navi_window::Hit::Find => {
+                        window.click(navi_window::Hit::Find);
+                        let (target, services) = (window.target(&self.navi_tables), window.services());
+                        game.navigate(&self.navi_tables, &self.messages, &self.grf, target, services);
+                    }
+                    // An arrow set picked: it's the one on the ground from now on, and kept.
+                    navi_window::Hit::Side(navi_window::Side::Sets, navi_window::SideHit::Set(set)) => {
+                        self.graphics.navi_icons = set;
+                        self.graphics.save();
+                    }
+                    // Share: the picked place's link goes on the chat line (a map first asks for a cell on its picture).
+                    hit @ (navi_window::Hit::Share | navi_window::Hit::ShareAt(_)) => {
+                        let link = match hit {
+                            navi_window::Hit::ShareAt(cell) => window.share_at(cell),
+                            _ => {
+                                window.click(hit);
+                                window.share(&self.navi_tables, control::now())
+                            }
+                        };
+                        if let Some(link) = link {
+                            game.chat.naming = false;
+                            game.chat.type_whole(&link);
+                        }
+                    }
+                    hit => {
+                        window.click(hit);
+                    }
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Reputation)) => match game.reputation_window.as_ref().and_then(|window| window.hit(cursor)) {
+                Some(reputation::Hit::Title(TitleHit::Close)) => game.reputation_window = None,
+                Some(reputation::Hit::Title(title)) => game.reputation_window.as_mut().unwrap().frame.click_title(title),
+                _ => {}
+            },
+            // The dress room: pickers, turning, closing.
+            Scene::Game(game) if on(Esc(W::DressRoom)) => {
+                let room = game.dressroom.as_mut().unwrap();
+                if room.hit(cursor).is_some_and(|hit| room.click(hit, &game.dress_lists)) {
+                    game.dressroom = None;
+                    game.dress_figure = None;
+                }
+            }
+            // Handing the party over: OK asks the server.
+            Scene::Game(game) if on(Esc(W::LeaderAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        let account = game.leader_asked.take().unwrap();
+                        if yes {
+                            let _ = game.session.change_party_leader(account);
+                        }
+                    }
+                }
+            }
+            // The Guild Companion and its windows; the create (or disband) window's OK checks the name.
+            Scene::Game(game) if on(Esc(W::GuildCompanion)) => match game.guild_companion.hit(cursor) {
+                Some(guild_companion::Hit::CreateOk) => game.guild_name_ok(&self.messages),
+                Some(hit) => game.guild_companion.click(hit),
+                None => {}
+            },
+            // The guild's reason box: OK sends, Cancel closes.
+            Scene::Game(game) if on(Top::GuildReason) => match game.reason_box.as_ref().and_then(|reason| reason.hit(cursor, screen())) {
+                Some(guild::ReasonHit::Ok) => game.answer_reason(true),
+                Some(guild::ReasonHit::Cancel) => game.answer_reason(false),
+                _ => {}
+            },
+            // The party's docked windows (setup, create, invite): choices, the edit box, OK and Cancel.
+            Scene::Game(game) if matches!(top, Some(Esc(W::PartySetup | W::PartyCreate | W::PartyInviteName))) => {
+                let dialog = game.party_dialog.as_mut().unwrap();
+                let hit = dialog.hit(cursor);
+                dialog.typing = hit == Some(party::DialogHit::Edit) || (dialog.typing && hit != Some(party::DialogHit::Window));
+                let action = hit.and_then(|hit| dialog.click(hit));
+                if let Some(action) = action {
+                    game.party_dialog_action(action, &self.messages);
+                }
+            }
+            // Dismissing the mercenary: OK lets it go.
+            Scene::Game(game) if on(Esc(W::DismissAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_dismiss(yes, &self.messages);
+                    }
+                }
+            }
+            // A homunculus question: OK feeds, deletes or renames it.
+            Scene::Game(game) if on(Esc(W::HomunculusAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_homunculus(yes, &self.messages);
+                    }
+                }
+            }
+            // A pet question: OK feeds it or renames it.
+            Scene::Game(game) if on(Esc(W::PetAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        game.answer_pet(yes, &self.pets, &self.items, &self.messages);
+                    }
+                }
+            }
+            // A cash shop purchase: OK sends the cart.
+            Scene::Game(game) if on(Esc(W::CashShopBuy)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        game.cashshop_buy_asked = false;
+                        if let Some((free, items)) = game.cashshop.as_ref().and_then(|shop| shop.buy_request(accept)) {
+                            let _ = game.session.buy_cashshop(free, &items);
+                        }
+                    }
+                }
+            }
+            // Someone wants to be friends: OK or cancel.
+            Scene::Game(game) if on(Esc(W::FriendAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        let (account, character, _) = game.friend_asked.take().unwrap();
+                        let _ = game.session.answer_friend(account, character, accept);
+                    }
+                }
+            }
+            // Asked to be adopted: OK asks again, then accepts; Cancel at either step refuses.
+            Scene::Game(game) if on(Esc(W::AdoptAsked)) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, yes) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if yes { &assets.ok } else { &assets.cancel }) {
+                        let (parent, partner, name, again) = game.adopt_asked.take().unwrap();
+                        if yes && !again {
+                            // What a baby class gives up doesn't fit the box: the whole of it in the chat, the box asks.
+                            game.chat_line(self.messages.get(ADOPT_ASKS_AGAIN).cloned().unwrap_or_default(), CHAT_ERROR);
+                            game.adopt_asked = Some((parent, partner, name, true));
+                        } else {
+                            let _ = game.session.answer_adoption(parent, partner, yes);
+                        }
+                    }
+                }
+            }
+            // A party invites us: OK or cancel.
+            // Yes joins and opens the party window on its party tab.
+            Scene::Game(game) if on(Esc(W::PartyInvite)) => {
+                let dialog = party::invitation_at(screen());
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        let (party, _) = game.party_invite.take().unwrap();
+                        let _ = game.session.answer_party(party, accept);
+                        if accept {
+                            game.open_party_tab();
+                        }
+                    }
+                }
+            }
+            // Someone asks for a deal: OK or cancel.
+            Scene::Game(game) if on(Top::TradeAsked) => {
+                let dialog = dialog_position(&assets.message);
+                for (place, accept) in [(LEFT_BUTTON, true), (RIGHT_BUTTON, false)] {
+                    if hit(offset(dialog, place), if accept { &assets.ok } else { &assets.cancel }) {
+                        game.trade_asked = None;
+                        let _ = game.session.answer_trade(accept);
+                    }
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Bank)) => {
+                let carried = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32;
+                let busy = game.synthesis.is_some() || game.upgrade.is_some() || game.reform.is_some();
+                let bank = game.bank.as_mut().unwrap();
+                let hit = bank.hit(cursor).unwrap();
+                let account = game.account_id;
+                match bank.click(hit, carried, busy) {
+                    Some(bank::Action::Deposit(zeny)) => {
+                        let _ = game.session.move_zeny(true, account, zeny);
+                    }
+                    Some(bank::Action::Withdraw(zeny)) => {
+                        let _ = game.session.move_zeny(false, account, zeny);
+                    }
+                    Some(bank::Action::Refuse(id)) => game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR),
+                    Some(bank::Action::Close) => game.bank = None,
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::CashShop)) => {
+                let shop = game.cashshop.as_mut().unwrap();
+                let hit = shop.hit(cursor).unwrap();
+                match shop.click(hit) {
+                    Some(cashshop::Action::Buy) => game.cashshop_buy_asked = true,
+                    Some(cashshop::Action::Close) => game.close_cashshop(),
+                    Some(cashshop::Action::Search) => shop.search(&self.items),
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::OtherEquipment)) => {
+                let viewed = game.viewing.as_mut().unwrap();
+                match viewed.window.hit(cursor, &viewed.items).unwrap() {
+                    equipment::Hit::Title(TitleHit::Close) => game.viewing = None,
+                    hit => {
+                        viewed.window.click(hit);
+                    }
+                }
+            }
+            // Sense's window: its close button.
+            Scene::Game(game) if on(Esc(W::MonsterInfo)) => {
+                if game.monster_window.as_ref().unwrap().hit(cursor) == Some(true) {
+                    game.monster_window = None;
+                }
+            }
+            // The Lucky Roulette: START spins, Get Prize claims (each only while it's there), close lets it go once the
+            // wheel has stopped.
+            Scene::Game(game) if on(Esc(W::Roulette)) => {
+                let window = game.roulette.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                match window.click(hit, control::now()) {
+                    Some(roulette::Action::Spin) => _ = game.session.roulette(net::RouletteRequest::Spin),
+                    Some(roulette::Action::Claim) => _ = game.session.roulette(net::RouletteRequest::Claim),
+                    Some(roulette::Action::Busy) => game.chat_line(self.messages.get(roulette::SPINNING).cloned().unwrap_or_default(), roulette::REFUSED),
+                    Some(roulette::Action::Close) => game.close_roulette(),
+                    None => {}
+                }
+            }
+            // The Gold PC Cafe box asks for the server's Gold PC Cafe NPC.
+            // ponytail: the game skips this on a map of type 20 (rathena's MAPTYPE_PVP_TOURNAMENT), which rathena never sends.
+            Scene::Game(game) if on(Top::GoldPc) => _ = game.session.dynamic_npc(goldpc::NPC),
+            // Its icon asks for it.
+            Scene::Game(game) if on(Top::RouletteIcon) => {
+                if game.roulette.is_none() {
+                    let _ = game.session.roulette(net::RouletteRequest::Open);
+                }
+            }
+            // The material window: OK sends what's in; Cancel and the close button send nothing in (rathena forgets the
+            // window either way).
+            Scene::Game(game) if on(Esc(W::Materials)) => {
+                let window = game.materials.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                if let Some(ok) = window.click(hit) {
+                    let entries = if ok { window.entries.clone() } else { Vec::new() };
+                    let _ = game.session.send_materials(window.kind, ok, &entries);
+                    game.materials = None;
+                }
+            }
+            Scene::Game(game) if on(Esc(W::LaphineSynthesis)) || on(Esc(W::LaphineUpgrade)) => {
+                let upgrade = on(Esc(W::LaphineUpgrade));
+                let window = if upgrade { game.upgrade.as_mut() } else { game.synthesis.as_mut() }.unwrap();
+                let hit = window.hit(cursor).unwrap();
+                match window.click(hit, &game.inventory.items, control::now()) {
+                    Some(laphine::Action::Make) if upgrade => {
+                        if let Some(index) = window.index() {
+                            let _ = game.session.upgrade_item(window.box_id, index);
+                        }
+                    }
+                    Some(laphine::Action::Make) => {
+                        let _ = game.session.synthesize(window.box_id, &window.entries());
+                    }
+                    Some(laphine::Action::Close) if upgrade => {
+                        let _ = game.session.close_upgrade();
+                        game.upgrade = None;
+                    }
+                    Some(laphine::Action::Close) => {
+                        let _ = game.session.close_synthesis();
+                        game.synthesis = None;
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::ItemReform)) => {
+                let hit = game.reform.as_ref().unwrap().hit(cursor, &game.inventory.items).unwrap();
+                match game.reform.as_mut().unwrap().click(hit, &game.inventory.items) {
+                    Some(reform::Action::Reform { item, index }) => {
+                        let _ = game.session.reform(item, index);
+                    }
+                    // Until the server hears it, it holds the player and refuses NPC clicks.
+                    Some(reform::Action::Close) => {
+                        let _ = game.session.close_reform();
+                        game.reform = None;
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Enchant)) => {
+                let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32;
+                let action = {
+                    let carried = &game.inventory.items;
+                    let count = |id: u32| carried.iter().filter(|item| item.id == id).map(|item| u32::from(item.amount)).sum::<u32>();
+                    let slots = |id: u32| self.items.get(&id).map(|info| info.slots).unwrap_or(0);
+                    let window = game.enchant.as_mut().unwrap();
+                    let hit = window.hit(cursor).unwrap();
+                    window.click(hit, carried, slots, count, zeny)
+                };
+                match action {
+                    Some(enchant::Action::Ask) => game.question_box = Some(BoxQuestion::Enchant),
+                    Some(enchant::Action::Refuse(id)) => game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR),
+                    // Until the server hears the close, it holds the player and ignores the next request.
+                    Some(enchant::Action::Close) => {
+                        let _ = game.session.close_enchant();
+                        game.enchant = None;
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Stylist)) && game.stylist.as_ref().is_some_and(|window| window.covers(cursor)) => {
+                let look = game.player.look.clone().unwrap_or_else(|| Look { job: game.me.job, ..Look::default() });
+                let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0);
+                let carried = &game.inventory.items;
+                let has = |id: u32| carried.iter().filter(|item| item.id == id).map(|item| u32::from(item.amount)).sum::<u32>();
+                let window = game.stylist.as_mut().unwrap();
+                let rows = stylist::list(&self.styling_shop, look.job, window.picks, zeny, has);
+                let hit = window.hit(cursor, &self.styling_shop, rows.len()).unwrap();
+                // Buy asks first; hair that can't be dyed says so in a box.
+                match window.click(hit, &self.styling_shop, &look, stylist::can_buy(&rows)) {
+                    Some(stylist::Action::Ask(picks)) => game.question_box = Some(BoxQuestion::BuyStyle(picks)),
+                    Some(stylist::Action::Notice(id)) => game.question_box = Some(BoxQuestion::Notice(id)),
+                    Some(stylist::Action::Close) => {
+                        let _ = game.session.close_stylist();
+                        game.stylist = None;
+                    }
+                    None => {}
+                }
+                if let Some(window) = &mut game.stylist {
+                    dress_stylist(window, &self.grf, &self.look_tables, &look, &self.items, &self.styling_shop);
+                }
+            }
+            Scene::Game(game) if on(Top::Refine) => {
+                let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32;
+                let carried = &game.inventory.items;
+                let count = |id: u32| carried.iter().filter(|item| item.id == id).map(|item| u32::from(item.amount)).sum::<u32>();
+                let window = game.refine.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                // A double click on the item slot empties the machine.
+                if hit == refine::Hit::Item && window.item.is_some() && !window.hammering() && game.refine_clicks.double(0) {
+                    window.clear();
+                    return;
+                }
+                match window.click(hit, count, zeny, control::now()) {
+                    Some(refine::Action::Refine { index, ore, blessings }) => {
+                        let _ = game.session.refine(index, ore, blessings);
+                    }
+                    // Until the server hears it, it won't open the window again and holds the player.
+                    Some(refine::Action::Close) => {
+                        let _ = game.session.close_refine();
+                        game.refine = None;
+                    }
+                    None => {}
+                }
+            }
+            // Grade enchanting: Start sends the try (asking first with no blessing), close tells the server.
+            Scene::Game(game) if on(Esc(W::GradeEnchant)) => {
+                let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u32;
+                let carried = &game.inventory.items;
+                let count = |id: u32| carried.iter().filter(|item| item.id == id).map(|item| u32::from(item.amount)).sum::<u32>();
+                let window = game.grade.as_mut().unwrap();
+                let hit = window.hit(cursor).unwrap();
+                match window.click(hit, count, zeny) {
+                    Some(grade::Action::Enchant { index, material, steps }) => {
+                        let _ = game.session.grade_enchant(index, material, steps);
+                    }
+                    Some(grade::Action::Ask) => game.question_box = Some(BoxQuestion::GradeStart),
+                    Some(grade::Action::Notice(id)) => game.question_box = Some(BoxQuestion::Notice(id)),
+                    Some(grade::Action::Close) => {
+                        let _ = game.session.close_grade();
+                        game.grade = None;
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Trade)) => {
+                let trade = game.trade.as_mut().unwrap();
+                let hit = trade.hit(cursor).unwrap();
+                match trade.click(hit) {
+                    Some(trade::Action::Lock(zeny)) => game.lock_trade(zeny),
+                    Some(trade::Action::Exchange) => {
+                        let _ = game.session.finish_trade();
+                    }
+                    // The window stays until the server's 0x00ee.
+                    Some(trade::Action::Cancel) => {
+                        let _ = game.session.cancel_trade();
+                    }
+                    None => {}
+                }
+            }
+            // The box asking how many keeps the pointer until it's answered.
+            Scene::Game(game) if game.amount.is_some() => {
+                if let Some(Some(ok)) = game.amount.as_ref().unwrap().hit(cursor, assets.message.size, assets.ok[0].size) {
+                    game.answer_amount(ok, &self.messages);
+                }
+            }
+            Scene::Game(game) if on(Esc(W::PickList)) => {
+                let (list, _) = game.pick.as_mut().unwrap();
+                let hit = list.hit(cursor).unwrap();
+                if let Some(answer) = list.click(hit) {
+                    game.answer_pick(answer);
+                }
+            }
+            // Item merge: OK sends the checked stacks and waits for the answer; Cancel and the close button cancel.
+            Scene::Game(game) if on(Top::ItemMerge) => {
+                let merge = game.merge.as_ref().unwrap();
+                match merge.hit(cursor).and_then(|hit| merge.click(hit)) {
+                    Some(merge::Action::Merge(indexes)) => {
+                        let _ = game.session.merge_items(&indexes);
+                    }
+                    Some(merge::Action::Refused(line)) => game.chat_line(self.messages.get(line).cloned().unwrap_or_default(), CHAT_ERROR),
+                    Some(merge::Action::Cancel) => {
+                        game.merge = None;
+                        let _ = game.session.cancel_merge();
+                    }
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Top::MakingMaterial) => {
+                let forge = game.forge.as_mut().unwrap();
+                let hit = forge.hit(cursor).unwrap();
+                match forge.click(hit) {
+                    Some(forge::Action::Cancel) => game.cancel_forge(),
+                    Some(forge::Action::Ok(_)) => game.ok_forge(),
+                    Some(forge::Action::Take(slot)) => game.take_forge_slot(slot),
+                    None => {}
+                }
+            }
+            Scene::Game(game) if on(Esc(W::Shop)) => {
+                let shop = game.shop.as_mut().unwrap();
+                let hit = shop.hit(cursor).unwrap();
+                match shop.click(hit) {
+                    // A vendor's deal asks "Confirm Deal" first, its windows closed.
+                    Some(shop::Action::Deal) if shop.vendor.is_some() => {
+                        if !shop.deal.is_empty() {
+                            game.deal_confirm = Some(shop::Confirm::new(game.shop.take().unwrap(), screen()));
+                        }
+                    }
+                    Some(shop::Action::Deal) => {
+                        let _ = shop.send(&mut game.session);
+                        // An NPC shop closes as the deal goes, and the deal ends.
+                        if shop.plain() {
+                            game.shop = None;
+                            game.end_deal_talk();
+                        }
+                    }
+                    Some(shop::Action::Close) => game.close_shop(),
+                    Some(shop::Action::Ask(row, _)) => {
+                        game.amount = if shop.plain()
+                            && let Some(offer) = shop.offers.get(row)
+                        {
+                            let name = offer.name(&self.items, (&self.card_names, &game.char_names), &self.messages);
+                            Some(window::Amount::shop(Asked::Shop(row), name, None))
+                        } else {
+                            Some(window::Amount::new(Asked::Shop(row), None))
+                        };
+                    }
+                    // "Toggle Item Amount." is kept for the next shop.
+                    None if hit == shop::Hit::Whole => {
+                        game.shop_whole = shop.whole;
+                        if let Some(path) = settings_path("shop_whole") {
+                            shop::keep_whole(&path, shop.whole);
+                        }
+                    }
+                    Some(shop::Action::AskOut(..) | shop::Action::Say(..)) | None => {}
+                }
+            }
+            // The chat tab settings: a kind of line on or off for the tab. It's drawn over the panels, so it takes the
+            // click before them (#1157).
+            Scene::Game(game) if on(Top::ChatSettings) => match game.chat.settings.as_ref().and_then(|settings| settings.hit(cursor)).unwrap() {
+                chat::SettingsHit::Title(TitleHit::Close) => game.chat.settings = None,
+                chat::SettingsHit::Title(title) => game.chat.settings.as_mut().unwrap().frame.click_title(title),
+                chat::SettingsHit::Kind(kind) => game.chat.toggle_kind(kind),
+                chat::SettingsHit::All => game.chat.set_all(),
+                chat::SettingsHit::ScrollUp => game.chat.settings.as_mut().unwrap().scroll(-1),
+                chat::SettingsHit::ScrollDown => game.chat.settings.as_mut().unwrap().scroll(1),
+                chat::SettingsHit::Window => {}
+            },
+            // A small party window: a click on it was a drag (handled on press).
+            Scene::Game(game) if matches!(top, Some(Top::PartyHp(_))) => {}
+            Scene::Game(game) if matches!(top, Some(Top::Panel(_))) => {
+                let id = game.window_at(cursor).unwrap();
+                game.raise(id);
+                match id {
+                    Panel::Cutin => {
+                        if game.cutin.as_ref().is_some_and(|cutin| cutin.on_close(cursor, &assets.cutin)) {
+                            game.cutin = None;
+                        }
+                    }
+                    Panel::Hotkeys => {
+                        let hit = game.hotkeys.hit(cursor).unwrap();
+                        game.hotkeys.click(hit);
+                        if let hotkeys::Hit::Slot(slot) = hit
+                            && game.hotkeys.clicks.double(slot as u16)
+                        {
+                            game.press_hotkey(slot, &self.messages);
+                        }
+                    }
+                    Panel::BasicInfo => {
+                        let hit = game.basic_info.hit(cursor).unwrap();
+                        match game.basic_info.click(hit) {
+                            Some("equip") => {
+                                game.equipment.toggle_general();
+                                game.raise(Panel::Equipment);
+                            }
+                            Some("item") => {
+                                game.inventory.frame.toggle();
+                                game.raise(Panel::Inventory);
+                            }
+                            Some("skill") => {
+                                game.skill_window.frame.toggle();
+                                game.raise(Panel::Skills);
+                            }
+                            Some("party") => {
+                                game.party_window.frame.toggle();
+                                game.raise(Panel::Party);
+                            }
+                            Some("status") => {
+                                game.status_window.frame.toggle();
+                                game.raise(Panel::Status);
+                            }
+                            // Without a guild, the Guild Companion.
+                            Some("guild") if game.guild.is_none() => game.guild_companion.toggle(screen()),
+                            Some("guild") => game.toggle_guild_window(),
+                            // The bank opens when the server says so: it answers in its own words where banking is off.
+                            Some("bank") => {
+                                let _ = game.session.check_bank(game.account_id);
+                            }
+                            Some("achievement") => game.achievement_window.frame.toggle(),
+                            // The attendance check opens when the server says so (it answers in its own words when no
+                            // event runs).
+                            Some("attendance") => {
+                                if game.attendance.take().is_some() {
+                                    game.sync_esc();
+                                } else {
+                                    game.attendance_asked = true;
+                                    let _ = game.session.open_attendance();
+                                }
+                            }
+                            Some("mail") => {
+                                let action = game.mail.toggle();
+                                game.mail_action(action);
+                            }
+                            Some("quest") => {
+                                game.quest_window.toggle();
+                                game.sync_esc();
+                            }
+                            // The game menu, as Esc opens it (the dead layout when dead); the shortcut settings.
+                            Some("option") => {
+                                game.escape = if game.escape.is_some() { None } else { Some(escape::Menu::new(game.player.dead)) };
+                            }
+                            Some("keyboard") => {
+                                game.shortcuts_window =
+                                    toggled(game.shortcuts_window.take(), || shortcut_window::ShortcutWindow::new(&self.keybinds, screen()));
+                                game.sync_esc();
+                            }
+                            Some("repute") => {
+                                game.toggle_reputation(&self.reputation_tables);
+                                game.sync_esc();
+                            }
+                            Some("navigation") => {
+                                game.toggle_navigation();
+                                game.sync_esc();
+                            }
+                            Some("map") => {
+                                game.world_map = match (game.world_map.take(), &self.gpu) {
+                                    (None, Some(gpu)) => worldmap::WorldMap::open(gpu, &self.grf, &self.worlds.0, self.worlds.1, &map_key(&game.map)),
+                                    _ => None,
+                                };
+                            }
+                            Some("shop") => {
+                                let _ = game.session.open_cashshop(0);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Panel::Inventory => {
+                        let hit = game.inventory.hit(cursor).unwrap();
+                        // Shift + click puts the item's link on the chat line.
+                        if shift
+                            && let inventory::Hit::Item(index) = hit
+                            && let Some(item) = game.inventory.get(index)
+                        {
+                            let name = inventory::item_name(&self.items, item.id, item.identified, item.refine);
+                            game.chat.type_whole(&item_link(item.id, &name));
+                        } else if hit == inventory::Hit::Expand {
+                            // The same question a voucher opens comes back from the server.
+                            let _ = game.session.ask_expansion();
+                        } else if let Some(index) = game.inventory.click(hit) {
+                            game.use_item(index, &self.messages);
+                        }
+                    }
+                    Panel::Equipment => {
+                        let hit = game.equipment.hit(cursor, &game.inventory.items).unwrap();
+                        // The box changes when the server answers.
+                        if hit == equipment::Hit::ShowBox {
+                            let _ = game.session.show_equipment(!game.equipment.shown);
+                        }
+                        // The title changes when the server answers.
+                        if let equipment::Hit::WearTitle(title) = hit {
+                            let _ = game.session.change_title(title);
+                        }
+                        if hit == equipment::Hit::ViewCostume {
+                            let _ = game.session.show_costumes(!game.equipment.costumes_shown);
+                        }
+                        if hit == equipment::Hit::TakeOffAll {
+                            match game.equipment.unequip_all(&game.inventory.items) {
+                                Some(equipment::UnequipAll::General) => drop(game.session.take_off_all(equipment::GENERAL_PIECES)),
+                                // PACKETVER 20230906 takes the costume tab off in one packet too.
+                                Some(equipment::UnequipAll::Pieces(_)) if net::packetver() >= net::PACKETVER_TAKEOFF_LOCATION => {
+                                    drop(game.session.take_off_all(equipment::COSTUME_PIECES));
+                                }
+                                Some(equipment::UnequipAll::Pieces(pieces)) => {
+                                    for index in pieces {
+                                        let _ = game.session.take_off(index);
+                                    }
+                                }
+                                None => {}
+                            }
+                        }
+                        // One thing to take off goes at once; a cart and a mount ask which.
+                        if hit == equipment::Hit::Dismount {
+                            match game.equipment.dismounts()[..] {
+                                [(kind, _)] => drop(game.session.uninstall(kind)),
+                                ref both => {
+                                    let lines =
+                                        both.iter().map(|&(kind, id)| Some((self.messages.get(id).cloned().unwrap_or_default(), Choice::Uninstall(kind))));
+                                    game.menu = Some(menu::Menu::new(offset(cursor, [1.0, 1.0]), lines.collect(), &self.font));
+                                }
+                            }
+                        }
+                        if hit == equipment::Hit::CartItems {
+                            game.cart.frame.toggle();
+                            game.raise(Panel::Cart);
+                        }
+                        if hit == equipment::Hit::SwitchAll {
+                            match game.equipment.switch_all(&game.inventory.items, control::now()) {
+                                Ok(true) => drop(game.session.switch_all()),
+                                Ok(false) => {}
+                                Err(id) => game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR),
+                            }
+                        }
+                        // In the swap view, a double click takes the item out of the set.
+                        match game.equipment.click(hit) {
+                            Some(index) if game.equipment.swapping => {
+                                game.switch_asked = Some(index);
+                                let _ = game.session.switch_remove(index);
+                            }
+                            Some(_) if trade::refusal(game.trade.is_some(), trade::ItemAction::Unequip).is_some() => {
+                                game.chat_line(self.messages.get(trade::NO_USE).cloned().unwrap_or_default(), CHAT_ERROR);
+                            }
+                            Some(index) if !game.store_open() => drop(game.session.take_off(index)),
+                            _ => {}
+                        }
+                    }
+                    Panel::Cart => {
+                        let hit = game.cart.hit(cursor).unwrap();
+                        game.cart.click(hit);
+                    }
+                    Panel::Guild => match game.guild.as_ref().and_then(|guild| game.guild_window.hit(cursor, guild)) {
+                        Some(guild::Hit::Title(title)) => game.guild_window.frame.click_title(title),
+                        // The Announcement tab is the master's, with the notice as it is to start from.
+                        Some(guild::Hit::Tab(guild::NOTICE)) if !game.guild.as_ref().is_some_and(|guild| guild.master) => {}
+                        Some(guild::Hit::Tab(tab)) => {
+                            game.guild_window.show_tab(tab);
+                            if tab == guild::NOTICE
+                                && let Some(guild) = &game.guild
+                            {
+                                game.guild_window.notice_draft = guild.notice.clone();
+                            }
+                            game.ask_guild_pages();
+                        }
+                        // Disband: the warning box, and the disband window asking the guild's name.
+                        Some(guild::Hit::Disband) => {
+                            game.question_box = Some(BoxQuestion::Notice(guild_companion::DISBAND_WARNING));
+                            game.guild_companion.open_disband(screen());
+                        }
+                        Some(guild::Hit::LevelUp(skill)) => {
+                            let _ = game.session.skill_up(skill);
+                        }
+                        // The skills page: a row selects, Use uses the selected learned skill at its level, Close closes.
+                        Some(guild::Hit::Skill(id)) => game.guild_window.skill = Some(id),
+                        Some(guild::Hit::SkillUse) => {
+                            let level = game
+                                .guild
+                                .as_ref()
+                                .and_then(|guild| guild.skills.iter().find(|skill| Some(skill.id) == game.guild_window.skill))
+                                .map(|skill| (skill.id, skill.level));
+                            if let Some((id, level)) = level.filter(|&(_, level)| level > 0) {
+                                game.use_skill(id, level);
+                            }
+                        }
+                        Some(guild::Hit::SkillClose) => game.guild_window.frame.open = false,
+                        Some(guild::Hit::Relation(id, antagonist)) => game.guild_window.selected = Some((id, antagonist)),
+                        // The master's positions page: edits wait for OK, which sends them all; a row selects.
+                        Some(hit @ (guild::Hit::Permission(..) | guild::Hit::PositionTitle(_) | guild::Hit::Tax(_) | guild::Hit::ListRow(_))) => {
+                            if let Some(guild) = &game.guild {
+                                game.guild_window.click_position(hit, guild);
+                            }
+                        }
+                        Some(guild::Hit::PositionsOk) => {
+                            if let Some(edits) = game.guild_window.take_position_edits(Instant::now()) {
+                                let _ = game.session.change_positions(&edits);
+                            }
+                        }
+                        // The Announcement tab: the boxes take the caret; Send writes the notice and closes the window.
+                        Some(guild::Hit::NoticeSubject) => game.guild_window.typing = Some(guild::GuildTyping::NoticeSubject),
+                        Some(guild::Hit::NoticeText) => game.guild_window.typing = Some(guild::GuildTyping::NoticeText),
+                        Some(guild::Hit::NoticeSend) => {
+                            if let Some(guild) = &game.guild {
+                                let (subject, text) = &game.guild_window.notice_draft;
+                                let _ = game.session.set_guild_notice(guild.id, subject, text);
+                            }
+                            game.guild_window.typing = None;
+                            game.guild_window.frame.open = false;
+                        }
+                        // The members page: select, sort, online first.
+                        // The master's moves: OK sends them all at once.
+                        Some(guild::Hit::MovesOk) => {
+                            if let Some(moves) = game.guild_window.take_moves(Instant::now()) {
+                                let _ = game.session.move_members(&moves);
+                            }
+                        }
+                        Some(
+                            hit @ (guild::Hit::Member(_)
+                            | guild::Hit::SortBy(_)
+                            | guild::Hit::LoginStatus
+                            | guild::Hit::MemberPage
+                            | guild::Hit::Drop(_)
+                            | guild::Hit::PickPosition(_)),
+                        ) => {
+                            if let Some(guild) = &game.guild {
+                                game.guild_window.click_members(hit, guild);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Panel::Clan => {
+                        if let Some(clan::Hit::Title(title)) = game.clan.as_ref().and_then(|_| game.clan_window.hit(cursor)) {
+                            game.clan_window.frame.click_title(title);
+                        }
+                    }
+                    Panel::Mercenary => match game.mercenary_window.hit(cursor) {
+                        Some(mercenary::Hit::Close) => game.mercenary_window.frame.open = false,
+                        Some(mercenary::Hit::Skills) => {
+                            game.mercenary_skill_list.frame.toggle();
+                            game.raise(Panel::MercenarySkills);
+                        }
+                        Some(mercenary::Hit::Dismiss) => game.dismiss_asked = true,
+                        _ => {}
+                    },
+                    // A press on a row selects it; Use uses the selected skill.
+                    Panel::MercenarySkills => match game.mercenary_skill_list.hit(cursor, &game.mercenary_skills, 0) {
+                        Some(homunculus::SkillHit::Close) => game.mercenary_skill_list.frame.open = false,
+                        Some(homunculus::SkillHit::Row(row)) => game.mercenary_skill_list.selected = game.mercenary_skills.get(row).map(|skill| skill.id),
+                        Some(homunculus::SkillHit::Use) => {
+                            let selected = game.mercenary_skill_list.selected;
+                            if let Some(skill) = game.mercenary_skills.iter().find(|skill| Some(skill.id) == selected && skill.level > 0) {
+                                let id = skill.id;
+                                game.use_mercenary_skill(id, u16::MAX);
+                            }
+                        }
+                        _ => {}
+                    },
+                    Panel::Homunculus => match game.homunculus.as_ref().and_then(|_| game.homunculus_window.hit(cursor)) {
+                        Some(homunculus::Hit::Close) => game.homunculus_window.frame.open = false,
+                        Some(homunculus::Hit::Feed) => game.homunculus_asked = Some(HomunculusAsked::Feed),
+                        Some(homunculus::Hit::Delete) => game.homunculus_asked = Some(HomunculusAsked::Delete),
+                        Some(homunculus::Hit::Skills) => {
+                            game.homunculus_skill_list.frame.toggle();
+                            game.raise(Panel::HomunculusSkills);
+                        }
+                        Some(homunculus::Hit::Rename) => game.ask_homunculus_rename(),
+                        Some(homunculus::Hit::NameBox) => {
+                            let name = game.homunculus.as_ref().map(|homunculus| game.homunculus_window.name(homunculus).to_owned()).unwrap_or_default();
+                            game.homunculus_window.name_text = Some(name);
+                            game.homunculus_window.typing = true;
+                        }
+                        // The box follows the server's answer.
+                        Some(homunculus::Hit::AutoFeed) => drop(game.session.homunculus_auto_feed(!game.homunculus_window.auto_feed)),
+                        Some(homunculus::Hit::Window) | None => {}
+                    },
+                    Panel::HomunculusSkills => {
+                        let points = game.homunculus.as_ref().map_or(0, |homunculus| homunculus.skill_points);
+                        match game.homunculus_skill_list.hit(cursor, &game.homunculus_skills, points) {
+                            Some(homunculus::SkillHit::Close) => game.homunculus_skill_list.frame.open = false,
+                            Some(homunculus::SkillHit::Row(row)) => {
+                                game.homunculus_skill_list.selected = game.homunculus_skills.get(row).map(|skill| skill.id);
+                            }
+                            Some(homunculus::SkillHit::Use) => {
+                                let selected = game.homunculus_skill_list.selected;
+                                if let Some(skill) = game.homunculus_skills.iter().find(|skill| Some(skill.id) == selected && skill.level > 0) {
+                                    let id = skill.id;
+                                    game.use_skill(id, u16::MAX);
+                                }
+                            }
+                            Some(homunculus::SkillHit::Raise(id)) => {
+                                let _ = game.session.skill_up(id);
+                            }
+                            _ => {}
+                        }
+                    }
+                    Panel::Pet => {
+                        let hit = game.pet.as_ref().and_then(|_| game.pet_window.hit(cursor));
+                        // Any click but the arrow's shuts the command list.
+                        if hit != Some(pet::Hit::OpenList) {
+                            game.pet_window.list_open = false;
+                        }
+                        match hit {
+                            Some(pet::Hit::Close) => game.pet_window.frame.open = false,
+                            Some(pet::Hit::Rename) => game.ask_rename(),
+                            Some(pet::Hit::NameBox) => {
+                                let name = game.pet.as_ref().map(|pet| game.pet_window.name(pet).to_owned()).unwrap_or_default();
+                                game.pet_window.name_text = Some(name);
+                                game.pet_window.typing = true;
+                            }
+                            Some(pet::Hit::OpenList) => game.pet_window.list_open = !game.pet_window.list_open,
+                            Some(pet::Hit::Command(row)) => match pet::LIST.get(row).map(|&(_, command)| command) {
+                                Some(net::PET_FEED) => game.ask_feed(&self.messages),
+                                Some(command) => game.pet_command(command),
+                                None => {}
+                            },
+                            // The box follows the server's answer.
+                            Some(pet::Hit::AutoFeed) => drop(game.session.pet_auto_feed(!game.pet_window.auto_feed)),
+                            Some(pet::Hit::Window) | None => {}
+                        }
+                    }
+                    Panel::Status => {
+                        let hit = game.status_window.hit(cursor, &game.status);
+                        if let Some(stat) = hit.and_then(|hit| game.status_window.click(hit)) {
+                            // A trait (4th jobs) has its own request.
+                            if (status::TRAIT_POW..status::TRAIT_POW + 6).contains(&stat) {
+                                let _ = game.session.raise_trait(stat);
+                            } else {
+                                let _ = game.session.raise_stat(stat);
+                            }
+                        }
+                    }
+                    Panel::Party => match game.party_window.hit(cursor, game.party.as_ref(), &game.friends) {
+                        Some(party::Hit::Title(title)) => game.party_window.click_title(title),
+                        Some(party::Hit::Tab(friends)) => {
+                            game.party_window.friends = friends;
+                            game.party_window.picked = None;
+                        }
+                        Some(party::Hit::Friend(row)) => game.party_window.picked = Some(row),
+                        // A friend picked: whisper them (the name goes into the chat's name box), or drop them.
+                        Some(party::Hit::Button(party::Button::Whisper)) => {
+                            if let Some(friend) = game.party_window.picked.and_then(|row| game.friends.get(row)) {
+                                game.chat.whisper = friend.name.clone();
+                                game.chat.naming = false;
+                            }
+                        }
+                        Some(party::Hit::Button(party::Button::Delete)) => {
+                            if let Some(friend) = game.party_window.picked.and_then(|row| game.friends.get(row)) {
+                                let _ = game.session.remove_friend(friend.account, friend.character);
+                            }
+                        }
+                        // With the lock on, only the lock and the agency take a press.
+                        Some(party::Hit::Button(button)) if !game.party_window.takes(button) => {}
+                        Some(party::Hit::Button(party::Button::Lock(locked))) => game.party_window.locked = !locked,
+                        Some(party::Hit::Button(party::Button::Sort)) => game.member_windows.sort(&party::Grid::new(screen())),
+                        // ponytail: the agency does nothing yet.
+                        Some(party::Hit::Button(party::Button::Agency)) => {}
+                        Some(party::Hit::Button(party::Button::Create)) => game.toggle_party_dialog(party::DialogKind::Create),
+                        // The leader's press opens or closes the invite window; anyone else is told only the leader invites.
+                        Some(party::Hit::Button(party::Button::Invite)) => {
+                            if game.party.as_ref().and_then(party::Party::leader) != Some(game.account_id) {
+                                game.question_box = Some(BoxQuestion::OnlyLeader);
+                            } else {
+                                game.toggle_party_dialog(party::DialogKind::Invite);
+                            }
+                        }
+                        Some(party::Hit::Button(party::Button::Leave)) => game.question_box = Some(BoxQuestion::Leave),
+                        Some(party::Hit::Button(party::Button::Setup)) => {
+                            if game.party.is_some() {
+                                game.toggle_party_dialog(party::DialogKind::Setup);
+                            }
+                        }
+                        Some(party::Hit::Button(party::Button::FriendSetup)) => game.open_friend_setup(),
+                        _ => {}
+                    },
+                    Panel::Storage => {
+                        let names = (&self.messages[..], &self.card_names, &game.char_names);
+                        let hit = game.storage.hit(cursor, &assets.storage, &self.items, names);
+                        if hit.is_some_and(|hit| game.storage.click(hit, &self.items, names)) {
+                            let _ = game.session.close_storage();
+                        }
+                        // The search button with text: the Search window comes up with it, in front.
+                        if hit == Some(storage::Hit::Find) && game.storage.search() {
+                            game.raise(Panel::StorageSearch);
+                        }
+                        game.sync_esc();
+                    }
+                    // Their presses act on the press.
+                    Panel::StorageCategory(_) | Panel::StorageSearch => {}
+                    Panel::Skills => {
+                        let jobs = skills::tabs(&self.skill_trees, game.me.job, &game.skills);
+                        let points = game.skill_points();
+                        let skill_info = game.skill_info.clone();
+                        let sheet = skills::Sheet { trees: &self.skill_trees, jobs: &jobs, skills: &game.skills.clone(), info: &skill_info, points };
+                        let hit = game.skill_window.hit(cursor, &sheet);
+                        match hit.and_then(|hit| game.skill_window.click(hit)) {
+                            Some(skills::Action::Use(id)) => {
+                                let learned = game.skills.iter().find(|skill| skill.id == id).map_or(0, |skill| skill.level);
+                                let level = if learned > 0 { game.skill_window.use_level(id, learned) } else { 0 };
+                                if level > 0 {
+                                    game.use_skill(id, level);
+                                }
+                            }
+                            // A click (let go, not dragged off): a level goes in pending, with what it needs first; a
+                            // prerequisite the points can't reach is named in red.
+                            Some(skills::Action::LevelUp(id)) => {
+                                if let Err(short) = game.skill_window.raise(&sheet, id) {
+                                    let name = skill_info.get(&short).map_or_else(|| short.to_string(), |info| info.name.clone());
+                                    let line = rustnarok_client::messages::fill(self.messages.get(skills::CANNOT_LEARN).map_or("", String::as_str), &[&name]);
+                                    game.chat_line(line, CHAT_ERROR);
+                                }
+                            }
+                            Some(skills::Action::Apply) => game.apply_asked = true,
+                            Some(skills::Action::View(simple)) => skills::save_view(simple),
+                            None => {}
+                        }
+                    }
+                }
+            }
+            // A click on the chat window: the battle-mode icon opens or closes the line (the focus stays); the rest
+            // focuses the boxes but doesn't open the line.
+            Scene::Game(game) if on(Top::Chat) => {
+                let hit = game.chat.hit(cursor);
+                if hit == Some(chat::Hit::ModeIcon) {
+                    game.chat_mode.toggle_line();
+                    game.chat.mode_icon = game.chat_mode.icon();
+                } else if hit == Some(chat::Hit::Message) && !game.chat_mode.chat_line_open() {
+                    // MYgene: a click on the translucent input strip starts typing.
+                    game.chat_mode.toggle_line();
+                    game.chat.reopened();
+                    game.chat.mode_icon = game.chat_mode.icon();
+                } else {
+                    let said = game.chat.click(cursor);
+                    game.chat_said(said, &self.messages);
+                }
+            }
+            Scene::Game(game) if game.dialog.is_some() && (on(Top::NpcDialog) || game.talk_blocks()) => {
+                // NPC windows take the click; the map doesn't react while talking.
+                let dialog = game.dialog.as_mut().unwrap();
+                if dialog.input.as_ref().is_some_and(|input| hit(input.ok_on(), &assets.ok)) {
+                    game.submit_input();
+                } else if dialog.button != DialogButton::None && dialog.say_window() && game.say.on_button(cursor) {
+                    game.press_dialog_button(true);
+                } else if let Some(menu) = &dialog.menu {
+                    // Rows go on the press; the buttons on the click.
+                    let [ok, cancel] = menu.buttons().map(|place| menu.frame(&game.npc_menu).at(place));
+                    if hit(ok, &assets.ok) {
+                        game.menu_ok(false);
+                    } else if hit(cancel, &assets.cancel) {
+                        game.choose(true);
+                    }
+                }
+            }
+            // The cart choice: a cart sends its type (Change Cart's or Change Cart 2's answer) and closes it, as does its close
+            // button, which sends nothing.
+            Scene::Game(game) if on(Top::CartChoice) => {
+                let choice = game.cart_choice.as_ref().unwrap();
+                match choice.hit(cursor) {
+                    Some(cart_choice::Hit::Cart(kind)) => {
+                        let _ = match choice.answer {
+                            cart_choice::Answer::ChangeCart => game.session.change_cart(kind),
+                            cart_choice::Answer::SelectCart(account) => game.session.select_cart(account, kind as u8),
+                        };
+                        game.cart_choice = None;
+                    }
+                    Some(cart_choice::Hit::Close) => game.cart_choice = None,
+                    _ => {}
+                }
+            }
+            // The slot machine: the first press on it makes the try.
+            Scene::Game(game) if on(Top::Slot) => {
+                let machine = game.slot.as_mut().unwrap();
+                if machine.press(Instant::now()) {
+                    let _ = game.session.try_capture(machine.monster);
+                }
+            }
+            // Taming: a press on a unit opens the slot machine for it (rathena checks the rest); a player or our own pet,
+            // nothing, and it keeps aiming.
+            Scene::Game(game) if game.capturing => {
+                if let Some(Owner::Unit(id)) = hovered_unit(&game.hit_boxes, cursor, false)
+                    && let Some(actor) = game.units.get(&id)
+                    && taming::tameable(actor.kind == PLAYER, id, game.pet_id)
+                {
+                    game.capturing = false;
+                    game.slot = Some(taming::Machine::new(id, Instant::now()));
+                }
+            }
+            // The special popup sits over the map, under the windows: a click on it (and not on a window) dismisses it.
+            Scene::Game(game) if on(Top::SpecialPopup) => {
+                game.special_popup = None;
+            }
+            // A window the click reached but took nothing: the world under it doesn't get it either.
+            Scene::Game(_) if top.is_some() => {}
+            Scene::Game(game) => {
+                if game.store_open() || game.world_locked() {
+                    return;
+                }
+                // Whatever is under the cursor (see `picking::pick`): talk to NPCs, attack monsters, pick items up. The
+                // ground walked when the button went down (`press`).
+                match game.world_click(cursor, shift) {
+                    // Started on the press.
+                    WorldClick::Attack(_) => {}
+                    WorldClick::Swing(id) => drop(game.session.act(id, net::ACT_ATTACK)),
+                    // The rest went with the press.
+                    WorldClick::Talk(_) | WorldClick::PickUp(_) | WorldClick::Warp | WorldClick::Ground => {}
+                }
+            }
+            Scene::Message(..) => {
+                if hit(offset(dialog_position(&assets.message), RIGHT_BUTTON), &assets.ok) {
+                    self.close_message();
+                }
+            }
+            Scene::Confirm(..) | Scene::Prompt { .. } => {
+                let dialog = dialog_position(&assets.message);
+                if hit(offset(dialog, LEFT_BUTTON), &assets.ok) {
+                    self.answer();
+                } else if hit(offset(dialog, RIGHT_BUTTON), &assets.cancel) {
+                    self.dismiss();
+                }
+            }
+            // The wait box's Cancel.
+            Scene::Waiting(wait, _) => {
+                if wait.message().is_some() && hit(offset(login_position(), WAIT_CANCEL), &assets.cancel) {
+                    self.give_up();
+                }
+            }
+            Scene::Quit => {}
+        }
+    }
+
+    /// The pointer moved: windows and items being dragged follow it.
+    pub(crate) fn pointer_moved(&mut self) {
+        if let Scene::Game(game) = &mut self.scene {
+            let cursor = self.cursor;
+            if let Some((_, from, moved)) = &mut game.press_mark {
+                *moved |= left_pixel(*from, cursor);
+            }
+            if game.right_press.is_some_and(|(from, _)| moved_off(from, cursor)) {
+                game.right_moved = true;
+            }
+            // Every window held by its frame follows the pointer (`Game::frames`).
+            for framed in game.frames() {
+                framed.frame.drag_to(cursor, framed.height);
+            }
+            // The windows that keep their own place or more than a frame, the corner grips and the scroll thumbs.
+            game.chat.drag_to(self.cursor);
+            game.inventory.resize_to(self.cursor);
+            game.cart.resize_to(self.cursor);
+            game.storage.resize_to(self.cursor);
+            game.storage.drag_thumbs(self.cursor[1]);
+            game.party_window.resize_to(self.cursor);
+            for category in &mut game.storage.categories {
+                category.resize_to(self.cursor);
+            }
+            game.skill_window.resize_to(self.cursor);
+            if let Some(shop) = &mut game.my_shop
+                && shop.resize_to(self.cursor)
+            {
+                game.vend_size = shop.size;
+            }
+            if let Some(room) = &mut game.room
+                && room.resize_to(self.cursor)
+            {
+                game.room_size = room.size;
+            }
+            if let Some(setup) = &mut game.vend_setup
+                && setup.resize_to(self.cursor)
+            {
+                game.vend_size = setup.size;
+            }
+            if let Some(shop) = &mut game.shop {
+                shop.drag_to(self.cursor);
+            }
+            game.member_windows.drag_to(self.cursor);
+            game.mercenary_skill_list.drag_to(self.cursor, game.mercenary_skills.len());
+            game.homunculus_skill_list.drag_to(self.cursor, game.homunculus_skills.len());
+            game.talks.drag_to(self.cursor);
+            if let Some((list, _)) = &mut game.pick {
+                list.drag_to(self.cursor);
+            }
+            if let Some(merge) = &mut game.merge {
+                merge.drag_to(self.cursor);
+            }
+            if let Some(window) = &mut game.navi_window {
+                window.drag_to(self.cursor);
+            }
+            if let Some(view) = &mut game.card_view {
+                view.drag_to(self.cursor);
+            }
+            if let Some(window) = &mut game.item_window {
+                window.drag_to(self.cursor);
+            }
+            if let Some(window) = &mut game.card_window {
+                window.drag_to(self.cursor);
+            }
+            game.mail.drag_to(self.cursor);
+            game.say.drag_thumb(self.cursor[1]);
+            if let Some(menu) = game.dialog.as_mut().and_then(|dialog| dialog.menu.as_mut()) {
+                let height = menu.size()[1];
+                menu.frame_mut(&mut game.npc_menu).drag_to(self.cursor, height);
+                let top = menu.frame(&game.npc_menu).position[1];
+                menu.drag_thumb(self.cursor[1] - top);
+            }
+            for window in [&mut game.synthesis, &mut game.upgrade].into_iter().flatten() {
+                window.drag_thumb(self.cursor[1], &game.inventory.items);
+            }
+            if let Some(window) = &mut game.reform {
+                window.drag_thumb(self.cursor[1]);
+            }
+            if let Some(window) = &mut game.enchant {
+                window.drag_thumb(self.cursor, &game.inventory.items);
+            }
+            if let Some(log) = &mut game.storage_log {
+                log.drag_to(self.cursor);
+            }
+            if let Some(pick) = &mut game.package_pick {
+                pick.drag_thumb(self.cursor[1]);
+            }
+            if let Some(window) = &mut game.settings_window
+                && window.drag_to(self.cursor, &mut self.sound)
+                && let Some(audio) = &mut self.audio
+            {
+                audio.set(&self.sound);
+            }
+            if let Some(window) = &mut game.shortcuts_window {
+                window.drag_to(self.cursor);
+            }
+            game.camera_goal.pointer_moved(cursor);
+            game.camera_goal.drag(self.cursor, self.modifiers);
+            if let Some((_, start, moved)) = &mut game.dragging {
+                *moved |= (self.cursor[0] - start[0]).abs() + (self.cursor[1] - start[1]).abs() > 4.0;
+            }
+        }
+    }
+
+    /// The right button: Alt moves stacks to storage, a click on a player opens their menu, a press aims the camera.
+    pub(crate) fn right_button(&mut self, state: ElementState) {
+        self.right_down = state == ElementState::Pressed;
+        // The release ends the camera drag the press began, whichever click below takes it.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+        {
+            game.camera_goal.dragging = None;
+        }
+        // A right press lets go of a held drag and closes the box asking how many of an item.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Pressed
+        {
+            let dropped = game.dragging.take().is_some();
+            game.drag_cancelled |= dropped;
+            let closed = game.amount.take_if(|amount| amount.what.moves_items()).is_some();
+            if dropped || closed {
+                return;
+            }
+        }
+        // A right press on an item's picture in the NPC window describes the item.
+        if let (Scene::Game(game), ElementState::Pressed) = (&mut self.scene, state)
+            && let Some(&links::Target::Picture(id)) = game.link_at(self.cursor)
+        {
+            let card = self.card_pictures.name(id).is_some();
+            game.toggle_item(iteminfo::Shown::of_link(id, 0, [0; 4], card, &self.items));
+            return;
+        }
+        // A right press on an ore, the blessing or the item in the refine window describes it.
+        if let (Scene::Game(game), ElementState::Pressed) = (&mut self.scene, state)
+            && let Some(window) = &game.refine
+            && let Some(hit) = window.hit(self.cursor)
+            && let Some(shown) = window.item_at(hit, &game.inventory.items)
+        {
+            let shown = match shown {
+                refine::ItemAt::Plain(id) => iteminfo::Shown::of_link(id, 0, [0; 4], false, &self.items),
+                refine::ItemAt::Carried(index) => match game.inventory.get(index) {
+                    Some(item) => iteminfo::Shown::of(item),
+                    None => return,
+                },
+            };
+            game.show_item(shown);
+            return;
+        }
+        // A right press on the reform window's made item, base item or a material describes it.
+        if let (Scene::Game(game), ElementState::Pressed) = (&mut self.scene, state)
+            && let Some(shown) = game.reform.as_ref().and_then(|window| window.shown_at(self.cursor, &game.inventory.items, &self.items))
+        {
+            game.show_item(shown);
+            return;
+        }
+        // A right press on an item's icon in the package pick describes it.
+        if let (Scene::Game(game), ElementState::Pressed) = (&mut self.scene, state)
+            && let Some(item) = game.package_pick.as_ref().and_then(|pick| pick.item_at(self.cursor))
+        {
+            let shown = iteminfo::Shown { grade: item.grade, ..iteminfo::Shown::of_link(item.item, item.refine, [0; 4], false, &self.items) };
+            game.show_item(shown);
+            return;
+        }
+        // A right press on a Laphine row or slot describes its item.
+        if let (Scene::Game(game), ElementState::Pressed) = (&mut self.scene, state) {
+            let index = [&game.upgrade, &game.synthesis].into_iter().flatten().find_map(|window| window.item_at(self.cursor, &game.inventory.items));
+            if let Some(shown) = index.and_then(|index| game.inventory.get(index).map(iteminfo::Shown::of)) {
+                game.show_item(shown);
+                return;
+            }
+        }
+        // Alt + right press orders the homunculus (when it's out), off the windows.
+        if let (Scene::Game(game), Some(assets)) = (&mut self.scene, &self.assets)
+            && state == ElementState::Pressed
+            && self.modifiers.alt_key()
+            && !game.on_ui(self.cursor, assets.message.size)
+            && game.companion_press(true, self.cursor, self.modifiers.shift_key())
+        {
+            return;
+        }
+        // On the character select, a card's menu of moving and renaming (only once the PIN check has passed).
+        if let Scene::CharSelect(select) = &mut self.scene
+            && state == ElementState::Pressed
+            && select.unlocked()
+        {
+            select.open_menu(self.cursor, &self.font, &self.messages);
+        }
+        // The room owner's right click in the member list: on another member's name kick them out or hand the room
+        // over, and anywhere in it Room Setup.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+            && let Some(room) = &game.room
+            && let Some(chatroom::RoomHit::Members(row)) = room.hit(self.cursor)
+            && room.owned_by(&game.me.name)
+        {
+            game.right_press = None;
+            let label = |message: usize| self.messages.get(message).cloned().unwrap_or_default();
+            let mut choices = Vec::new();
+            if let Some(row) = row.filter(|&row| room.member_choices(row, &game.me.name).is_some()) {
+                choices.extend([Some((label(ROOM_KICK), Choice::RoomKick(row))), Some((label(ROOM_HAND_OVER), Choice::RoomOwner(row)))]);
+            }
+            choices.push(Some((label(chatroom::ROOM_SETUP), Choice::RoomSetup)));
+            game.menu = Some(menu::Menu::new(self.cursor, choices, &self.font));
+            return;
+        }
+        // A right click (not a drag) on a member's row in the party window, or on their small window, unlocked: the
+        // member's menu.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+            && !game.party_window.locked
+        {
+            let small = game.party_member_at(self.cursor);
+            let row = match game.party_window.hit(self.cursor, game.party.as_ref(), &game.friends) {
+                Some(party::Hit::Member(account)) if game.window_at(self.cursor) == Some(Panel::Party) => Some(account),
+                _ => None,
+            };
+            if let Some((account, small)) = small.map(|account| (account, true)).or(row.map(|account| (account, false))) {
+                game.right_press = None;
+                game.member_menu(account, small, self.cursor, &self.messages, &self.font);
+                return;
+            }
+        }
+        // A right click on a tracked quest's title: its details, or putting it aside.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+            && game.quest_window.tracker
+            && game.window_at(self.cursor).is_none()
+            && let Some(id) = quest_tracker::title_at(
+                &quest_tracker::blocks(&game.quests, &self.quest_texts, &game.quest_window.hidden, &self.messages),
+                &self.font,
+                self.cursor,
+            )
+        {
+            game.right_press = None;
+            let label = |message: usize| self.messages.get(message).cloned().unwrap_or_default();
+            let choices = vec![Some((label(QUEST_INFO_CHOICE), Choice::QuestInfo(id))), Some((label(QUEST_DELETE_CHOICE), Choice::QuestAside(id)))];
+            game.menu = Some(menu::Menu::new(self.cursor, choices, &self.font));
+            return;
+        }
+        // A right click on a skill in the skill window, the guild window's skills or the homunculus's or mercenary's skill
+        // list: its description (the hotkey bar's opens on the press), the same skill again closes it. Only the skill
+        // window's has no close button; Esc closes any.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+        {
+            let cursor = self.cursor;
+            let opened = match game.window_at(cursor) {
+                Some(Panel::Skills) => {
+                    let jobs = skills::tabs(&self.skill_trees, game.me.job, &game.skills);
+                    let sheet =
+                        skills::Sheet { trees: &self.skill_trees, jobs: &jobs, skills: &game.skills, info: &game.skill_info, points: game.skill_points() };
+                    // The skill's prerequisites stay lit until another right click.
+                    let skill = match game.skill_window.hit(cursor, &sheet) {
+                        Some(skills::Hit::Skill(id)) => Some(id),
+                        _ => None,
+                    };
+                    game.skill_window.pin(skill);
+                    skill.map(|id| (id, false))
+                }
+                // A homunculus's or a mercenary's skill: closable, as the guild's.
+                Some(panel @ (Panel::HomunculusSkills | Panel::MercenarySkills)) => {
+                    let (list, skills) = if panel == Panel::HomunculusSkills {
+                        (&game.homunculus_skill_list, &game.homunculus_skills)
+                    } else {
+                        (&game.mercenary_skill_list, &game.mercenary_skills)
+                    };
+                    let points = game.homunculus.as_ref().filter(|_| panel == Panel::HomunculusSkills).map_or(0, |homunculus| homunculus.skill_points);
+                    match list.hit(cursor, skills, points) {
+                        Some(homunculus::SkillHit::Row(row)) => skills.get(row).map(|skill| (skill.id, true)),
+                        Some(homunculus::SkillHit::Raise(id)) => Some((id, true)),
+                        _ => None,
+                    }
+                }
+                // A guild skill: a one-entry menu, "View Skill Info".
+                Some(Panel::Guild) => {
+                    if let Some(guild::Hit::Skill(id)) = game.guild.as_ref().and_then(|guild| game.guild_window.hit(cursor, guild)) {
+                        game.right_press = None;
+                        let label = self.messages.get(guild::VIEW_SKILL_INFO).cloned().unwrap_or_default();
+                        game.menu = Some(menu::Menu::new(cursor, vec![Some((label, Choice::GuildSkillInfo(id)))], &self.font));
+                        return;
+                    }
+                    None
+                }
+                _ => None,
+            };
+            if let Some((id, closable)) = opened {
+                game.right_press = None;
+                if game.skill_description.as_ref().is_some_and(|window| window.skill == id) {
+                    game.skill_description = None;
+                } else {
+                    let lines = self.skill_descriptions.get(&id).cloned().unwrap_or_default();
+                    let active = game.skill_active(id);
+                    game.skill_description =
+                        Some(skill_descript::SkillDescription::new(id, &lines, closable, active, |height| skill_descript::at_window(cursor, height)));
+                }
+                game.sync_esc();
+                return;
+            }
+        }
+        // A right click on a row of the guild's members page: the master moves someone else, a member leaves.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+            && game.window_at(self.cursor) == Some(Panel::Guild)
+            && let Some(guild) = &game.guild
+            && game.guild_window.tab == guild::MEMBERS
+            && let Some(index) = game.guild_window.member.and_then(|character| guild.members.iter().position(|member| member.character == character))
+        {
+            // The menu is for the row selected by the last left press.
+            let name = guild.members[index].name.clone();
+            let invite_party = game
+                .party
+                .as_ref()
+                .is_some_and(|party| party.leader() == Some(game.account_id) && !party.members.iter().any(|member| member.info.name == name));
+            let choices = guild.member_menu(game.me.id, index, invite_party);
+            if !choices.is_empty() {
+                game.right_press = None;
+                let entries = choices
+                    .into_iter()
+                    .map(|choice| Some((self.messages.get(choice.message()).cloned().unwrap_or_default(), Choice::GuildMember(choice, index))))
+                    .collect();
+                game.menu = Some(menu::Menu::new(self.cursor, entries, &self.font));
+                return;
+            }
+        }
+        // The master's right click on an ally or antagonist: delete it.
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+            && let Some((start, None)) = game.right_press
+            && (start[0] - self.cursor[0]).abs() + (start[1] - self.cursor[1]).abs() < 4.0
+            && game.window_at(self.cursor) == Some(Panel::Guild)
+            && let Some(guild) = &game.guild
+            && guild.master
+            && let Some(guild::Hit::Relation(id, antagonist)) = game.guild_window.hit(self.cursor, guild)
+        {
+            game.right_press = None;
+            let label = self.messages.get(RELATION_DELETE).cloned().unwrap_or_default();
+            game.menu = Some(menu::Menu::new(self.cursor, vec![Some((label, Choice::EndRelation(id, antagonist)))], &self.font));
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene {
+            let assets = self.assets.as_ref();
+            // A right press lets go of a skill being aimed.
+            if state == ElementState::Pressed {
+                game.targeting = None;
+            }
+            // A right press on an NPC talks too.
+            if state == ElementState::Pressed
+                && let Some(assets) = assets
+                && !game.on_ui(self.cursor, assets.message.size)
+                && let Some(Owner::Unit(id)) = hovered_unit(&game.hit_boxes, self.cursor, false)
+                && game.units.get(&id).is_some_and(|actor| actor.kind == NPC && actor.job != WARP_JOB)
+            {
+                game.talk_to(id, &self.messages);
+            }
+            // A right click on an inventory item with a modifier: Alt sends the stack to what's open, Shift moves it
+            // into the favourites or out, Ctrl identifies it with a Magnifier.
+            let (alt, shift, ctrl) = (self.modifiers.alt_key(), self.modifiers.shift_key(), self.modifiers.control_key());
+            if state == ElementState::Pressed
+                && game.window_at(self.cursor) == Some(Panel::Inventory)
+                && let Some(inventory::Hit::Item(index)) = game.inventory.hit(self.cursor)
+                && let Some(item) = game.inventory.get(index).cloned()
+                && let Some(action) = inventory_right(alt, shift, ctrl)
+            {
+                let line = match action {
+                    InventoryRight::QuickMove => game.quick_move(index),
+                    InventoryRight::Favorite => game.session.move_favorite(index, item.favorite).err().and(None),
+                    InventoryRight::Identify => {
+                        let magnifier = game.inventory.items.iter().any(|carried| MAGNIFIERS.contains(&carried.id));
+                        let (warn, ask) = inventory::ctrl_identify(game.inventory.open_tab(), item.identified, magnifier);
+                        if ask {
+                            let _ = game.session.identify_one(index);
+                        }
+                        warn.then_some(NO_MAGNIFIER)
+                    }
+                };
+                if let Some(line) = line {
+                    game.chat_line(self.messages.get(line).cloned().unwrap_or_default(), CHAT_ERROR);
+                }
+                return;
+            }
+            // A right press on a skill on the hotkey bar or the quick slot window: its description under or over that row
+            // (the same skill again closes it). Only for a skill the character has.
+            if state == ElementState::Pressed
+                && game.window_at(self.cursor) == Some(Panel::Hotkeys)
+                && let Some(hotkeys::Hit::Slot(slot)) = game.hotkeys.hit(self.cursor)
+                && let Some(key) =
+                    game.hotkeys.keys.get(slot).copied().flatten().filter(|key| key.skill && game.skills.iter().any(|skill| u32::from(skill.id) == key.id))
+                && let Some((bar_y, row)) = game.hotkeys.slot_place(slot)
+            {
+                let id = key.id as u16;
+                if game.skill_description.as_ref().is_some_and(|window| window.skill == id) {
+                    game.skill_description = None;
+                } else {
+                    let lines = self.skill_descriptions.get(&id).cloned().unwrap_or_default();
+                    let pointer_x = self.cursor[0];
+                    let active = game.skill_active(id);
+                    game.skill_description = Some(skill_descript::SkillDescription::new(id, &lines, true, active, |height| {
+                        skill_descript::at_hotbar(pointer_x, bar_y, row, height)
+                    }));
+                }
+                game.sync_esc();
+                return;
+            }
+            // Alt + right press on a row on sale takes it off.
+            if state == ElementState::Pressed
+                && alt
+                && let Some(setup) = &mut game.vend_setup
+                && let Some(vend::Hit::Good(row) | vend::Hit::Price(row)) = setup.hit(self.cursor)
+            {
+                setup.take_out(row);
+                return;
+            }
+            // Alt + right press takes a whole stack out of the open storage (or one of its lists): to the inventory while its
+            // window is open, else the cart's; one at a time until the server answers.
+            let names = (&self.messages[..], &self.card_names, &game.char_names);
+            let to = storage_quick_target(game.inventory.frame.open, game.cart.cart.is_some() && game.cart.frame.open);
+            let taken = |index: u16, to: StorageTo| if to == StorageTo::Inventory { Asked::Take(index) } else { Asked::StoreToCart(index) };
+            let moved = match game.window_at(self.cursor) {
+                _ if state != ElementState::Pressed || !self.modifiers.alt_key() || !game.storage.frame.open || game.quick_moving => None,
+                Some(Panel::Storage) => match (assets.and_then(|assets| game.storage.hit(self.cursor, &assets.storage, &self.items, names)), to) {
+                    (Some(storage::Hit::Item(index)), Some(to)) => game.storage.get(index).map(|item| (taken(index, to), item.amount)),
+                    _ => None,
+                },
+                Some(panel @ (Panel::StorageCategory(_) | Panel::StorageSearch)) => {
+                    match (storage_list(panel).and_then(|which| game.storage.category_hit(which, self.cursor, &self.items, names)), to) {
+                        (Some(storage::Hit::Item(index)), Some(to)) => game.storage.get(index).map(|item| (taken(index, to), item.amount)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+            // A right click (not a drag) opens the menu for what's under the pointer, by the usual ranks: another
+            // player, our pet or homunculus, ourselves with our stall open. A monster or an item over them wins.
+            let ourselves =
+                || picking::pick(game.hit_boxes.iter().copied().filter(|target| target.owner == Owner::Player), self.cursor, false, screen_middle());
+            let picked = hovered(&game.hit_boxes, self.cursor, false).or_else(|| game.my_shop.as_ref().and_then(|_| ourselves()));
+            let is_player = |id: u32| game.units.get(&id).is_some_and(|actor| actor.kind == PLAYER);
+            let mercenary = game.mercenary.as_ref().map(|hired| hired.id);
+            let on_unit = match menu_for(picked, is_player, game.pet_id, game.homunculus_id, mercenary, game.my_shop.is_some()) {
+                _ if game.window_at(self.cursor).is_some() || game.chat.blocks(self.cursor) => None,
+                target => target,
+            };
+            if state == ElementState::Pressed {
+                game.menu = None;
+                game.right_press = Some((self.cursor, on_unit));
+                game.right_moved = false;
+            } else if let Some((_, Some(target))) = game.right_press.take()
+                && menu_opens(game.right_moved, self.modifiers.shift_key(), self.mouse_down, false)
+            {
+                let name = match target {
+                    MenuFor::Player(id) | MenuFor::Pet(id) | MenuFor::Homunculus(id) | MenuFor::Mercenary(id) => {
+                        game.units.get(&id).map(|actor| actor.name.clone()).unwrap_or_default()
+                    }
+                    MenuFor::Stall => game.me.name.clone(),
+                };
+                let fill = |id: usize| rustnarok_client::messages::fill(self.messages.get(id).map_or("", String::as_str), &[&name]);
+                let choices: Vec<(usize, Choice)> = match target {
+                    // Our pet: its five commands.
+                    MenuFor::Pet(_) => PET_CHOICES.into_iter().map(|(label, command)| (label, Choice::Pet(command))).collect(),
+                    MenuFor::Homunculus(_) => HOMUNCULUS_CHOICES.to_vec(),
+                    MenuFor::Mercenary(_) => MERCENARY_CHOICES.to_vec(),
+                    MenuFor::Stall => vec![(CLOSE_STALL_CHOICE, Choice::CloseStall)],
+                    MenuFor::Player(id) => {
+                        let guild = game.guild.as_ref().filter(|guild| guild.master);
+                        let their_guild = game.units.get(&id).map_or(0, |actor| actor.guild);
+                        let in_party = |party: &party::Party| party.members.iter().any(|member| member.info.account == id);
+                        // Married (wearing the ring): a party member can be asked to be adopted.
+                        let married = game.inventory.items.iter().any(|item| item.worn != 0 && WEDDING_RINGS.contains(&item.id));
+                        let ties = PlayerTies {
+                            trading: game.trade.is_some(),
+                            party_invite: game.party.as_ref().is_some_and(|party| party.leader() == Some(game.account_id) && !in_party(party)),
+                            guild_invite: guild::offers_invite(game.guild.as_ref(), their_guild),
+                            guild_relation: guild.is_some_and(|guild| their_guild != 0 && their_guild != guild.id),
+                            friend: game.friends.iter().any(|friend| friend.account == id),
+                            adoptable: married && game.party.as_ref().is_some_and(in_party),
+                            in_our_room: game.room.as_ref().and_then(|room| {
+                                let row = room.members.iter().position(|(member, _)| *member == name)?;
+                                room.member_choices(row, &game.me.name).map(|_| row)
+                            }),
+                        };
+                        player_choices(id, ties)
+                    }
+                };
+                let choices = choices.into_iter().map(|(label, choice)| Some((fill(label), choice))).collect();
+                game.menu = Some(menu::Menu::new(self.cursor, choices, &self.font));
+            }
+            // A right press on a card in a description's strip: the card's own window (the description stays).
+            let card =
+                if state == ElementState::Pressed { game.item_window.as_ref().and_then(|window| window.card_under(self.cursor, &self.items)) } else { None };
+            if let Some((card, enchant)) = card {
+                game.show_card(card, enchant);
+            }
+            // A right click on an item (inventory, storage, what's worn, shop rows, hotkeys, the enchant window) describes it.
+            let shop_row = match game.shop.as_ref().and_then(|shop| shop.hit(self.cursor)) {
+                Some(shop::Hit::Row(window, row)) => game.shop.as_ref().and_then(|shop| shop.offer_at(window, row)),
+                _ => None,
+            };
+            // Another player's equipment window, over the others: what they wear too.
+            let viewed = game.viewing.as_ref().and_then(|viewed| match viewed.window.hit(self.cursor, &viewed.items) {
+                Some(equipment::Hit::Slot(index) | equipment::Hit::Name(index)) => viewed.items.iter().find(|item| item.index == index).cloned(),
+                _ => None,
+            });
+            // A trade's, a letter's, a vending window's or a catalog result's item; an attendance slot's reward.
+            let reward = game.attendance.as_ref().and_then(|window| window.reward_at(self.cursor, &self.attendance));
+            let listed = game.listed_item_at(self.cursor).or(reward.map(|(id, amount)| net::InventoryItem {
+                id,
+                amount: amount as u16,
+                identified: true,
+                ..Default::default()
+            }));
+            let names = (&self.messages[..], &self.card_names, &game.char_names);
+            let on_enchant = assets.is_some_and(|assets| game.top_at(self.cursor, assets.message.size) == Some(Top::Esc(escape::WindowId::Enchant)));
+            let on_grade = assets.is_some_and(|assets| game.top_at(self.cursor, assets.message.size) == Some(Top::Esc(escape::WindowId::GradeEnchant)));
+            let described = match game.window_at(self.cursor) {
+                // The press alone describes: the release would take it for the same item again and close it.
+                _ if state != ElementState::Pressed || self.modifiers.alt_key() || card.is_some() => None,
+                _ if viewed.is_some() => viewed,
+                // The enchant window's items: either list's rows, its picture, a material or a card.
+                _ if on_enchant => game.enchant.as_ref().and_then(|window| window.hovered(self.cursor, &game.inventory.items)),
+                // The grade window's: a material row, the blessing or the item in.
+                _ if on_grade => game.grade.as_ref().and_then(|window| window.hovered(self.cursor, &game.inventory.items)),
+                _ if shop_row.is_some() => shop_row.map(shop::Offer::described),
+                _ if listed.is_some() => listed,
+                Some(Panel::Inventory) => match game.inventory.hit(self.cursor) {
+                    Some(inventory::Hit::Item(index)) => game.inventory.get(index).cloned(),
+                    _ => None,
+                },
+                Some(Panel::Storage) => match assets.and_then(|assets| game.storage.hit(self.cursor, &assets.storage, &self.items, names)) {
+                    Some(storage::Hit::Item(index)) => game.storage.get(index).cloned(),
+                    _ => None,
+                },
+                Some(panel @ (Panel::StorageCategory(_) | Panel::StorageSearch)) => {
+                    match storage_list(panel).and_then(|which| game.storage.category_hit(which, self.cursor, &self.items, names)) {
+                        Some(storage::Hit::Item(index)) => game.storage.get(index).cloned(),
+                        _ => None,
+                    }
+                }
+                Some(Panel::Cart) => match game.cart.hit(self.cursor) {
+                    Some(inventory::Hit::Item(index)) => game.cart.get(index).cloned(),
+                    _ => None,
+                },
+                Some(Panel::Equipment) => match game.equipment.hit(self.cursor, &game.inventory.items) {
+                    Some(equipment::Hit::Slot(index) | equipment::Hit::Name(index)) => game.inventory.get(index).cloned(),
+                    _ => None,
+                },
+                // An item hotkey: the stack carried (a skill's description opens above).
+                Some(Panel::Hotkeys) => match game.hotkeys.hit(self.cursor) {
+                    Some(hotkeys::Hit::Slot(slot)) => game.hotkeys.carried(slot, &game.inventory.items).cloned(),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(item) = described {
+                game.toggle_item(iteminfo::Shown::of(&item));
+            } else if let Some((asked, amount)) = moved {
+                game.quick_moving = true;
+                game.give(asked, u32::from(amount));
+            } else if state == ElementState::Pressed && (game.targeting.take().is_some() | std::mem::take(&mut game.capturing)) {
+            } else if state == ElementState::Pressed {
+                game.camera_goal.press(self.cursor, Instant::now(), self.modifiers.control_key(), self.modifiers.shift_key());
+            }
+        }
+    }
+
+    /// The left button went down or up: a press grabs, a release drops or clicks.
+    /// The wheel turned `rows` notches (positive: toward the player): it scrolls what the pointer is over, or zooms.
+    pub(crate) fn wheel(&mut self, rows: i32) {
+        if rows == 0 {
+            return;
+        }
+        // Over a window the wheel zooms only with Ctrl (and never while aiming).
+        if let (Scene::Game(game), Some(assets)) = (&mut self.scene, &self.assets)
+            && self.modifiers.control_key()
+            && game.targeting.is_none()
+            && game.on_ui(self.cursor, assets.message.size)
+        {
+            game.camera_goal.wheel(rows, Instant::now(), true, self.modifiers.shift_key());
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene {
+            // Over the inventory the wheel scrolls it; elsewhere it zooms (away from you zooms out).
+            let on_shop = game.shop.as_ref().is_some_and(|shop| shop.covers(self.cursor));
+            let on_pick = game.pick.as_ref().is_some_and(|(list, _)| list.covers(self.cursor));
+            let on_merge = game.merge.as_ref().is_some_and(|merge| merge.hit(self.cursor).is_some());
+            let on_item = game.item_window.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+            let on_card = game.card_window.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+            let on_setup = game.vend_setup.as_ref().is_some_and(|setup| setup.covers(self.cursor));
+            let on_buying_setup = game.buying_setup.as_ref().is_some_and(|setup| setup.hit(self.cursor, &game.inventory.items).is_some());
+            let on_cashshop = game.cashshop.as_ref().is_some_and(|shop| shop.hit(self.cursor).is_some());
+            let on_synthesis = game.synthesis.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+            let on_upgrade = game.upgrade.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+            let on_reform = game.reform.as_ref().is_some_and(|window| window.hit(self.cursor, &game.inventory.items).is_some());
+            let on_npc_menu = game
+                .dialog
+                .as_ref()
+                .and_then(|dialog| dialog.menu.as_ref())
+                .is_some_and(|menu| menu.frame(&game.npc_menu).local(self.cursor, menu.size()[1]).is_some());
+            match game.window_at(self.cursor) {
+                // Aiming, the wheel picks the level (up raises it), wherever the pointer is.
+                _ if game.targeting.is_some() => {
+                    let (id, level) = game.targeting.unwrap();
+                    let separate = self.skill_info.get(&id).is_some_and(|info| info.separate_level);
+                    let learned = game.skills.iter().find(|skill| skill.id == id).map_or(level, |skill| skill.level);
+                    game.targeting = Some((id, aim_level(level, learned, rows, skills::level_pickable(learned, separate))));
+                }
+                _ if game.chat.settings.as_ref().is_some_and(|settings| settings.hit(self.cursor).is_some()) => {
+                    game.chat.settings.as_mut().unwrap().scroll(rows)
+                }
+                // Over Game Settings' open skin list, the wheel scrolls it.
+                _ if game.settings_window.as_mut().is_some_and(|window| window.wheel(self.cursor, rows)) => {}
+                _ if game.dressroom.as_ref().is_some_and(|room| room.hit(self.cursor).is_some()) => {
+                    game.dressroom.as_mut().unwrap().scroll_by(rows, &game.dress_lists)
+                }
+                _ if on_synthesis => game.synthesis.as_mut().unwrap().scroll_by(rows, &game.inventory.items),
+                _ if game.package_pick.as_ref().is_some_and(|pick| pick.hit(self.cursor).is_some()) => {
+                    game.package_pick.as_mut().unwrap().wheel(self.cursor, rows)
+                }
+                _ if on_upgrade => game.upgrade.as_mut().unwrap().scroll_by(rows, &game.inventory.items),
+                _ if on_npc_menu => game.dialog.as_mut().and_then(|dialog| dialog.menu.as_mut()).unwrap().wheel(rows),
+                _ if game.dialog.as_ref().is_some_and(Dialog::say_window) && game.say.contains(self.cursor) => {
+                    game.say.scroll_by(rows as f32 * npc_say::SCROLL_STEP);
+                }
+                _ if game.enchant.as_ref().is_some_and(|window| window.hit(self.cursor).is_some()) => {
+                    game.enchant.as_mut().unwrap().wheel(self.cursor, rows, &game.inventory.items);
+                }
+                _ if on_cashshop => game.cashshop.as_mut().unwrap().scroll_at(self.cursor, rows),
+                _ if game.navi_window.as_ref().is_some_and(|window| window.hit(self.cursor).is_some()) => {
+                    game.navi_window.as_mut().unwrap().scroll_at(self.cursor, rows);
+                }
+                _ if on_reform => game.reform.as_mut().unwrap().scroll_by(rows, &game.inventory.items),
+                _ if on_setup => game.vend_setup.as_mut().unwrap().scroll_by(self.cursor, rows, &game.cart.items),
+                _ if game.sell_history.as_ref().is_some_and(|history| history.hit(self.cursor).is_some()) => {
+                    game.sell_history.as_mut().unwrap().scroll_by(rows)
+                }
+                _ if on_buying_setup => {
+                    let inv = &game.inventory.items;
+                    game.buying_setup.as_mut().unwrap().scroll_by(rows, inv);
+                }
+                _ if game.card_view.as_ref().is_some_and(|view| view.hit(self.cursor).is_some()) => {}
+                _ if on_card => {
+                    let lines = game.card_lines;
+                    game.card_window.as_mut().unwrap().scroll_by(rows, lines);
+                }
+                _ if on_item => {
+                    let lines = game.item_lines;
+                    game.item_window.as_mut().unwrap().scroll_by(rows, lines);
+                }
+                _ if on_shop => game.shop.as_mut().unwrap().scroll_by(self.cursor, rows),
+                _ if game.skill_description.as_ref().is_some_and(|window| window.contains(self.cursor)) => {
+                    game.skill_description.as_mut().unwrap().scroll_by(rows);
+                }
+                _ if on_pick => game.pick.as_mut().unwrap().0.scroll_by(rows),
+                _ if on_merge => game.merge.as_mut().unwrap().scroll_by(rows),
+                _ if game.achievement_window.covers(self.cursor) => game.achievement_window.scroll_by(rows, &self.achievement_info, &game.achievements),
+                _ if game.quest_window.on_details(self.cursor) => game.quest_window.scroll_details(rows, self.cursor, &game.quests, &self.quest_texts),
+                _ if game.quest_window.covers(self.cursor) => game.quest_window.scroll_by(rows, &game.quests, &self.quest_texts),
+                Some(Panel::Inventory) => game.inventory.wheel(rows),
+                Some(Panel::Cart) => game.cart.wheel(rows),
+                Some(Panel::HomunculusSkills) => game.homunculus_skill_list.scroll_by(rows, game.homunculus_skills.len()),
+                Some(Panel::MercenarySkills) => game.mercenary_skill_list.scroll_by(rows, game.mercenary_skills.len()),
+                Some(Panel::Skills) => {
+                    let jobs = skills::tabs(&self.skill_trees, game.me.job, &game.skills);
+                    let sheet =
+                        skills::Sheet { trees: &self.skill_trees, jobs: &jobs, skills: &game.skills, info: &game.skill_info, points: game.skill_points() };
+                    game.skill_window.scroll_by(&sheet, rows);
+                }
+                Some(Panel::Guild) => {
+                    if let Some(guild) = &game.guild {
+                        game.guild_window.scroll_by(rows, guild);
+                    }
+                }
+                Some(Panel::Storage) => game.storage.scroll_by(rows, &self.items, (&self.messages[..], &self.card_names, &game.char_names)),
+                Some(panel @ (Panel::StorageCategory(_) | Panel::StorageSearch)) => {
+                    if let Some(which) = storage_list(panel) {
+                        game.storage.category_scroll_by(which, rows, &self.items, (&self.messages[..], &self.card_names, &game.char_names));
+                    }
+                }
+                Some(Panel::Party) => {
+                    let count = if game.party_window.friends { game.friends.len() } else { game.party.as_ref().map_or(0, |party| party.members.len()) };
+                    game.party_window.scroll_by(rows, count);
+                }
+                Some(_) => {}
+                // Three rows a notch.
+                None => {
+                    if !game.chat.wheel(self.cursor, rows * 3) {
+                        game.camera_goal.wheel(rows, Instant::now(), self.modifiers.control_key(), self.modifiers.shift_key());
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn left_button(&mut self, event_loop: &ActiveEventLoop, state: ElementState) {
+        self.mouse_down = state == ElementState::Pressed;
+        if let Scene::Game(game) = &mut self.scene
+            && state == ElementState::Released
+        {
+            game.walk_held = false;
+            // An attack held down stops when let go, once it went out.
+            if let Some(attack) = &mut game.attack
+                && attack.release() == Release::Cancel
+            {
+                game.attack = None;
+                let _ = game.session.stop_attack();
+            }
+        }
+        // A captcha check takes every click: OK answers.
+        if let (Scene::Game(game), Some(assets)) = (&mut self.scene, &self.assets)
+            && game.captcha.as_ref().is_some_and(|check| check.asked.is_some())
+        {
+            if state == ElementState::Released && contains(captcha::ok_on(screen()), assets.ok[0].size, self.cursor) {
+                game.answer_captcha();
+            }
+            return;
+        }
+        let message_size = self.assets.as_ref().map_or([0.0; 2], |assets| assets.message.size);
+        let dragged = match &mut self.scene {
+            Scene::Game(game) if state == ElementState::Released => {
+                let item = game.dragging.take();
+                // An item, a skill or a hotkey let go over a hotkey slot goes there (`hotkeys::drop_on`).
+                if let Some((dragged, _, true)) = item
+                    && let Some(hotkeys::Hit::Slot(slot)) = game.hotkeys.hit(self.cursor)
+                {
+                    let key = match dragged {
+                        Dragged::Hotkey(from) if from != slot => game.hotkeys.keys[from],
+                        Dragged::Item(index) => game.inventory.get(index).map(|item| hotkeys::item_key(item.id)),
+                        // At the level picked in the skill window.
+                        Dragged::Skill(id) => game.skills.iter().find(|skill| skill.id == id).map(|skill| net::Hotkey {
+                            skill: true,
+                            id: u32::from(id),
+                            count: game.skill_window.use_level(id, skill.level) as i16,
+                        }),
+                        Dragged::Stored(_)
+                        | Dragged::Carted(_)
+                        | Dragged::Hotkey(_)
+                        | Dragged::Worn(_)
+                        | Dragged::ShopOffer(_)
+                        | Dragged::ShopDeal(_)
+                        | Dragged::VendMirror(_)
+                        | Dragged::VendGood(_)
+                        | Dragged::LaphineRow(_)
+                        | Dragged::LaphineSlot(_)
+                        | Dragged::GradeItem(_) => None,
+                    };
+                    if let Some(key) = key {
+                        for (slot, key) in hotkeys::drop_on(&game.hotkeys.keys, key, slot) {
+                            game.hotkeys.keys[slot] = key;
+                            let _ = game.session.set_hotkey(game.hotkeys.tab_of(slot), slot as u16, key);
+                        }
+                    }
+                }
+                // A skill hotkey let go off the slots, on the bar or over the world, is taken off. An item hotkey stays:
+                // over the world it can't be dropped. Over another window nothing happens.
+                if let Some((Dragged::Hotkey(from), _, true)) = item
+                    && let Some(key) = game.hotkeys.keys[from]
+                {
+                    let on_bar = game.hotkeys.hit(self.cursor);
+                    let elsewhere = on_bar.is_none() && game.window_at(self.cursor).is_some();
+                    match on_bar {
+                        Some(hotkeys::Hit::Slot(_)) => {}
+                        _ if elsewhere => {}
+                        _ if key.skill => {
+                            game.hotkeys.keys[from] = None;
+                            let _ = game.session.set_hotkey(game.hotkeys.tab_of(from), from as u16, None);
+                        }
+                        Some(_) => {}
+                        None => game.chat_line(self.messages.get(HOTKEY_ITEM_STAYS).cloned().unwrap_or_default(), CHAT_ERROR),
+                    }
+                }
+                // A cart item let go over the vending setup goes on sale; a row on sale let go over the mirror comes off.
+                match item {
+                    Some((Dragged::VendMirror(index), _, true)) if game.vend_setup.as_ref().is_some_and(|setup| setup.hit(self.cursor).is_some()) => {
+                        game.sale_dropped(index, &self.messages)
+                    }
+                    Some((Dragged::VendGood(row), _, true)) if game.vend_setup.as_ref().is_some_and(|setup| setup.mirror_hit(self.cursor, &[]).is_some()) => {
+                        game.vend_setup.as_mut().unwrap().take_out(row)
+                    }
+                    _ => {}
+                }
+                // A shop's offer let go over its deal goes in; a deal row let go over its goods comes out.
+                if let Some((Dragged::ShopOffer(row) | Dragged::ShopDeal(row), _, true)) = item
+                    && game.trade.is_none()
+                    && let Some(shop) = &mut game.shop
+                {
+                    let zeny = game.status.get(&net::STATUS_ZENY).copied().unwrap_or(0).max(0) as u64;
+                    shop.zeny = zeny;
+                    let action = match (item.map(|(dragged, ..)| dragged), shop.window_at(self.cursor)) {
+                        (Some(Dragged::ShopOffer(_)), Some(1)) => shop.drop_offer(row),
+                        (Some(Dragged::ShopDeal(_)), Some(0)) => shop.drop_deal(row),
+                        _ => None,
+                    };
+                    match action {
+                        Some(shop::Action::Ask(row, fill)) => {
+                            let amount = (fill > 0).then_some(fill);
+                            game.amount = if shop.plain()
+                                && let Some(offer) = shop.offers.get(row)
+                            {
+                                let name = offer.name(&self.items, (&self.card_names, &game.char_names), &self.messages);
+                                Some(window::Amount::shop(Asked::Shop(row), name, amount))
+                            } else {
+                                Some(window::Amount::new(Asked::Shop(row), amount))
+                            };
+                        }
+                        Some(shop::Action::AskOut(row, fill)) => {
+                            let amount = Some(fill);
+                            game.amount = if shop.plain()
+                                && let Some(&(offer_idx, _)) = shop.deal.get(row)
+                                && let Some(offer) = shop.offers.get(offer_idx)
+                            {
+                                let name = offer.name(&self.items, (&self.card_names, &game.char_names), &self.messages);
+                                Some(window::Amount::shop(Asked::ShopOut(row), name, amount))
+                            } else {
+                                Some(window::Amount::new(Asked::ShopOut(row), amount))
+                            };
+                        }
+                        Some(shop::Action::Say(message, arg)) => {
+                            let text = self.messages.get(message).map_or("", String::as_str);
+                            let line = arg.map_or_else(|| text.to_owned(), |arg| rustnarok_client::messages::fill(text, &[&arg]));
+                            game.chat_line(line, CHAT_ERROR);
+                        }
+                        _ => {}
+                    }
+                }
+                // An item let go over the storage goes in; a stored one let go over the inventory comes out.
+                let on_trade = game.trade.as_ref().is_some_and(|trade| trade.hit(self.cursor).is_some());
+                let on_mail = matches!(game.mail.hit(self.cursor), Some(mail::Hit::Compose(_)));
+                let on_refine = game.refine.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+                let on_grade = game.grade.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+                let on_enchant = game.enchant.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+                let on_materials = game.materials.as_ref().is_some_and(|window| window.hit(self.cursor).is_some());
+                let on_forge = game.forge.as_ref().is_some_and(|window| window.covers(self.cursor));
+                match (item, game.window_at(self.cursor)) {
+                    // A Laphine row let go on its window goes in; a slot's item let go on the list comes out. An
+                    // inventory item goes in only from the list.
+                    (Some((Dragged::LaphineRow(index), _, true)), _) => {
+                        let now = control::now();
+                        for window in [&mut game.synthesis, &mut game.upgrade].into_iter().flatten() {
+                            window.drop_row(index, self.cursor, &game.inventory.items, now);
+                        }
+                    }
+                    (Some((Dragged::LaphineSlot(index), _, true)), _) => {
+                        for window in [&mut game.synthesis, &mut game.upgrade].into_iter().flatten() {
+                            window.drop_slot(index, self.cursor);
+                        }
+                    }
+                    (Some((Dragged::Item(index), _, true)), _) if on_mail => game.move_item(Asked::Mail(index)),
+                    (Some((Dragged::Item(index), _, true)), _) if on_materials => game.move_item(Asked::Material(index)),
+                    (Some((Dragged::Item(index), _, true)), _) if on_forge => {
+                        if let Some(forge) = &mut game.forge
+                            && let Some(item) = game.inventory.get(index).cloned()
+                            && forge.put_item(item)
+                        {
+                            game.inventory.remove(index, 1);
+                        }
+                    }
+                    // Into the refine machine's item slot: the server lists what refines it; anywhere else on it, refused.
+                    (Some((Dragged::Item(index), _, true)), _) if on_refine => {
+                        let on_slot = game.refine.as_ref().is_some_and(|window| window.takes_drop(self.cursor));
+                        let identified = game.inventory.get(index).is_some_and(|item| item.identified);
+                        if on_slot && game.refine.as_mut().is_some_and(|window| window.put(identified, control::now())) {
+                            let _ = game.session.refine_select(index);
+                        }
+                    }
+                    // Onto the grade window's machine, identified: the server lists what raises it.
+                    (Some((Dragged::Item(index), _, true)), _) if on_grade => {
+                        let identified = game.inventory.get(index).is_some_and(|item| item.identified);
+                        if identified && game.grade.as_ref().is_some_and(|window| window.takes_drop(self.cursor)) {
+                            let _ = game.session.grade_select(index);
+                        }
+                    }
+                    // The grade window's item let go on the inventory or the ground: the window empties.
+                    (Some((Dragged::GradeItem(_), _, true)), place) => {
+                        if (place == Some(Panel::Inventory) || !game.on_ui(self.cursor, message_size))
+                            && let Some(window) = &mut game.grade
+                        {
+                            window.clear();
+                        }
+                    }
+                    // Into the enchant window: it stays here until a request; the server hears the item with that.
+                    (Some((Dragged::Item(index), _, true)), _) if on_enchant => {
+                        let slots = game.inventory.get(index).and_then(|item| self.items.get(&item.id)).map(|info| info.slots).unwrap_or(0);
+                        if let Some(item) = game.inventory.get(index).cloned()
+                            && let Some(window) = &mut game.enchant
+                            && let Err(Some(id)) = window.try_item(&item, slots)
+                        {
+                            game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR);
+                        }
+                    }
+                    (Some((Dragged::Item(index), _, true)), _) if on_trade => {
+                        if let Some(id) = game.offer(index, false) {
+                            game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR);
+                        }
+                    }
+                    // While trading, nothing goes into the storage, the cart, the equipment window or an NPC's list.
+                    (
+                        Some((Dragged::Item(_) | Dragged::Worn(_), _, true)),
+                        Some(Panel::Storage | Panel::StorageCategory(_) | Panel::Cart | Panel::Equipment),
+                    )
+                    | (Some((Dragged::Carted(_), _, true)), Some(Panel::Storage | Panel::StorageCategory(_)))
+                    | (Some((Dragged::Stored(_), _, true)), Some(Panel::Cart))
+                        if trade::refusal(game.trade.is_some(), trade::ItemAction::DropOn).is_some() => {}
+                    // Between the cart and the storage, both ways: at once for one, else asking how many.
+                    (Some((Dragged::Carted(index), _, true)), Some(Panel::Storage | Panel::StorageCategory(_))) => game.move_item(Asked::CartToStore(index)),
+                    (Some((Dragged::Stored(index), _, true)), Some(Panel::Cart)) => game.move_item(Asked::StoreToCart(index)),
+                    (Some((Dragged::Item(index), _, true)), Some(Panel::Storage | Panel::StorageCategory(_))) => game.move_item(Asked::Store(index)),
+                    // Let go over the world: dropped at the player's feet, asking how many of a stack. The drop lock holds it.
+                    (Some((Dragged::Item(index), _, true)), None)
+                        if inventory::may_ground_drop(game.inventory.lock_drop) && !game.on_ui(self.cursor, message_size) && !game.store_open() =>
+                    {
+                        game.drop_on_ground(index, &self.messages)
+                    }
+                    // Onto the equipment window, wherever: worn. Off it onto the inventory: taken off. Not while trading.
+                    (Some((Dragged::Item(index), _, true)), Some(Panel::Equipment))
+                        if !game.equipment.swapping
+                            && game.equipment.owner.is_none()
+                            && game.trade.is_none()
+                            && game.inventory.get(index).is_some_and(|item| item.location != 0 && item.worn == 0) =>
+                    {
+                        game.use_item(index, &self.messages)
+                    }
+                    (Some((Dragged::Worn(index), _, true)), Some(Panel::Inventory)) if game.trade.is_none() => {
+                        let _ = game.session.take_off(index);
+                    }
+                    (Some((Dragged::Item(index), _, true)), Some(Panel::Cart)) => game.move_item(Asked::ToCart(index)),
+                    (Some((Dragged::Carted(index), _, true)), Some(Panel::Inventory)) => game.move_item(Asked::FromCart(index)),
+                    (Some((Dragged::Stored(index), _, true)), Some(Panel::Inventory)) => game.move_item(Asked::Take(index)),
+                    // Onto the swap view: into the Swap Equipment set, where it would be worn.
+                    (Some((Dragged::Item(index), _, true)), Some(Panel::Equipment)) if game.equipment.swapping => {
+                        if let Some(item) = game.inventory.get(index) {
+                            game.switch_asked = Some(index);
+                            let _ = game.session.switch_add(index, item.location);
+                        }
+                    }
+                    _ => {}
+                }
+                // Every window held by its frame is let go (`Game::frames`).
+                let frames_moved = game.frames().into_iter().fold(false, |moved, framed| framed.frame.drop_drag() | moved);
+                // A slider let go keeps its volume for next time.
+                let slid = game.settings_window.as_mut().is_some_and(game_settings::GameSettings::drop_drag);
+                if slid {
+                    self.sound.save();
+                }
+                let outside = game.party_window.hit(self.cursor, game.party.as_ref(), &game.friends).is_none();
+                let member_held = game.member_windows.release(outside, &party::Grid::new(screen()));
+                // Let go outside the used cells: it went back, and the box says why.
+                if std::mem::take(&mut game.member_windows.last_row) {
+                    game.question_box = Some(BoxQuestion::LastRow);
+                }
+                // The windows that keep their own place or more than a frame, the corner grips and the scroll thumbs.
+                let windows = frames_moved
+                    | slid
+                    | member_held
+                    | game.chat.drop_drag()
+                    | game.shop.as_mut().is_some_and(|shop| shop.frames.iter_mut().fold(false, |moved, frame| frame.drop_drag() | moved))
+                    | game.card_view.as_mut().is_some_and(|view| view.drop_drag())
+                    | game.item_window.as_mut().is_some_and(|window| window.drop_drag())
+                    | game.card_window.as_mut().is_some_and(|window| window.drop_drag())
+                    | game.mail.drop_drag()
+                    | game.synthesis.as_mut().is_some_and(|window| window.drop_thumb())
+                    | game.upgrade.as_mut().is_some_and(|window| window.drop_thumb())
+                    | game.reform.as_mut().is_some_and(|window| window.drop_thumb())
+                    | game.enchant.as_mut().is_some_and(|window| window.drop_thumb())
+                    | game.pick.as_mut().is_some_and(|(list, _)| list.drop_drag())
+                    | game.merge.as_mut().is_some_and(merge::Merge::drop_drag)
+                    | game.storage_log.as_mut().is_some_and(storage_log::Log::drop_drag)
+                    | game.package_pick.as_mut().is_some_and(|pick| pick.thumb.stop())
+                    | game.shortcuts_window.as_mut().is_some_and(shortcut_window::ShortcutWindow::drop_drag)
+                    | game.mercenary_skill_list.drop_drag()
+                    | game.homunculus_skill_list.drop_drag()
+                    | game.storage.categories.iter_mut().fold(false, |any, category| category.stop_resize() | any)
+                    | game.inventory.stop_resize()
+                    | game.cart.stop_resize()
+                    | game.storage.stop_resize()
+                    | game.storage.drop_thumbs()
+                    | game.party_window.stop_resize()
+                    | game.skill_window.stop_resize()
+                    | game.my_shop.as_mut().is_some_and(vend::MyShop::stop_resize)
+                    | game.room.as_mut().is_some_and(chatroom::Room::stop_resize)
+                    | game.vend_setup.as_mut().is_some_and(vend::Setup::stop_resize)
+                    | game.shop.as_mut().is_some_and(shop::Shop::stop_resize)
+                    | game.talks.drop_drag()
+                    | game.navi_window.as_mut().is_some_and(navi_window::Window::drop_drag)
+                    | game.say.thumb.stop()
+                    | game.npc_menu.drop_drag()
+                    | game
+                        .dialog
+                        .as_mut()
+                        .and_then(|dialog| dialog.menu.as_mut())
+                        .is_some_and(|menu| menu.frame_mut(&mut game.npc_menu).drop_drag() | menu.thumb.stop());
+                windows || item.is_some_and(|(_, _, moved)| moved) || std::mem::take(&mut game.drag_cancelled)
+            }
+            _ => false,
+        };
+        if state == ElementState::Pressed {
+            self.press();
+        } else if !dragged {
+            self.click(event_loop);
+        }
+    }
+
+    /// Dev switch `RUSTNAROK_CLIENT_CLICKS=x,y[>x,y][;...]`: clicks, or drags to the second point, one a second from
+    /// `RUSTNAROK_CLIENT_CLICKS_AT` seconds (4 by default) after entering the map.
+    pub(crate) fn auto_input(&mut self, event_loop: &ActiveEventLoop) {
+        let Scene::Game(game) = &self.scene else { return };
+        let elapsed = game.entered.elapsed();
+        while let Some(&(at, right, from, to)) = self.auto_input.last()
+            && elapsed >= at
+        {
+            self.auto_input.pop();
+            self.cursor = from;
+            self.pointer_moved();
+            let button = |app: &mut Self, state| if right { app.right_button(state) } else { app.left_button(event_loop, state) };
+            button(self, ElementState::Pressed);
+            // Held over a frame, so the world reads the press.
+            self.read_button();
+            if let Some(to) = to {
+                self.cursor = to;
+                self.pointer_moved();
+            }
+            button(self, ElementState::Released);
+        }
+    }
+
+    /// Whether a left press at the pointer is the world's: not over a window, nor while dragging, aiming or capturing,
+    /// nor with a store open.
+    fn world_takes_press(&self) -> bool {
+        let (Scene::Game(game), Some(assets)) = (&self.scene, &self.assets) else { return false };
+        game.dragging.is_none() && !game.on_ui(self.cursor, assets.message.size) && !game.store_open() && game.targeting.is_none() && !game.capturing
+    }
+
+    /// Whether a world press does anything: not while the world is locked (it's taken, and dropped).
+    fn world_acts(&self) -> bool {
+        matches!(&self.scene, Scene::Game(game) if !game.world_locked())
+    }
+
+    /// The left button read once a frame (`ButtonRead`): a press since the last read, still down, acts in the world
+    /// at the pointer now.
+    pub(crate) fn read_button(&mut self) {
+        if self.button.read(self.mouse_down) && self.world_takes_press() && self.world_acts() {
+            self.world_press();
+        }
+    }
+
+    /// A press on the ground walks there (in the frame that reads it), and holding the button keeps following the pointer. Shift turns
+    /// to face it, Ctrl does nothing, and sitting only turns. A second press within DOUBLE_PRESS with the pointer
+    /// still is ignored. Units and items are the click's (on release).
+    fn world_press(&mut self) {
+        let cursor = self.cursor;
+        let Scene::Game(game) = &mut self.scene else { return };
+        let now = Instant::now();
+        let (double, mark) = press_pair(game.press_mark, now, cursor);
+        game.press_mark = mark;
+        let (shift, ctrl) = (self.modifiers.shift_key(), self.modifiers.control_key());
+        // Alt + left press orders the mercenary (when it's out).
+        if !double && self.modifiers.alt_key() && game.companion_press(false, cursor, shift) {
+            return;
+        }
+        // One pending action at a time (`press_ends`).
+        let click = game.world_click(cursor, shift);
+        // A ground, item or NPC click clears the previous monster lock.
+        // Attack clicks set a new lock only when the attack can actually begin.
+        if !matches!(&click, WorldClick::Attack(_)) && !double {
+            game.marked_monster = None;
+        }
+        let (ends_attack, drops_pending) = press_ends(&click, double);
+        if ends_attack {
+            game.attack = None;
+        }
+        if drops_pending {
+            game.pending = None;
+            game.pending_walk = None;
+        }
+        // Every press but an attack starts the hold (a double press leaves the try time alone); each held try then
+        // decides again.
+        if press_holds(&click) {
+            game.walk_held = true;
+            if !double {
+                game.last_walk_try = Some(whole_ms(now));
+            }
+        }
+        let in_room = game.room.is_some();
+        match click {
+            // A double press does nothing in the world.
+            _ if double => {}
+            // Sitting or hidden (option 0x2): an attack click does nothing.
+            WorldClick::Attack(_) if game.player.sitting || game.player.option & 0x2 != 0 => {}
+            // A monster with Shift (without /noshift): nothing.
+            WorldClick::Attack(id) if shift && !game.no_shift && game.units.get(&id).is_some_and(|actor| actor.kind == MONSTER) => {}
+            // An attack: kept up with Ctrl or /noctrl (on someone else's homunculus always), otherwise while the
+            // button is held.
+            WorldClick::Attack(id) => {
+                let homunculus = game.units.get(&id).is_some_and(|actor| actor.kind == HOMUNCULUS);
+                let weight = |id: u16| game.status.get(&id).copied().unwrap_or(0);
+                match attack_refused(weight(net::STATUS_WEIGHT), weight(net::STATUS_MAX_WEIGHT), game.riding) {
+                    Some(line) => game.chat_line(self.messages.get(line).cloned().unwrap_or_default(), CHAT_ERROR),
+                    None => {
+                        game.marked_monster = game.units.get(&id).filter(|actor| actor.kind == MONSTER).map(|_| id);
+                        game.attack = Some(game.new_attack(id, ctrl || game.no_ctrl || homunculus));
+                        game.attack_step(now);
+                    }
+                }
+            }
+            WorldClick::Talk(id) => game.talk_to(id, &self.messages),
+            // Held, the button follows the pointer again once the item is picked up.
+            WorldClick::PickUp(id) if !game.player.sitting => game.pick_up(id),
+            // A warp is ground: the cell under the pointer, not the portal's own.
+            WorldClick::Warp | WorldClick::Ground => {
+                let cell = game.ground_cell(cursor);
+                match (cell, ground_press(ctrl, shift, game.player.sitting, in_room, self.right_down, cell.is_some())) {
+                    (Some(cell), GroundAct::Walk) => drop(game.walk_toward(cell, now)),
+                    (Some(cell), GroundAct::Turn) => game.turn_to(cell),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// A mouse press: grabs a window by its title bar, and notes it for Esc.
+    pub(crate) fn press(&mut self) {
+        use Top::Esc;
+        use escape::WindowId as W;
+        let cursor = self.cursor;
+        // A press on the right-click menu is the menu's (its choice is taken on the release), not the window's under it.
+        if let Scene::Game(game) = &self.scene
+            && game.menu.as_ref().is_some_and(|menu| menu.hit(cursor).is_some())
+        {
+            return;
+        }
+        // The game menu is dragged by its title bar.
+        if let Scene::Game(game) = &mut self.scene
+            && game.menu_takes(cursor)
+            && let Some(menu) = game.escape.as_mut().filter(|menu| menu.on_title(cursor))
+        {
+            menu.frame.start_drag(cursor);
+            return;
+        }
+        // So is a press on the message box or Confirm Deal, and any press while the game menu keeps the pointer
+        // (`menu_takes`): nothing under it starts a drag, so its release still clicks.
+        if let (Scene::Game(game), Some(assets)) = (&self.scene, &self.assets)
+            && (game.question_box.is_some() && contains(dialog_position(&assets.message), assets.message.size, cursor)
+                || game.deal_confirm.as_ref().is_some_and(|confirm| confirm.hit(cursor).is_some())
+                || game.menu_takes(cursor))
+        {
+            return;
+        }
+        // Aiming a skill: the press on its target uses it; any other press lets go of the aim. On the world that's
+        // all it does (no walk); on a window the window gets the press too.
+        if let (Scene::Game(game), Some(assets)) = (&mut self.scene, &self.assets)
+            && game.targeting.is_some()
+        {
+            // ponytail: a click on the member's window casts on their account id (a player's unit id). Range is the
+            // same as aiming at them in the world; the close button still closes.
+            // A member's small window or row in the party window: their skill if the rule takes it, else the aim ends.
+            let row = match game.party_window.hit(cursor, game.party.as_ref(), &game.friends) {
+                Some(party::Hit::Member(account)) if game.window_at(cursor) == Some(Panel::Party) => Some(account),
+                _ => None,
+            };
+            if let Some(account) = game.party_member_at(cursor).or(row) {
+                if game.row_takes_aim(account, self.modifiers.shift_key()) {
+                    game.aim_skill(SkillTarget::Unit(account));
+                } else {
+                    game.targeting = None;
+                }
+                return;
+            }
+            let on_ui = game.on_ui(cursor, assets.message.size);
+            let shift = self.modifiers.shift_key();
+            if on_ui {
+                game.targeting = None;
+            } else {
+                // An NPC is talked to; a unit the press doesn't take, the ground under a unit skill, an item or a warp:
+                // the aim just ends. Over 90 % weight a unit skill is refused.
+                let weight = |id: u16| game.status.get(&id).copied().unwrap_or(0);
+                let heavy = attack_refused(weight(net::STATUS_WEIGHT), weight(net::STATUS_MAX_WEIGHT), false);
+                match game.aim_target(cursor, game.players_first(shift)) {
+                    Some(SkillTarget::Unit(id)) if game.units.get(&id).is_some_and(|actor| actor.kind == NPC && actor.job != WARP_JOB) => {
+                        game.targeting = None;
+                        game.talk_to(id, &self.messages);
+                    }
+                    Some(SkillTarget::Unit(id)) if game.aim_takes_unit(id, shift) => match heavy {
+                        Some(line) => {
+                            game.targeting = None;
+                            game.chat_line(self.messages.get(line).cloned().unwrap_or_default(), CHAT_ERROR);
+                        }
+                        None => game.aim_skill(SkillTarget::Unit(id)),
+                    },
+                    Some(target @ SkillTarget::Cell(_)) => game.aim_skill(target),
+                    _ => game.targeting = None,
+                }
+                return;
+            }
+        }
+        // A press the world takes is read with the frame (`ButtonRead`); the windows under it don't get it.
+        if self.world_takes_press() {
+            self.button.due = true;
+            return;
+        }
+        // The window drawn on top under the press (`top_at`) is the one that takes it.
+        let top = match (&self.scene, &self.assets) {
+            (Scene::Game(game), Some(assets)) => game.top_at(cursor, assets.message.size),
+            _ => None,
+        };
+        // A window grabbed by its title bar and nothing else (`Grab::Title` in `Game::frames`): the one on top.
+        if let Scene::Game(game) = &mut self.scene {
+            for framed in game.frames() {
+                if framed.grabbed(top, cursor) {
+                    framed.frame.start_drag(cursor);
+                }
+            }
+        }
+        // The big minimap is above the other windows, under the world map.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Minimap))
+        {
+            let size = [game.world.gat.width as u32, game.world.gat.height as u32];
+            let pins = minimap_window::Pins { player: game.player.cell, party: &[], guild: &[], boss: None, quests: &[] };
+            if game.minimap_window.hit(cursor, size, &pins) == Some(minimap_window::Hit::Title(TitleHit::Title)) {
+                game.minimap_window.frame.start_drag(cursor);
+            }
+            game.press_esc(top);
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene {
+            game.press_esc(top);
+        }
+        // The cart choice: its title bar drags it; the rest goes on the release.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::CartChoice)
+            && let Some(choice) = &mut game.cart_choice
+        {
+            if choice.hit(cursor) == Some(cart_choice::Hit::Title) {
+                choice.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The guild storage log: its tabs and arrows on the press, Close too, and anywhere else drags it.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::GuildStorageLog)
+            && let Some(log) = &mut game.storage_log
+            && let Some(hit) = log.hit(cursor)
+        {
+            if log.press(hit, cursor) {
+                game.storage_log = None;
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Memorial))
+        {
+            if game.memorial.hit(cursor) == Some(memorial::Hit::Title(TitleHit::Title)) {
+                game.memorial.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The package pick moves by any spot that's no control; a press picks a set or works a list's bar.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::PackagePick))
+            && let Some(pick) = &mut game.package_pick
+        {
+            if matches!(pick.hit(cursor), Some(package::Hit::Title | package::Hit::Window)) {
+                pick.frame.start_drag(cursor);
+            } else {
+                pick.press(cursor);
+            }
+            return;
+        }
+        // The navigation window moves by its title and by any spot of it that's no control.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Navigation))
+        {
+            if let Some(window) = &mut game.navi_window {
+                window.start_drag(cursor);
+            }
+            return;
+        }
+        // The attendance check can't be moved; a press on today's slot leaves it pressed.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Attendance))
+        {
+            if let Some(window) = &mut game.attendance
+                && let Some(hit) = window.hit(cursor)
+            {
+                window.press(hit);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Stylist))
+        {
+            let hit = game.stylist.as_ref().and_then(|window| window.hit(cursor, &self.styling_shop, 0));
+            if let Some(hit) = hit {
+                if hit == stylist::Hit::Title(TitleHit::Title) {
+                    game.stylist.as_mut().unwrap().frame.start_drag(cursor);
+                }
+                return;
+            }
+        }
+        // A card's picture sits over the item info.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::CardPicture))
+            && let Some(view) = &mut game.card_view
+            && let Some(hit) = view.hit(cursor)
+        {
+            if hit == iteminfo::ViewHit::Grip {
+                view.start_drag(cursor);
+            }
+            return;
+        }
+        // The chat window goes by its tab strip.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::Chat)
+            && game.chat.press(cursor)
+        {
+            return;
+        }
+        // The item description window goes by its top band, and its height by the grip (the NPC window's links are
+        // over it).
+        if let Scene::Game(game) = &mut self.scene
+            && matches!(top, Some(Esc(W::CardInfo | W::ItemInfo)))
+            && let Some((window, hit)) =
+                [&mut game.card_window, &mut game.item_window].into_iter().flatten().find_map(|window| window.hit(cursor).map(|hit| (window, hit)))
+        {
+            match hit {
+                iteminfo::Hit::Grip => window.start_drag(cursor),
+                iteminfo::Hit::Resize => window.start_resize(cursor),
+                _ => {}
+            }
+            return;
+        }
+        // The NPC input box goes by any part but its field and OK.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::NpcDialog)
+            && let Some(input) = game.dialog.as_mut().and_then(|dialog| dialog.input.as_mut())
+            && input.contains(cursor)
+        {
+            if input.grips(cursor) {
+                input.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The NPC menu, over the say window: a press on a row selects it (a double click picks it); any part but the
+        // list and the buttons drags it.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::NpcDialog)
+            && let Some(menu) = game.dialog.as_mut().and_then(|dialog| dialog.menu.as_mut())
+            && let Some(local) = menu.frame(&game.npc_menu).local(cursor, menu.size()[1])
+        {
+            if menu.grips(local) {
+                menu.frame_mut(&mut game.npc_menu).start_drag(cursor);
+            } else if menu.press(local, Instant::now()) {
+                game.menu_ok(false);
+            }
+            return;
+        }
+        // The NPC say window goes by any part but its button, links and scrollbar.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::NpcDialog)
+            && game.dialog.as_ref().is_some_and(Dialog::say_window)
+            && game.say.contains(cursor)
+        {
+            let on_button = game.dialog.as_ref().is_some_and(|dialog| dialog.button != DialogButton::None) && game.say.on_button(cursor);
+            if !game.say.press_scrollbar(cursor) && !on_button && links::at(&game.dialog_links, cursor).is_none() {
+                game.say.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The chat room's window is over the others too.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::ChatRoom))
+            && let Some(room) = &mut game.room
+            && let Some(hit) = room.hit(cursor)
+        {
+            match hit {
+                chatroom::RoomHit::Title(TitleHit::Title) => room.frame.start_drag(cursor),
+                chatroom::RoomHit::Resize => room.start_resize(cursor),
+                _ => {}
+            }
+            return;
+        }
+        // The deal's window is over the others.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Trade))
+            && let Some(trade) = &mut game.trade
+            && let Some(hit) = trade.hit(cursor)
+        {
+            // Any part that isn't a control moves it.
+            if hit == trade::Hit::Window {
+                trade.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The deal-type box (Buy / Sell / Cancel) is dragged by its body.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::DealChoice))
+            && let Some(hit) = shop::deal_hit(game.deal_frame.position, cursor)
+        {
+            if hit == shop::DealHit::Body {
+                game.deal_frame.start_drag(cursor);
+            }
+            return;
+        }
+        // The vending windows' corner grips.
+        if let Scene::Game(game) = &mut self.scene {
+            if top == Some(Esc(W::VendSetup))
+                && let Some(setup) = &mut game.vend_setup
+                && setup.on_grip(cursor)
+            {
+                setup.start_resize(cursor);
+                return;
+            }
+            // A press on the setup's mirror or on a row on sale starts a drag.
+            if top == Some(Esc(W::VendSetup))
+                && let Some(setup) = &game.vend_setup
+            {
+                match (setup.mirror_hit(cursor, &game.cart.items), setup.hit(cursor)) {
+                    (Some(Some(index)), _) => game.dragging = Some((Dragged::VendMirror(index), cursor, false)),
+                    (_, Some(vend::Hit::Good(row))) => game.dragging = Some((Dragged::VendGood(row), cursor, false)),
+                    _ => {}
+                }
+            }
+            if top == Some(Esc(W::MyShop))
+                && let Some(shop) = &mut game.my_shop
+                && shop.on_grip(cursor)
+            {
+                shop.start_resize(cursor);
+                return;
+            }
+        }
+        // A shop's row starts a drag at once; its title bar moves the window.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Shop))
+            && let Some(hit) = game.shop.as_ref().and_then(|shop| shop.hit(cursor))
+        {
+            if game.shop.as_mut().unwrap().press_bar(cursor) {
+                return;
+            }
+            match hit {
+                shop::Hit::Row(0, row) => game.dragging = Some((Dragged::ShopOffer(row), cursor, false)),
+                shop::Hit::Row(_, row) => game.dragging = Some((Dragged::ShopDeal(row), cursor, false)),
+                shop::Hit::Title(window, TitleHit::Title) => game.shop.as_mut().unwrap().frames[window].start_drag(cursor),
+                shop::Hit::Resize(_) => {
+                    game.shop.as_mut().unwrap().start_resize(cursor);
+                }
+                _ => {}
+            }
+            return;
+        }
+        // So are the mail windows, and the audio settings.
+        if let Scene::Game(game) = &mut self.scene
+            && matches!(top, Some(Esc(W::Mailbox | W::MailRead | W::MailWrite)))
+        {
+            game.mail.start_drag(cursor);
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::MonsterInfo))
+            && let Some(window) = &mut game.monster_window
+            && window.hit(cursor) == Some(false)
+        {
+            if window.frame.local(cursor, monster_info::MonsterWindow::height()).and_then(|local| window.frame.title_hit(local)) == Some(TitleHit::Title) {
+                window.frame.start_drag(cursor);
+            }
+            return;
+        }
+        // A pick list goes by its title bar; an icon list's scroll thumb drags its rows.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::PickList))
+            && let Some((list, _)) = &mut game.pick
+        {
+            list.press(cursor);
+            return;
+        }
+        // Item merge: a stack's box toggles on the press (Ctrl: its whole item), and the window is dragged, resized
+        // and scrolled.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::ItemMerge)
+            && let Some(merge) = &mut game.merge
+        {
+            if let Err(line) = merge.press(cursor, self.modifiers.control_key()) {
+                game.chat_line(self.messages.get(line).cloned().unwrap_or_default(), CHAT_ERROR);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::MakingMaterial)
+            && let Some(hit) = game.forge.as_ref().and_then(|window| window.hit(cursor))
+        {
+            if hit == forge::Hit::Title(TitleHit::Title) {
+                game.forge.as_mut().unwrap().frame.start_drag(cursor);
+            }
+            return;
+        }
+        // A Laphine window: its title bar, its list's thumb, or a row's or a slot's item to drag.
+        if let Scene::Game(game) = &mut self.scene
+            && let Some(window) = match top {
+                Some(Esc(W::LaphineSynthesis)) => game.synthesis.as_mut(),
+                Some(Esc(W::LaphineUpgrade)) => game.upgrade.as_mut(),
+                _ => None,
+            }
+        {
+            match window.press(cursor, &game.inventory.items) {
+                Some(laphine::Grab::Row(index)) => game.dragging = Some((Dragged::LaphineRow(index), cursor, false)),
+                Some(laphine::Grab::Slot(index)) => game.dragging = Some((Dragged::LaphineSlot(index), cursor, false)),
+                None => {}
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Enchant))
+            && let Some(hit) = game.enchant.as_ref().and_then(|window| window.hit(cursor))
+        {
+            let window = game.enchant.as_mut().unwrap();
+            if hit == enchant::Hit::Title(TitleHit::Title) {
+                window.frame.start_drag(cursor);
+            }
+            window.hold(&hit, cursor, &game.inventory.items);
+            return;
+        }
+        // The roulette never moves: a press on it stays there.
+        if let Scene::Game(game) = &self.scene
+            && top == Some(Esc(W::Roulette))
+            && game.roulette.as_ref().is_some_and(|window| window.hit(cursor).is_some())
+        {
+            return;
+        }
+        // The dress room is dragged by any part of it but its tabs, list and arrows.
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::DressRoom))
+            && let Some(room) = &mut game.dressroom
+        {
+            if matches!(room.hit(cursor), Some(dressroom::Hit::Title(TitleHit::Title) | dressroom::Hit::Window)) {
+                room.frame.start_drag(cursor);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::ItemReform))
+            && let Some(window) = &mut game.reform
+        {
+            window.press(cursor, &game.inventory.items);
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Top::Refine)
+            && let Some(hit) = game.refine.as_ref().and_then(|window| window.hit(cursor))
+        {
+            if hit == refine::Hit::Title(TitleHit::Title) {
+                game.refine.as_mut().unwrap().frame.start_drag(cursor);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::GradeEnchant))
+            && let Some(hit) = game.grade.as_ref().and_then(|window| window.hit(cursor))
+        {
+            if hit == grade::Hit::Title(TitleHit::Title) {
+                game.grade.as_mut().unwrap().frame.start_drag(cursor);
+            }
+            if let Some(index) = game.grade.as_ref().and_then(|window| window.grab(cursor)) {
+                game.dragging = Some((Dragged::GradeItem(index), cursor, false));
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Achievements))
+        {
+            if game.achievement_window.hit(cursor, &self.achievement_info, &game.achievements) == Some(achievement::Hit::Title(TitleHit::Title)) {
+                game.achievement_window.frame.start_drag(cursor);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::Quests))
+            && let Some(hit) = game.quest_window.hit(cursor, &game.quests, &self.quest_texts)
+        {
+            // Each drags from anywhere that isn't a control (the details stay put when the list moves).
+            if hit == quest::Hit::Window && game.quest_window.frame.local(cursor, 466.0).is_some() {
+                game.quest_window.frame.start_drag(cursor);
+            }
+            if hit == quest::Hit::Detail {
+                game.quest_window.detail.start_drag(cursor);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::GameSettings))
+            && let Some(window) = &mut game.settings_window
+            && let Some(hit) = window.hit(cursor)
+        {
+            if window.press(hit, cursor, &mut self.sound)
+                && let Some(audio) = &mut self.audio
+            {
+                audio.set(&self.sound);
+            }
+            return;
+        }
+        if let Scene::Game(game) = &mut self.scene
+            && top == Some(Esc(W::ShortcutSettings))
+            && let Some(window) = &mut game.shortcuts_window
+            && let Some(hit) = window.hit(cursor)
+        {
+            window.press(hit, cursor);
+            return;
+        }
+        // A small party window: a press anywhere on it grabs it, unless the party window's lock is on.
+        if let Scene::Game(game) = &mut self.scene
+            && matches!(top, Some(Top::PartyHp(_)))
+            && let Some(account) = game.party_member_at(cursor)
+        {
+            if !game.party_window.locked {
+                game.member_windows.press_window(account, cursor, &party::Grid::new(screen()));
+            }
+            return;
+        }
+        // A panel on top: raised, and maybe dragged from (a window over it takes the press instead, #1151).
+        if let Scene::Game(game) = &mut self.scene
+            && let Some(Top::Panel(id)) = top
+        {
+            game.raise(id);
+            if let (Panel::Inventory, Some(inventory::Hit::Item(index))) = (id, game.inventory.hit(cursor)) {
+                game.dragging = Some((Dragged::Item(index), cursor, false));
+            }
+            if let (Panel::Hotkeys, Some(hotkeys::Hit::Slot(slot))) = (id, game.hotkeys.hit(cursor))
+                && game.hotkeys.keys.get(slot).is_some_and(Option::is_some)
+            {
+                game.dragging = Some((Dragged::Hotkey(slot), cursor, false));
+            }
+            if let (Panel::Cart, Some(inventory::Hit::Item(index))) = (id, game.cart.hit(cursor)) {
+                game.dragging = Some((Dragged::Carted(index), cursor, false));
+            }
+            if let (Panel::Equipment, Some(equipment::Hit::Slot(index))) = (id, game.equipment.hit(cursor, &game.inventory.items))
+                && game.equipment.owner.is_none()
+                && !game.equipment.swapping
+            {
+                game.dragging = Some((Dragged::Worn(index), cursor, false));
+            }
+            if id == Panel::Storage
+                && let Some(assets) = &self.assets
+                && !game.storage.press_bar(cursor, &self.items, (&self.messages[..], &self.card_names, &game.char_names))
+            {
+                match game.storage.hit(cursor, &assets.storage, &self.items, (&self.messages[..], &self.card_names, &game.char_names)) {
+                    Some(storage::Hit::Item(index)) => game.dragging = Some((Dragged::Stored(index), cursor, false)),
+                    Some(storage::Hit::Title(TitleHit::Title)) => game.storage.frame.start_drag(cursor),
+                    Some(storage::Hit::Resize) => game.storage.start_resize(cursor),
+                    // A category's box toggles on the press; one turned on comes to the front.
+                    Some(storage::Hit::Box(tab)) => {
+                        game.storage.toggle_category(tab);
+                        game.raise(Panel::StorageCategory(tab));
+                        game.sync_esc();
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(which) = storage_list(id)
+                && !game.storage.press_category_bar(which, cursor, &self.items, (&self.messages[..], &self.card_names, &game.char_names))
+            {
+                match game.storage.category_hit(which, cursor, &self.items, (&self.messages[..], &self.card_names, &game.char_names)) {
+                    Some(storage::Hit::Item(index)) => game.dragging = Some((Dragged::Stored(index), cursor, false)),
+                    // The Search window's close button shuts it.
+                    Some(storage::Hit::Title(TitleHit::Close)) => {
+                        game.storage.search_window.frame.open = false;
+                        game.sync_esc();
+                    }
+                    Some(storage::Hit::Title(_)) => game.storage.list_window_mut(which).frame.start_drag(cursor),
+                    Some(storage::Hit::Resize) => game.storage.list_window_mut(which).start_resize(cursor),
+                    _ => {}
+                }
+            }
+            if id == Panel::Skills {
+                // A left press lets go of a chain pinned by a right click; the release adds the point.
+                game.skill_window.unpin();
+                let jobs = skills::tabs(&self.skill_trees, game.me.job, &game.skills);
+                let sheet = skills::Sheet { trees: &self.skill_trees, jobs: &jobs, skills: &game.skills, info: &game.skill_info, points: game.skill_points() };
+                match game.skill_window.hit(cursor, &sheet) {
+                    // Not while levels are pending.
+                    Some(skills::Hit::Skill(skill))
+                        if game.skill_window.draggable() && game.skills.iter().any(|known| known.id == skill && known.level > 0 && known.kind != 0) =>
+                    {
+                        game.dragging = Some((Dragged::Skill(skill), cursor, false));
+                    }
+                    Some(skills::Hit::Title(TitleHit::Title)) => game.skill_window.frame.start_drag(cursor),
+                    Some(skills::Hit::Resize) => game.skill_window.start_resize(cursor),
+                    _ => {}
+                }
+            }
+            match id {
+                Panel::BasicInfo if game.basic_info.hit(cursor) == Some(basic_info::Hit::Title) => game.basic_info.frame.start_drag(cursor),
+                Panel::Hotkeys if game.hotkeys.grabbed(cursor) => game.hotkeys.frame.start_drag(cursor),
+                Panel::Hotkeys if game.hotkeys.hit(cursor) == Some(hotkeys::Hit::QuickGrip) => game.hotkeys.quick_window.start_drag(cursor),
+                Panel::Inventory if game.inventory.hit(cursor) == Some(inventory::Hit::Title(TitleHit::Title)) => game.inventory.frame.start_drag(cursor),
+                // A member's row, unlocked: dragged out it makes a small window; a second press on another member's row
+                // soon after opens the 1:1 chat with them.
+                Panel::Party if matches!(game.party_window.hit(cursor, game.party.as_ref(), &game.friends), Some(party::Hit::Member(_))) => {
+                    if let Some(party::Hit::Member(account)) = game.party_window.hit(cursor, game.party.as_ref(), &game.friends)
+                        && !game.party_window.locked
+                    {
+                        let now = Instant::now();
+                        let double = game.row_press.is_some_and(|(at, whose)| whose == account && now.saturating_duration_since(at) < DOUBLE_PRESS);
+                        game.row_press = (!double).then_some((now, account));
+                        if double && account != game.account_id {
+                            let name =
+                                game.party.as_ref().and_then(|party| party.members.iter().find(|m| m.info.account == account)).map(|m| m.info.name.clone());
+                            if let Some(name) = name {
+                                game.whisper_member(&name);
+                            }
+                        } else {
+                            game.member_windows.press_row(account);
+                        }
+                    }
+                }
+                Panel::Party if game.party_window.hit(cursor, game.party.as_ref(), &game.friends) == Some(party::Hit::Title(TitleHit::Title)) => {
+                    game.party_window.frame.start_drag(cursor)
+                }
+                Panel::Party if game.party_window.hit(cursor, game.party.as_ref(), &game.friends) == Some(party::Hit::Resize) => {
+                    game.party_window.start_resize(cursor)
+                }
+                Panel::Status
+                    if game.status_window.frame.local(cursor, game.status_height).and_then(|local| game.status_window.frame.title_hit(local))
+                        == Some(TitleHit::Title) =>
+                {
+                    game.status_window.frame.start_drag(cursor)
+                }
+                Panel::Guild if game.guild.as_ref().and_then(|guild| game.guild_window.hit(cursor, guild)) == Some(guild::Hit::Title(TitleHit::Title)) => {
+                    game.guild_window.frame.start_drag(cursor)
+                }
+                Panel::Clan if game.clan.is_some() && game.clan_window.hit(cursor) == Some(clan::Hit::Title(TitleHit::Title)) => {
+                    game.clan_window.frame.start_drag(cursor)
+                }
+                Panel::Cart if game.cart.hit(cursor) == Some(inventory::Hit::Title(TitleHit::Title)) => game.cart.frame.start_drag(cursor),
+                // The corner grip resizes.
+                Panel::Inventory if game.inventory.hit(cursor) == Some(inventory::Hit::Resize) => game.inventory.start_resize(cursor),
+                Panel::Cart if game.cart.hit(cursor) == Some(inventory::Hit::Resize) => game.cart.start_resize(cursor),
+                Panel::Pet if game.pet.is_some() && game.pet_window.hit(cursor) == Some(pet::Hit::Window) => game.pet_window.frame.start_drag(cursor),
+                Panel::Homunculus if game.homunculus.is_some() && game.homunculus_window.hit(cursor) == Some(homunculus::Hit::Window) => {
+                    game.homunculus_window.frame.start_drag(cursor)
+                }
+                Panel::HomunculusSkills => {
+                    let points = game.homunculus.as_ref().map_or(0, |homunculus| homunculus.skill_points);
+                    match game.homunculus_skill_list.hit(cursor, &game.homunculus_skills, points) {
+                        Some(homunculus::SkillHit::Title) => game.homunculus_skill_list.frame.start_drag(cursor),
+                        Some(homunculus::SkillHit::Resize) => game.homunculus_skill_list.start_resize(cursor),
+                        _ => {}
+                    }
+                }
+                Panel::Mercenary if game.mercenary_window.hit(cursor) == Some(mercenary::Hit::Window) => game.mercenary_window.frame.start_drag(cursor),
+                Panel::MercenarySkills => match game.mercenary_skill_list.hit(cursor, &game.mercenary_skills, 0) {
+                    Some(homunculus::SkillHit::Title) => game.mercenary_skill_list.frame.start_drag(cursor),
+                    Some(homunculus::SkillHit::Resize) => game.mercenary_skill_list.start_resize(cursor),
+                    _ => {}
+                },
+                Panel::Equipment if game.equipment.hit(cursor, &game.inventory.items) == Some(equipment::Hit::Title(TitleHit::Title)) => {
+                    game.equipment.frame.start_drag(cursor)
+                }
+                // Any part of an NPC's picture but its close button drags it.
+                Panel::Cutin if self.assets.as_ref().is_some_and(|assets| !game.cutin.as_ref().is_some_and(|cutin| cutin.on_close(cursor, &assets.cutin))) => {
+                    game.cutin.as_mut().unwrap().frame.start_drag(cursor)
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) fn close_message(&mut self) {
+        if let Scene::Message(_, back) = std::mem::replace(&mut self.scene, Scene::Login) {
+            self.quitting |= matches!(*back, Scene::Quit);
+            self.scene = *back;
+        }
+    }
+
+    /// Sends what's on the chat's input line, as Enter does: the client's sound commands (/bgm, /sound, /bv, /v), a
+    /// typed navigation (`/navi prontera 150/150`), else `Game::send_chat` (party with `party`, guild with `guild`).
+    pub(crate) fn send_chat_input(&mut self, party: bool, guild: bool) {
+        let Scene::Game(game) = &mut self.scene else { return };
+        let music_was_on = self.sound.on[0];
+        if let Some(typed) = navigation::typed(game.chat.input.trim(), NAVI_SERVICES) {
+            let line = std::mem::take(&mut game.chat.input);
+            game.chat.sent(&line);
+            match typed {
+                // To the cell, and no window with it.
+                navigation::Typed::Go { map, cell, services } => {
+                    let map = navigation::navi_map(&self.navi_tables, &map);
+                    let name = self.navi_tables.maps.get(&map).cloned().unwrap_or_default();
+                    game.navigate(
+                        &self.navi_tables,
+                        &self.messages,
+                        &self.grf,
+                        Ok(navigation::Target { map, cell: Some(cell), monster: None, name }),
+                        services,
+                    );
+                }
+                navigation::Typed::Unclear => game.chat_line(navigation::unclear(&self.messages), CHAT_NAVIGATION),
+                // /naviopen only ever opens the window.
+                navigation::Typed::Open => game.open_navigation().typing = true,
+            }
+        } else if let Some(shown) = self.sound.command(game.chat.input.trim()) {
+            game.chat.input.clear();
+            if let Some(audio) = &mut self.audio {
+                audio.set(&self.sound);
+            }
+            self.sound.save();
+            if let Some(id) = shown {
+                game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ITEM);
+            }
+            // /bgm on: the map's song from its beginning.
+            if self.sound.on[0] && !music_was_on {
+                let map = game.map.clone();
+                self.play_music(Some(&map));
+            }
+        } else {
+            let before = self.graphics.clone();
+            if let Some(id) = game.send_chat(party, guild, &self.messages, &mut self.graphics) {
+                game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR);
+            }
+            if before != self.graphics {
+                self.graphics.save();
+            }
+        }
+    }
+
+    /// Alt+1 to Alt+0: sends macro line `line` as if typed and sent with Enter, keeping what the player was typing.
+    pub(crate) fn send_macro(&mut self, line: usize) {
+        let Scene::Game(game) = &mut self.scene else { return };
+        let text = game.macro_lines[line].clone();
+        if text.trim().is_empty() {
+            return;
+        }
+        let typing = std::mem::replace(&mut game.chat.input, text);
+        self.send_chat_input(false, false);
+        if let Scene::Game(game) = &mut self.scene {
+            game.chat.input = typing;
+        }
+    }
+
+    /// One Esc in the game: the battle-mode line, a question's No, the newest window, or the menu.
+    pub(crate) fn game_escape(&mut self) {
+        let Scene::Game(game) = &mut self.scene else { return };
+        // A tab's rename box goes first: a tab keeps its name, a torn-off window takes the typed one.
+        if game.chat.renaming() {
+            let said = game.chat.escape_rename(&|text| self.font.width(text));
+            game.chat_said(said, &self.messages);
+            return;
+        }
+        // The special popup is a notice: Esc dismisses it before any window.
+        if game.special_popup.take().is_some() {
+            return;
+        }
+        game.sync_esc();
+        let view = escape::EscView {
+            // The always-on line is not this. An open battle-mode line is the first Esc.
+            battle_line: game.chat_mode.battle_line_open() && !game.window_text_focused(),
+            conversation: game.dialog.as_ref().is_some_and(Dialog::say_window),
+            question: game.question_open(),
+            // Esc never closes the own shop or buying store.
+            newest: game.esc_order.iter().copied().find(|id| !matches!(id, escape::WindowId::MyShop | escape::WindowId::MyBuyingStore)),
+        };
+        let act = escape::decide(false, view);
+        let Scene::Game(game) = &mut self.scene else { return };
+        match act {
+            Some(escape::EscAct::CloseBattleChat) => {
+                game.chat.cancel_battle_line();
+                game.chat_mode.close_line();
+            }
+            Some(escape::EscAct::Close(id)) => game.close_esc(id),
+            Some(escape::EscAct::ShopCancel) => game.close_esc(escape::WindowId::Shop),
+            Some(escape::EscAct::AnswerNo) => game.answer_no(&self.messages),
+            // Nothing left to close while a navigation runs: Esc asks whether to cancel it, before the menu.
+            Some(escape::EscAct::ToggleMenu) if game.navigation.is_some() && game.escape.is_none() => game.question_box = Some(BoxQuestion::StopNavigation),
+            Some(escape::EscAct::ToggleMenu) => {
+                game.escape = if game.escape.is_some() { None } else { Some(escape::Menu::new(game.player.dead)) };
+            }
+            None => {}
+        }
+    }
+
+    /// The next frame goes to ScreenShot/screen<server><NNN>.jpg in the folder the client runs in.
+    // ponytail: "next to the client" taken as the folder it runs in (where its data is), not the executable's.
+    pub(crate) fn request_screenshot(&mut self) {
+        let server = self.account.as_ref().and_then(|account| account.char_servers.get(self.char_server)).map(|server| server.name.clone()).unwrap_or_default();
+        let folder = std::path::Path::new(screenshot::FOLDER);
+        let _ = std::fs::create_dir_all(folder);
+        self.print_screen = Some(screenshot::next_path(folder, &server));
+    }
+
+    /// The shortcut this key fires, if it has one. A repeat fires only for the key pressed last.
+    pub(crate) fn fire_shortcut(&mut self, event: &control::KeyPress) -> bool {
+        let Scene::Game(game) = &self.scene else { return false };
+        let text_focus = game.text_box_focused();
+        let fired = shortcuts::action(
+            &self.keybinds,
+            &shortcuts::KeyEvent {
+                key: &event.logical_key,
+                physical: Some(event.physical_key),
+                alt: self.modifiers.alt_key(),
+                shift: self.modifiers.shift_key(),
+                ctrl: self.modifiers.control_key(),
+                tab: self.tab_held && event.logical_key != Key::Named(NamedKey::Tab),
+                repeat: event.repeat,
+                last: self.last_key.as_ref(),
+                text_focus,
+                bar: if game.hotkeys.tab() == 0 { 1 } else { 2 },
+            },
+        );
+        fired.is_some_and(|fired| self.perform_shortcut(fired))
+    }
+
+    /// Runs a shortcut. False leaves the key for whatever else is listening (Enter still sends chat).
+    pub(crate) fn perform_shortcut(&mut self, fired: shortcuts::Action) -> bool {
+        if matches!(fired, shortcuts::Action::ChatMode | shortcuts::Action::Unused) {
+            return false;
+        }
+        if let shortcuts::Action::Macro(line) = fired {
+            self.send_macro(usize::from(line));
+            return true;
+        }
+        if fired == shortcuts::Action::Screenshot {
+            self.request_screenshot();
+            return true;
+        }
+        // Ctrl+Tab: nothing indoors or while the world map is open.
+        if fired == shortcuts::Action::Minimap {
+            if let Scene::Game(game) = &mut self.scene
+                && !game.camera_goal.indoor
+                && game.world_map.is_none()
+            {
+                game.minimap_view = game.minimap_view.next();
+                minimap::save_view(game.minimap_view);
+            }
+            return true;
+        }
+        // The big minimap: nothing indoors.
+        if fired == shortcuts::Action::MinimapWindow {
+            if let (Scene::Game(game), Some(gpu)) = (&mut self.scene, &self.gpu)
+                && !game.camera_goal.indoor
+            {
+                toggle_big_minimap(game, gpu, &self.grf, &self.minimap_exceptions);
+            }
+            return true;
+        }
+        let Scene::Game(game) = &mut self.scene else { return true };
+        match fired {
+            shortcuts::Action::BasicInfo => {
+                game.basic_info.mini_full();
+                game.raise(Panel::BasicInfo);
+            }
+            shortcuts::Action::Equipment => {
+                game.equipment.toggle_general();
+                game.raise(Panel::Equipment);
+            }
+            shortcuts::Action::Skills => {
+                game.skill_window.frame.toggle();
+                game.raise(Panel::Skills);
+            }
+            shortcuts::Action::Quests => game.quest_window.toggle(),
+            shortcuts::Action::Friends => {
+                if game.party_window.frame.open && game.party_window.friends {
+                    game.party_window.frame.open = false;
+                } else {
+                    game.party_window.friends = true;
+                    game.party_window.picked = None;
+                    game.party_window.frame.open = true;
+                    game.raise(Panel::Party);
+                }
+            }
+            shortcuts::Action::FriendSetup => game.open_friend_setup(),
+            shortcuts::Action::Party => {
+                game.party_window.frame.toggle();
+                game.raise(Panel::Party);
+            }
+            shortcuts::Action::ChatRoom => {
+                game.room_make = if game.room_make.is_some() || game.room.is_some() { None } else { Some(chatroom::Make::default()) };
+            }
+            shortcuts::Action::Cart if game.cart.cart.is_some() => {
+                game.cart.frame.toggle();
+                game.raise(Panel::Cart);
+            }
+            shortcuts::Action::Cart => {}
+            shortcuts::Action::WorldMap => toggle_world_map(game, self.gpu.as_ref(), &self.grf, &self.worlds),
+            shortcuts::Action::Inventory => {
+                game.inventory.frame.toggle();
+                game.raise(Panel::Inventory);
+            }
+            shortcuts::Action::Guild if game.guild.is_none() => game.guild_companion.toggle(screen()),
+            shortcuts::Action::Guild => game.toggle_guild_window(),
+            shortcuts::Action::Emotions => game.toggle_emotion_list(),
+            shortcuts::Action::Sit => game.toggle_sit(),
+            shortcuts::Action::Macros => game.toggle_macro_window(),
+            shortcuts::Action::CloseWindows => game.close_tabs(),
+            shortcuts::Action::HotkeyBar => game.hotkeys.frame.toggle(),
+            shortcuts::Action::Chat => game.chat.toggle_hidden(),
+            shortcuts::Action::ChatSize => game.chat.cycle_size(),
+            shortcuts::Action::HpSp => game.show_bars = !game.show_bars,
+            // Alt+J opens or shuts the window and asks nothing.
+            shortcuts::Action::Pet if game.pet.is_some() => {
+                game.pet_window.frame.toggle();
+                game.raise(Panel::Pet);
+            }
+            shortcuts::Action::Pet => {}
+            shortcuts::Action::Homunculus if game.homunculus.is_some() => {
+                game.homunculus_window.frame.toggle();
+                game.raise(Panel::Homunculus);
+            }
+            shortcuts::Action::Homunculus => {}
+            shortcuts::Action::Mercenary if game.mercenary.is_some() => {
+                game.mercenary_window.frame.toggle();
+                game.raise(Panel::Mercenary);
+            }
+            shortcuts::Action::Mercenary => {}
+            shortcuts::Action::HomunculusFollow if game.homunculus.is_some() => {
+                game.homunculus_steering.following = !game.homunculus_steering.following;
+            }
+            shortcuts::Action::HomunculusFollow => {}
+            shortcuts::Action::MercenaryFollow if game.mercenary.is_some() => game.steering.following = !game.steering.following,
+            shortcuts::Action::MercenaryFollow => {}
+            shortcuts::Action::Menu => {
+                if !game.basic_info.frame.open {
+                    game.basic_info.frame.open = true;
+                    game.basic_info.menu_open = true;
+                    game.raise(Panel::BasicInfo);
+                } else {
+                    game.basic_info.menu_open = !game.basic_info.menu_open;
+                }
+            }
+            shortcuts::Action::Clan if game.clan.is_some() => {
+                game.clan_window.frame.toggle();
+                game.raise(Panel::Clan);
+            }
+            shortcuts::Action::Clan => {}
+            shortcuts::Action::Bank => {
+                if game.bank.take().is_none() {
+                    let _ = game.session.check_bank(game.account_id);
+                }
+            }
+            shortcuts::Action::Status => {
+                game.status_window.frame.toggle();
+                game.raise(Panel::Status);
+            }
+            shortcuts::Action::PartyBoard => game.toggle_booking(),
+            shortcuts::Action::Reputation => {
+                game.toggle_reputation(&self.reputation_tables);
+                game.sync_esc();
+            }
+            // The other equipment set, as the equipment window's swap button.
+            shortcuts::Action::SwapEquipment => match game.equipment.switch_all(&game.inventory.items, control::now()) {
+                Ok(true) => drop(game.session.switch_all()),
+                Ok(false) => {}
+                Err(id) => game.chat_line(self.messages.get(id).cloned().unwrap_or_default(), CHAT_ERROR),
+            },
+            shortcuts::Action::Achievements => game.achievement_window.frame.toggle(),
+            shortcuts::Action::Mail => {
+                let action = game.mail.toggle();
+                game.mail_action(action);
+            }
+            shortcuts::Action::RotateHotkeys => {
+                let (tab, rowshift) = game.hotkeys.rotate();
+                let _ = game.session.rotate_hotkeys(tab, rowshift);
+            }
+            shortcuts::Action::SwitchHotkeys => game.hotkeys.switch(),
+            shortcuts::Action::Costume => {
+                if game.equipment.frame.open && game.equipment.showing_costume() {
+                    game.equipment.frame.open = false;
+                } else {
+                    game.equipment.show_costume();
+                    game.equipment.frame.open = true;
+                    game.raise(Panel::Equipment);
+                }
+            }
+            // Only the showing bar's keys come here (see shortcuts::action).
+            shortcuts::Action::Hotbar { slot, .. } => game.press_hotkey(usize::from(slot), &self.messages),
+            shortcuts::Action::Memorial => {
+                if game.memorial.frame.open {
+                    game.memorial.frame.open = false;
+                    game.memorial_asked = false;
+                    escape::remove(&mut game.esc_order, escape::WindowId::Memorial);
+                } else {
+                    game.show_memorial();
+                }
+            }
+            // Off clears the square too.
+            // ponytail: the game leaves it where it was; nobody wants a square stuck on the ground.
+            shortcuts::Action::GroundCursor => {
+                game.ground_cursor = !game.ground_cursor;
+                game.ground_mark = game.ground_mark.filter(|_| game.ground_cursor);
+            }
+            // ponytail: no window yet (commands, tip, hunting, flags). The key is eaten.
+            shortcuts::Action::Commands | shortcuts::Action::Tip | shortcuts::Action::Hunting | shortcuts::Action::Flag(_) => {}
+            shortcuts::Action::Macro(_)
+            | shortcuts::Action::Screenshot
+            | shortcuts::Action::Minimap
+            | shortcuts::Action::MinimapWindow
+            | shortcuts::Action::ChatMode
+            | shortcuts::Action::Unused => {}
+        }
+        true
+    }
+
+    pub(crate) fn key(&mut self, event: &control::KeyPress) {
+        // Tab held counts as a modifier for the keys pressed meanwhile.
+        if event.logical_key == Key::Named(NamedKey::Tab) {
+            self.tab_held = event.state == ElementState::Pressed;
+        }
+        if event.state == ElementState::Pressed && !event.repeat {
+            self.last_key = Some(event.logical_key.clone());
+        }
+        // Print Screen on its release (Windows sends no press for it), Scroll Lock, and on Macs Cmd+Shift+S (they have
+        // no Print Screen; a ponytail choice): a screenshot.
+        let pressed = event.state == ElementState::Pressed && !event.repeat;
+        let shot = match &event.logical_key {
+            Key::Named(NamedKey::PrintScreen) => event.state == ElementState::Released,
+            Key::Named(NamedKey::ScrollLock) => pressed,
+            _ => {
+                cfg!(target_os = "macos")
+                    && pressed
+                    && self.modifiers.super_key()
+                    && self.modifiers.shift_key()
+                    && event.physical_key == PhysicalKey::Code(KeyCode::KeyS)
+            }
+        };
+        if shot {
+            self.request_screenshot();
+            return;
+        }
+        if event.state != ElementState::Pressed || event.logical_key == Key::Named(NamedKey::PrintScreen) {
+            return;
+        }
+        let key = &event.logical_key;
+        // Shortcut Settings takes every key while it's open (not while the message box asks): a picked row takes the next.
+        // ponytail: with no row picked, Esc still closes the newest window; other keys do nothing.
+        if let Scene::Game(game) = &mut self.scene
+            && game.question_box.is_none()
+            && let Some(window) = &mut game.shortcuts_window
+        {
+            let escape = *key == Key::Named(NamedKey::Escape);
+            if event.repeat || (window.picked.is_none() && !escape) {
+                return;
+            }
+            if window.picked.is_some() {
+                let chord = shortcuts::chord_of(&shortcuts::KeyEvent {
+                    key,
+                    physical: Some(event.physical_key),
+                    alt: self.modifiers.alt_key(),
+                    shift: self.modifiers.shift_key(),
+                    ctrl: self.modifiers.control_key(),
+                    tab: self.tab_held && *key != Key::Named(NamedKey::Tab),
+                    repeat: false,
+                    last: None,
+                    text_focus: false,
+                    bar: 1,
+                });
+                if let Some(shortcut_window::Pressed::Asks(name)) = window.key(escape, chord, &self.messages) {
+                    game.question_box = Some(BoxQuestion::RebindKey(name));
+                }
+                return;
+            }
+        }
+        // A captcha check takes every key: typing goes to its field, Enter answers; Esc doesn't close it.
+        if let Scene::Game(game) = &mut self.scene
+            && let Some(check) = game.captcha.as_mut().filter(|check| check.asked.is_some())
+        {
+            let held = self.modifiers.super_key() || self.modifiers.control_key();
+            match key {
+                Key::Named(NamedKey::Enter) => game.answer_captcha(),
+                Key::Named(NamedKey::Backspace) => _ = check.typed.pop(),
+                _ if !held => check.type_text(event.text.as_deref().unwrap_or_default()),
+                _ => {}
+            }
+            return;
+        }
+        // Ctrl+Cmd+F, as Macs have it: fullscreen (the canvas widened to the screen's shape), or back. Alt+Enter is no
+        // shortcut in the game: it reaches it as Enter with Alt held.
+        // ponytail: no fullscreen key off the Mac; the graphics settings are where one would go.
+        let fullscreen =
+            cfg!(target_os = "macos") && self.modifiers.super_key() && self.modifiers.control_key() && event.physical_key == PhysicalKey::Code(KeyCode::KeyF);
+        if fullscreen && let Some(gpu) = &self.gpu {
+            gpu.window.set_fullscreen(gpu.window.fullscreen().is_none().then_some(winit::window::Fullscreen::Borderless(None)));
+            return;
+        }
+        if self.fire_shortcut(event) {
+            return;
+        }
+        // Cmd+V (Ctrl+V off the Mac) types the clipboard's first line into whichever box has the focus.
+        let pasted = (self.modifiers.super_key() || self.modifiers.control_key()) && matches!(key, Key::Character(letter) if letter.eq_ignore_ascii_case("v"));
+        let paste;
+        let event = if pasted {
+            paste = control::KeyPress { text: Some(clipboard_line()), ..event.clone() };
+            &paste
+        } else {
+            event
+        };
+        match &mut self.scene {
+            Scene::Login => {
+                self.blink_start = Instant::now();
+                match key {
+                    Key::Named(NamedKey::Tab) => self.focus ^= 1,
+                    Key::Named(NamedKey::Enter) => self.submit_login(),
+                    Key::Named(NamedKey::Escape) => self.escape_before_map(),
+                    Key::Named(NamedKey::Backspace) => {
+                        self.fields[self.focus].pop();
+                    }
+                    _ => {
+                        let field = &mut self.fields[self.focus];
+                        for character in event.text.as_deref().unwrap_or_default().chars().filter(char::is_ascii_graphic) {
+                            if field.len() < NAME_LENGTH - 1 {
+                                field.push(character);
+                            }
+                        }
+                    }
+                }
+            }
+            Scene::Connections { selected } => match key {
+                Key::Named(NamedKey::ArrowUp) => *selected = selected.saturating_sub(1),
+                Key::Named(NamedKey::ArrowDown) => *selected = (*selected + 1).min(self.connections.len().saturating_sub(1)),
+                Key::Named(NamedKey::Enter) => {
+                    let picked = *selected;
+                    self.choose_connection(picked);
+                }
+                Key::Named(NamedKey::Escape) => self.escape_before_map(),
+                _ => {}
+            },
+            Scene::ServerSelect { accepted, selected, scroll } => match key {
+                Key::Named(NamedKey::ArrowUp) => {
+                    *selected = selected.saturating_sub(1);
+                    *scroll = servers::keep_visible(*selected, *scroll);
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    *selected = (*selected + 1).min(accepted.char_servers.len().saturating_sub(1));
+                    *scroll = servers::keep_visible(*selected, *scroll);
+                }
+                Key::Named(NamedKey::Enter) => self.confirm_server(),
+                Key::Named(NamedKey::Escape) => self.escape_before_map(),
+                _ => {}
+            },
+            Scene::CharSelect(select) if select.pin_pad.is_some() => {
+                let pad = select.pin_pad.as_mut().unwrap();
+                // ponytail: the official pad is mouse-only (message 1906); also accept digit keys so scenarios can `type` a PIN.
+                let action = match key {
+                    Key::Named(NamedKey::Backspace) => {
+                        pad.backspace();
+                        pin::PinAction::None
+                    }
+                    Key::Named(NamedKey::Enter) => pad.press(pin::PinButton::Ok),
+                    Key::Named(NamedKey::Escape) => pad.press(pin::PinButton::Cancel),
+                    _ => event
+                        .text
+                        .as_deref()
+                        .and_then(|text| text.chars().next())
+                        .filter(char::is_ascii_digit)
+                        .map_or(pin::PinAction::None, |digit| pad.push_digit(digit)),
+                };
+                self.apply_pin_action(action);
+            }
+            Scene::CharSelect(select) => match key {
+                Key::Named(NamedKey::ArrowLeft) => select.step(-1),
+                Key::Named(NamedKey::ArrowRight) => select.step(1),
+                Key::Named(NamedKey::ArrowUp) => select.step(-char_select::Select::ROW),
+                Key::Named(NamedKey::ArrowDown) => select.step(char_select::Select::ROW),
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(action) = select.enter() {
+                        self.select_action(action);
+                    }
+                }
+                // Escape closes the card's menu or stops picking where to move first.
+                Key::Named(NamedKey::Escape) if select.menu.is_some() || select.moving.is_some() => {
+                    select.menu = None;
+                    select.moving = None;
+                }
+                Key::Named(NamedKey::Escape) => self.escape_before_map(),
+                _ => {}
+            },
+            Scene::CharMake(make, _) => match key {
+                Key::Named(NamedKey::Enter) => {
+                    if let Some(action) = make.click(char_make::Hit::Make, &self.grf, &self.look_tables) {
+                        self.make_action(action);
+                    }
+                }
+                Key::Named(NamedKey::Escape) => self.escape_before_map(),
+                Key::Named(NamedKey::Backspace) => {
+                    make.name.pop();
+                }
+                _ => make.type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            // Esc, one window per press, and never on a key that is auto-repeating.
+            Scene::Game(_) if *key == Key::Named(NamedKey::Escape) => {
+                if !event.repeat {
+                    self.game_escape();
+                }
+            }
+            // The Amount box is modal over an NPC's talk: a shop opened from its menu leaves the talk up behind it.
+            Scene::Game(game) if game.dialog.is_some() && game.amount.is_none() => {
+                let dialog = game.dialog.as_mut().unwrap();
+                // Enter and Space: the input box's, else (Space only with nothing in the chat line) the menu's OK or
+                // Next and Close (see npc_say::dialog_key).
+                if let Key::Named(named @ (NamedKey::Enter | NamedKey::Space)) = key {
+                    let chat_text = game.chat_mode.chat_line_open() && !game.chat.input.is_empty();
+                    match npc_say::dialog_key(*named == NamedKey::Space, dialog.input.is_some(), dialog.menu.is_some(), chat_text) {
+                        npc_say::DialogKey::Submit => game.submit_input(),
+                        npc_say::DialogKey::TypeInput => dialog.input.as_mut().unwrap().type_text(" "),
+                        npc_say::DialogKey::TypeChat => game.chat.type_text(" "),
+                        npc_say::DialogKey::MenuOk => game.menu_ok(true),
+                        npc_say::DialogKey::Button => game.press_dialog_button(false),
+                    }
+                    return;
+                }
+                match (key, &mut dialog.input, &mut dialog.menu) {
+                    (Key::Named(NamedKey::Backspace), Some(input), _) => input.backspace(),
+                    (_, Some(input), _) => input.type_text(event.text.as_deref().unwrap_or_default()),
+                    (Key::Named(NamedKey::ArrowUp), _, Some(menu)) => menu.step(false),
+                    (Key::Named(NamedKey::ArrowDown), _, Some(menu)) => menu.step(true),
+                    // Without a menu Up and Down scroll the text.
+                    (Key::Named(NamedKey::ArrowUp), None, None) => game.say.scroll_by(-npc_say::SCROLL_STEP),
+                    (Key::Named(NamedKey::ArrowDown), None, None) => game.say.scroll_by(npc_say::SCROLL_STEP),
+                    _ => {}
+                }
+            }
+            // The question holds the player busy until it's answered.
+            Scene::Game(game) if game.bind_asked.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_bind(*key == Key::Named(NamedKey::Enter));
+            }
+            Scene::Game(game) if game.expansion_asked.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.expansion_asked = None;
+                let _ = game.session.answer_expansion(*key == Key::Named(NamedKey::Enter));
+            }
+            Scene::Game(game) if game.apply_asked && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_apply(*key == Key::Named(NamedKey::Enter));
+            }
+            // Tab over the skill window: its next tab, round to the first.
+            // ponytail: with the pointer over the window; the game's own focus rule isn't known.
+            Scene::Game(game) if *key == Key::Named(NamedKey::Tab) && game.window_at(self.cursor) == Some(Panel::Skills) => {
+                let jobs = skills::tabs(&self.skill_trees, game.me.job, &game.skills);
+                let sheet = skills::Sheet {
+                    trees: &self.skill_trees,
+                    jobs: &jobs,
+                    skills: &game.skills.clone(),
+                    info: &game.skill_info.clone(),
+                    points: game.skill_points(),
+                };
+                game.skill_window.next_tab(&sheet);
+            }
+            Scene::Game(game) if game.leader_asked.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                let account = game.leader_asked.take().unwrap();
+                if *key == Key::Named(NamedKey::Enter) {
+                    let _ = game.session.change_party_leader(account);
+                }
+            }
+            Scene::Game(game) if game.question_box.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_box(*key == Key::Named(NamedKey::Enter), &self.messages);
+                if std::mem::take(&mut game.reset_settings) {
+                    game_settings::reset(&mut self.sound, &mut self.graphics);
+                    if let Some(audio) = &mut self.audio {
+                        audio.set(&self.sound);
+                    }
+                    self.sound.save();
+                    self.graphics.save();
+                }
+            }
+            // The guild window's text boxes: Enter or Esc leaves the box.
+            Scene::Game(game) if game.guild_window.typing.is_some() && game.reason_box.is_none() => match key {
+                Key::Named(NamedKey::Enter | NamedKey::Escape) => game.guild_window.typing = None,
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(guild) = &game.guild {
+                        game.guild_window.backspace(guild);
+                    }
+                }
+                _ => {
+                    if let Some(guild) = &game.guild {
+                        game.guild_window.type_text(guild, event.text.as_deref().unwrap_or_default());
+                    }
+                }
+            },
+            // The create (or disband) window's box: Enter is OK, Esc closes the window.
+            Scene::Game(game) if game.guild_companion.typing() => match key {
+                Key::Named(NamedKey::Enter) => game.guild_name_ok(&self.messages),
+                Key::Named(NamedKey::Escape) => game.guild_companion.create = None,
+                Key::Named(NamedKey::Backspace) => drop(game.guild_companion.create.as_mut().unwrap().name.pop()),
+                _ => game.guild_companion.create.as_mut().unwrap().type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            // The guild's reason box: Enter is OK, Esc cancels.
+            Scene::Game(game) if game.reason_box.is_some() => match key {
+                Key::Named(NamedKey::Enter) => game.answer_reason(true),
+                Key::Named(NamedKey::Escape) => game.answer_reason(false),
+                Key::Named(NamedKey::Backspace) => drop(game.reason_box.as_mut().unwrap().text.pop()),
+                _ => game.reason_box.as_mut().unwrap().type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            // The master's pending guild moves: Enter is OK.
+            Scene::Game(game) if game.guild_window.frame.open && !game.guild_window.pending.is_empty() && *key == Key::Named(NamedKey::Enter) => {
+                if let Some(moves) = game.guild_window.take_moves(Instant::now()) {
+                    let _ = game.session.move_members(&moves);
+                }
+            }
+            // A docked party window's edit box: Enter is OK, Esc closes the window.
+            Scene::Game(game) if game.party_dialog.as_ref().is_some_and(|dialog| dialog.typing) => {
+                let dialog = game.party_dialog.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter) => {
+                        let action = dialog.ok();
+                        game.party_dialog_action(action, &self.messages);
+                    }
+                    Key::Named(NamedKey::Escape) => game.party_dialog = None,
+                    Key::Named(NamedKey::Backspace) => drop(dialog.name.pop()),
+                    _ => dialog.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.party_dialog.is_some() && *key == Key::Named(NamedKey::Escape) => game.party_dialog = None,
+            Scene::Game(game) if game.ranking.is_some() && *key == Key::Named(NamedKey::Escape) => game.ranking = None,
+            Scene::Game(game) if game.dressroom.is_some() && *key == Key::Named(NamedKey::Escape) => {
+                game.dressroom = None;
+                game.dress_figure = None;
+            }
+            Scene::Game(game) if game.dismiss_asked && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_dismiss(*key == Key::Named(NamedKey::Enter), &self.messages);
+            }
+            Scene::Game(game) if game.homunculus_asked.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_homunculus(*key == Key::Named(NamedKey::Enter), &self.messages);
+            }
+            Scene::Game(game) if game.pet_asked.is_some() && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.answer_pet(*key == Key::Named(NamedKey::Enter), &self.pets, &self.items, &self.messages);
+            }
+            Scene::Game(game) if game.cashshop_buy_asked && matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                game.cashshop_buy_asked = false;
+                if let Some((free, items)) = game.cashshop.as_ref().and_then(|shop| shop.buy_request(*key == Key::Named(NamedKey::Enter))) {
+                    let _ = game.session.buy_cashshop(free, &items);
+                }
+            }
+            Scene::Game(game) if game.amount.is_some() => match key {
+                Key::Named(NamedKey::Enter) => game.answer_amount(true, &self.messages),
+                Key::Named(NamedKey::Escape) => game.answer_amount(false, &self.messages),
+                Key::Named(NamedKey::Backspace) => {
+                    game.amount.as_mut().unwrap().typed.pop();
+                }
+                _ => game.amount.as_mut().unwrap().type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            Scene::Game(game) if game.vend_setup.as_ref().is_some_and(vend::Setup::typing) && game.amount.is_none() => {
+                let setup = game.vend_setup.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => {
+                        if setup.leave_price() {
+                            game.question_box = Some(BoxQuestion::Notice(vend::PRICE_HELD));
+                        }
+                        setup.focus = None;
+                    }
+                    Key::Named(NamedKey::Backspace) => setup.backspace(),
+                    _ => setup.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.buying_setup.as_ref().is_some_and(|setup| setup.focus.is_some()) && game.amount.is_none() => {
+                let setup = game.buying_setup.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => setup.focus = None,
+                    Key::Named(NamedKey::Tab) => {
+                        setup.focus = match setup.focus {
+                            Some(buying::Focus::Name) => Some(buying::Focus::Limit),
+                            _ => Some(buying::Focus::Name),
+                        };
+                    }
+                    Key::Named(NamedKey::Backspace) => setup.backspace(),
+                    _ => setup.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.mail.typing() && game.amount.is_none() => match key {
+                Key::Named(NamedKey::Escape) => game.mail.stop_typing(),
+                Key::Named(NamedKey::Backspace) => game.mail.backspace(),
+                Key::Named(NamedKey::Enter) => game.mail.enter(false),
+                Key::Named(NamedKey::Tab) => game.mail.enter(true),
+                _ => game.mail.type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            // A macro line being edited takes the typing; Enter or Esc ends it.
+            Scene::Game(game) if game.macro_window.as_ref().is_some_and(|window| window.editing.is_some()) => {
+                let window = game.macro_window.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Escape | NamedKey::Enter) => {
+                        window.editing = None;
+                        macros::save(macros::path().as_deref(), &game.macro_lines);
+                    }
+                    Key::Named(NamedKey::Backspace) => window.backspace(&mut game.macro_lines),
+                    _ => window.type_text(&mut game.macro_lines, event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.room_make.is_some() => {
+                let make = game.room_make.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Escape) => game.room_make = None,
+                    Key::Named(NamedKey::Enter) => game.make_room(),
+                    Key::Named(NamedKey::Tab) => make.on_password = !make.on_password && !make.public,
+                    Key::Named(NamedKey::Backspace) => make.backspace(),
+                    _ => make.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            // In a chat room, typing goes to its line; Enter says it there.
+            Scene::Game(game) if game.room.is_some() && game.amount.is_none() => {
+                let room = game.room.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter) => {
+                        let text = std::mem::take(&mut room.input);
+                        if !text.trim().is_empty() {
+                            let _ = game.session.chat(&game.me.name, text.trim());
+                        }
+                    }
+                    Key::Named(NamedKey::Backspace) => {
+                        room.input.pop();
+                    }
+                    Key::Named(NamedKey::Escape) => room.input.clear(),
+                    _ if !self.modifiers.alt_key() && !self.modifiers.super_key() && !self.modifiers.control_key() => {
+                        room.input.extend(event.text.as_deref().unwrap_or_default().chars().filter(|character| !character.is_control()));
+                    }
+                    _ => {}
+                }
+            }
+            Scene::Game(game) if game.cashshop.as_ref().is_some_and(|shop| shop.typing) => {
+                let shop = game.cashshop.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter) => shop.enter(&self.items),
+                    Key::Named(NamedKey::Escape) => shop.typing = false,
+                    Key::Named(NamedKey::Backspace) => shop.backspace(),
+                    _ => shop.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.bank.as_ref().is_some_and(|bank| bank.typing) => {
+                let bank = game.bank.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => bank.typing = false,
+                    Key::Named(NamedKey::Backspace) => {
+                        bank.typed.pop();
+                    }
+                    _ => bank.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            Scene::Game(game) if game.trade.as_ref().is_some_and(|trade| trade.typing) => {
+                let trade = game.trade.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => trade.typing = false,
+                    Key::Named(NamedKey::Backspace) => {
+                        trade.typed.pop();
+                    }
+                    _ => {
+                        if let Some(id) = trade.type_text(event.text.as_deref().unwrap_or_default()) {
+                            let line = rustnarok_client::messages::fill(self.messages.get(id).map_or("", String::as_str), &[&"1,000,000,000"]);
+                            game.chat_line(line, CHAT_ERROR);
+                        }
+                    }
+                }
+            }
+            // The booking board's fields.
+            Scene::Game(game) if game.booking.as_ref().is_some_and(|window| window.focus.is_some()) => {
+                let window = game.booking.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter | NamedKey::Escape) => window.focus = None,
+                    Key::Named(NamedKey::Backspace) => window.backspace(),
+                    _ => window.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            // The navigation window's search box: Enter searches, Esc leaves it.
+            Scene::Game(game) if game.navi_window.as_ref().is_some_and(|window| window.typing) => {
+                let window = game.navi_window.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter) => window.search(&self.navi_tables),
+                    Key::Named(NamedKey::Escape) => window.typing = false,
+                    Key::Named(NamedKey::Backspace) => {
+                        window.text.pop();
+                    }
+                    _ => window.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            // The quest search box: Enter applies it, Esc leaves it.
+            Scene::Game(game) if game.quest_window.typing => match key {
+                Key::Named(NamedKey::Enter) => game.quest_window.apply_search(),
+                Key::Named(NamedKey::Escape) => game.quest_window.typing = false,
+                Key::Named(NamedKey::Backspace) => game.quest_window.backspace(),
+                _ => game.quest_window.type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            // The pet's name box: Enter keeps what's typed, Esc puts the name back.
+            Scene::Game(game) if game.pet_window.typing => match key {
+                Key::Named(NamedKey::Enter) => game.pet_window.typing = false,
+                Key::Named(NamedKey::Escape) => {
+                    game.pet_window.name_text = None;
+                    game.pet_window.typing = false;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    game.pet_window.name_text.get_or_insert_with(String::new).pop();
+                }
+                _ => {
+                    let typed: String = event.text.as_deref().unwrap_or_default().chars().filter(|character| !character.is_control()).collect();
+                    game.pet_window.name_text.get_or_insert_with(String::new).push_str(&typed);
+                }
+            },
+            // The homunculus's name box, the same.
+            Scene::Game(game) if game.homunculus_window.typing => match key {
+                Key::Named(NamedKey::Enter) => game.homunculus_window.typing = false,
+                Key::Named(NamedKey::Escape) => {
+                    game.homunculus_window.name_text = None;
+                    game.homunculus_window.typing = false;
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    game.homunculus_window.name_text.get_or_insert_with(String::new).pop();
+                }
+                _ => {
+                    let typed: String = event.text.as_deref().unwrap_or_default().chars().filter(|character| !character.is_control()).collect();
+                    game.homunculus_window.name_text.get_or_insert_with(String::new).push_str(&typed);
+                }
+            },
+            // Enter searches as the button does: the Search window comes up in front.
+            Scene::Game(game) if game.storage.typing => {
+                if game.storage.key(key, event.text.as_deref().unwrap_or_default()) {
+                    game.raise(Panel::StorageSearch);
+                    game.sync_esc();
+                }
+            }
+            Scene::Game(game) if game.catalog.is_some() && matches!(key, Key::Named(NamedKey::Escape)) => game.close_catalog(),
+            Scene::Game(game) if game.catalog.as_ref().is_some_and(|catalog| catalog.focus.is_some()) => {
+                let catalog = game.catalog.as_mut().unwrap();
+                match key {
+                    Key::Named(NamedKey::Enter) => game.click_catalog(catalog::Hit::Search, &self.items, &self.card_names),
+                    Key::Named(NamedKey::Tab) => catalog.tab(),
+                    Key::Named(NamedKey::Backspace) => catalog.backspace(),
+                    _ => catalog.type_text(event.text.as_deref().unwrap_or_default()),
+                }
+            }
+            // Naming a memo on the big minimap. Esc cancels it (game_escape) before this.
+            Scene::Game(game) if game.minimap_window.naming() => match key {
+                Key::Named(NamedKey::Enter) => {
+                    game.minimap_window.store();
+                }
+                Key::Named(NamedKey::Backspace) => game.minimap_window.backspace(),
+                _ => game.minimap_window.type_text(event.text.as_deref().unwrap_or_default()),
+            },
+            Scene::Game(game) if game.deal_choice.is_some() && matches!(key, Key::Named(NamedKey::Escape)) => game.close_deal_choice(),
+            // Enter is the deal-type box's default button: Buy.
+            Scene::Game(game) if game.deal_choice.is_some() && matches!(key, Key::Named(NamedKey::Enter)) => game.choose_deal(false),
+            // Earlier arms are windows that want the key. Esc is game_escape, which closes an open battle-mode
+            // line first. Here the chat line has the key. Off: the line is always open and letters type. On: Enter
+            // opens it, Enter on an empty line closes it, and a closed line sends letters and digits to shortcuts.
+            Scene::Game(game) if game.away_prompt.is_some() => match key {
+                Key::Named(NamedKey::Enter) => {
+                    let text = game.away_prompt.take().map(|prompt| prompt.typed).unwrap_or_default();
+                    game.finish_away(&text);
+                }
+                Key::Named(NamedKey::Backspace) => {
+                    if let Some(prompt) = &mut game.away_prompt {
+                        prompt.typed.pop();
+                    }
+                }
+                _ if !self.modifiers.alt_key() && !self.modifiers.super_key() && !self.modifiers.control_key() => {
+                    if let Some(prompt) = &mut game.away_prompt {
+                        prompt.type_text(event.text.as_deref().unwrap_or_default());
+                    }
+                }
+                _ => {}
+            },
+            Scene::Game(game) if game.talks.typing() => match key {
+                Key::Named(NamedKey::Enter) => game.send_focused_talk(),
+                Key::Named(NamedKey::Backspace) => game.talks.backspace(),
+                _ if pasted || (!self.modifiers.alt_key() && !self.modifiers.super_key() && !self.modifiers.control_key()) => {
+                    game.talks.type_text(event.text.as_deref().unwrap_or_default());
+                }
+                _ => {}
+            },
+            Scene::Game(game) => {
+                let kind = battle_key(key);
+                // Only a box with nothing in it is empty: spaces are text.
+                let take = game.chat_mode.take_key(kind, game.chat.input.is_empty(), game.chat.naming);
+                match take {
+                    battle_mode::Take::Opened => game.chat.reopened(),
+                    battle_mode::Take::Closed => game.chat.close_battle_line(),
+                    battle_mode::Take::Shortcut | battle_mode::Take::Type => {
+                        let typing = take == battle_mode::Take::Type;
+                        // A key on the closed line that no shortcut took empties what Esc left in the box.
+                        if !typing && !matches!(key, Key::Named(NamedKey::Shift | NamedKey::Control | NamedKey::Alt | NamedKey::Super)) {
+                            game.chat.drop_stale();
+                        }
+                        // shortcuts::action already ran. A letter it fired never reaches here. An unbound letter
+                        // while the line is closed is not typed either.
+                        if typing || !matches!(kind, battle_mode::KeyKind::Char(_)) {
+                            match key {
+                                Key::Named(NamedKey::Tab) if typing && !game.chat.renaming() => game.chat.naming = !game.chat.naming,
+                                // Shift+Insert pastes, Shift+Delete cuts; Ctrl (or Cmd) with A, C, X, V edit.
+                                Key::Named(NamedKey::Insert) if typing && self.modifiers.shift_key() => game.chat.type_text(&clipboard_line()),
+                                Key::Named(NamedKey::Delete) if typing && self.modifiers.shift_key() => set_clipboard(&game.chat.cut()),
+                                Key::Character(letter)
+                                    if typing
+                                        && (self.modifiers.control_key() || self.modifiers.super_key())
+                                        && matches!(letter.to_lowercase().as_str(), "a" | "c" | "x" | "v") =>
+                                {
+                                    match letter.to_lowercase().as_str() {
+                                        "a" => game.chat.select_all(),
+                                        "c" => set_clipboard(&game.chat.selected()),
+                                        "x" => set_clipboard(&game.chat.cut()),
+                                        _ => game.chat.type_text(&clipboard_line()),
+                                    }
+                                }
+                                Key::Named(NamedKey::Insert) => game.toggle_sit(),
+                                // The caret: Left, Right, Home, End (Shift selects); Up / Down recall.
+                                Key::Named(named @ (NamedKey::ArrowLeft | NamedKey::ArrowRight | NamedKey::Home | NamedKey::End)) if typing => {
+                                    let to = match named {
+                                        NamedKey::ArrowLeft => line_edit::Move::Left,
+                                        NamedKey::ArrowRight => line_edit::Move::Right,
+                                        NamedKey::Home => line_edit::Move::Home,
+                                        _ => line_edit::Move::End,
+                                    };
+                                    game.chat.go(to, self.modifiers.shift_key());
+                                }
+                                Key::Named(named @ (NamedKey::ArrowUp | NamedKey::ArrowDown)) if typing && !game.chat.renaming() => {
+                                    game.chat.recall(*named == NamedKey::ArrowUp)
+                                }
+                                Key::Named(NamedKey::Delete) if typing => game.chat.delete(),
+                                // PageUp / PageDown page the log; with Ctrl, to its top or bottom.
+                                Key::Named(key @ (NamedKey::PageUp | NamedKey::PageDown)) if game.chat_mode.chat_line_open() => {
+                                    game.chat.page(*key == NamedKey::PageDown, self.modifiers.control_key());
+                                }
+                                // Enter names a tab being renamed, else sends from either box.
+                                Key::Named(NamedKey::Enter) if typing && game.chat.renaming() => {
+                                    let said = game.chat.finish_rename(&|text| self.font.width(text));
+                                    game.chat_said(said, &self.messages);
+                                }
+                                Key::Named(NamedKey::Enter) if typing => {
+                                    self.send_chat_input(self.modifiers.control_key(), self.modifiers.alt_key());
+                                    // Enter sends and returns to gameplay only after the draft was consumed.
+                                    // Macro sends and rename dialogs do not use this path.
+                                    if let Scene::Game(game) = &mut self.scene
+                                        && game.chat_mode.enabled()
+                                        && game.chat.input.is_empty()
+                                    {
+                                        game.chat_mode.sent_line();
+                                        game.chat.close_battle_line();
+                                    }
+                                },
+                                Key::Named(NamedKey::Backspace) if typing => game.chat.backspace(),
+                                _ if typing && !self.modifiers.alt_key() && !self.modifiers.super_key() && !self.modifiers.control_key() => {
+                                    let typed: String = event.text.as_deref().unwrap_or_default().chars().filter(|character| !character.is_control()).collect();
+                                    game.chat.type_text(&typed);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
+            Scene::Message(..) => {
+                if matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) {
+                    self.close_message();
+                }
+            }
+            Scene::Prompt { input, then, .. } if !matches!(key, Key::Named(NamedKey::Enter | NamedKey::Escape)) => {
+                if matches!(key, Key::Named(NamedKey::Backspace)) {
+                    input.pop();
+                }
+                let text = event.text.as_deref().unwrap_or_default();
+                // A new name takes any letters; the birthdate only digits.
+                if let Then::ConfirmName(_) = then {
+                    let room = NAME_MOST - input.chars().count().min(NAME_MOST);
+                    input.extend(text.chars().filter(|character| !character.is_control()).take(room));
+                } else {
+                    input.extend(text.chars().filter(char::is_ascii_digit).take(PROMPT_LENGTH - input.len().min(PROMPT_LENGTH)));
+                }
+            }
+            Scene::Confirm(..) | Scene::Prompt { .. } => match key {
+                Key::Named(NamedKey::Enter) => self.answer(),
+                Key::Named(NamedKey::Escape) => self.dismiss(),
+                _ => {}
+            },
+            Scene::Waiting(..) | Scene::Quit => {}
+        }
+    }
+}

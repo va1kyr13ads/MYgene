@@ -1,0 +1,590 @@
+// MYGENE_PUBLIC_RC1
+// MYGENE_SURVIVAL_V2
+// Floor 2: Survival Academy
+// GM-only development stage.
+
+function	script	MYgene_NT_Survival_Valid	{
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        getcharid(1) != 0)
+        return 0;
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 1)
+        return 0;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0 ||
+        .@id != @MYGENE_NT_SV_INSTANCE)
+        return 0;
+
+    if (strcharinfo(3) != @MYGENE_NT_SV_MAP$ ||
+        strcharinfo(3) != instance_mapname("1@tower",.@id))
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_NT_Survival_Spawn	{
+    if (!callfunc("MYgene_NT_Survival_Valid"))
+        return 0;
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return 0;
+
+    .@stage = getarg(0);
+
+    switch (.@stage) {
+
+        case 1:
+            .@name$ = "Training Poring";
+            .@mob = 1002;
+            .@hp = 40;
+            .@mode = 0;
+            .@attack = 1;
+            break;
+
+        case 6:
+            .@name$ = "Wild Training Lunatic";
+            .@mob = 1063;
+            .@hp = 80;
+            .@mode = 133;
+            .@attack = 5;
+            break;
+
+        case 8:
+            // MYGENE_SURVIVAL_V21
+            .@name$ = "Survival Guardian";
+            .@mob = 1002;
+            .@hp = 100;
+            .@mode = 133;
+
+            // MYGENE_SURVIVAL_V22
+            // ATK scales with player Max HP.
+            .@attack = (MaxHp + 19) / 20;
+
+            if (.@attack < 1)
+                .@attack = 1;
+
+            debugmes "[SURVIVAL V22] Player MaxHP: "+
+                MaxHp+" | Guardian ATK: "+.@attack;
+            break;
+
+        default:
+            return 0;
+    }
+
+    setarray .@ox[0],3,-3,0,0,2,-2,2,-2;
+    setarray .@oy[0],0,0,3,-3,2,2,-2,-2;
+
+    .@found = 0;
+
+    for (.@i = 0; .@i < 8; .@i++) {
+
+        .@sx = .@x + .@ox[.@i];
+        .@sy = .@y + .@oy[.@i];
+
+        if (checkcell(
+            .@map$,.@sx,.@sy,cell_chkpass
+        )) {
+            .@found = 1;
+            break;
+        }
+    }
+
+    if (!.@found)
+        return 0;
+
+    monster .@map$,.@sx,.@sy,
+        .@name$,.@mob,1,
+        "MYgene_NT_Survival::OnTrialDead";
+
+    .@gid = $@mobid[0];
+
+    if (.@gid <= 0 || !unitexists(.@gid))
+        return 0;
+
+    setunitdata .@gid,UMOB_MODE,.@mode;
+    setunitdata .@gid,UMOB_MAXHP,.@hp;
+    setunitdata .@gid,UMOB_HP,.@hp;
+    setunitdata .@gid,UMOB_ATKMIN,.@attack;
+    setunitdata .@gid,UMOB_ATKMAX,.@attack;
+
+    if (.@stage == 8) {
+        setunitdata .@gid,UMOB_FLEE,5;
+        setunitdata .@gid,UMOB_DEF,0;
+    }
+
+    @MYGENE_NT_SV_TARGET = .@gid;
+
+    dispbottom "[Survival] Defeat the "+
+        .@name$+".";
+
+    return 1;
+}
+
+function	script	MYgene_NT_Survival_Reward	{
+    if (!callfunc("MYgene_NT_Survival_Valid") ||
+        !MYGENE_NT_F2_PASSED)
+        return 0;
+
+    if (!MYGENE_NT_F2_REWARDED) {
+
+        setarray .@items[0],569,601;
+        setarray .@amounts[0],30,5;
+
+        if (!checkweight2(.@items,.@amounts)) {
+
+            mes "[Tower Instructor]";
+            mes "Free inventory space first.";
+            mes "Your completion is recorded.";
+            mes "Re-enter to claim your rewards.";
+
+            return 0;
+        }
+
+        if (BaseLevel < 10)
+            BaseLevel = 10;
+
+        if (JobLevel < 5)
+            JobLevel = 5;
+
+        getitem 569,30;
+        getitem 601,5;
+
+        if (!#MYGENE_NT_ZENY_F2) {
+            #MYGENE_NT_ZENY_F2 = 1;
+            Zeny += 1000;
+            dispbottom "Account training bonus: 1000 Zeny.";
+        } else {
+            dispbottom "Account Zeny bonus already claimed.";
+        }
+
+        MYGENE_NT_F2_REWARDED = 1;
+    }
+
+    MYGENE_NT_DEV_CLEARED = 2;
+
+    @MYGENE_NT_SV_ACTIVE = 0;
+    @MYGENE_NT_SV_STEP = 10;
+
+    percentheal 100,100;
+
+    dispbottom "=== SURVIVAL COMPLETE ===";
+    dispbottom "Floor 2 progress saved.";
+
+    mes "[Tower Instructor]";
+    mes "^339933Congratulations!^000000";
+    mes "Floor 2: Survival completed.";
+    mes "Progress: 2/5.";
+    mes "Your progress and rewards are saved.";
+    next;
+
+    mes "[Survival Rewards]";
+    mes "Base Level target: 10.";
+    mes "Job Level target: 5.";
+    mes "30 Novice Potions.";
+    mes "5 Fly Wings.";
+    mes "First account clear: 1,000 Zeny.";
+    next;
+
+    mes "[Tower Instructor]";
+    mes "Next: Floor 3 - Wisdom.";
+    mes "Ready to continue?";
+    next;
+
+    .@choice = select(
+        "Continue to Floor 3:Stop and return to Prontera"
+    );
+
+    if (Class != Job_Novice ||
+        MYGENE_NT_DEV_CLEARED != 2 ||
+        instance_id(IM_CHAR) != @MYGENE_NT_SV_INSTANCE ||
+        strcharinfo(3) != @MYGENE_NT_SV_MAP$) {
+
+        close;
+    }
+
+    if (.@choice == 1) {
+
+        clear;
+
+        dispbottom "Entering Floor 3 - Wisdom...";
+
+        callfunc "MYgene_Tower_Wisdom";
+
+        close;
+
+    } else {
+
+        close2;
+
+        dispbottom "Your Tower progress is saved.";
+        dispbottom "Return to the Herald for Wisdom.";
+
+        warp "prontera",158,176;
+    }
+
+    return 1;
+}
+
+function	script	MYgene_NT_Survival_Start	{
+    if (Class != Job_Novice ||
+        getcharid(1) != 0)
+        return;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        return;
+
+    .@map$ = strcharinfo(3);
+
+    if (.@map$ != getarg(0) ||
+        .@map$ != instance_mapname("1@tower",.@id))
+        return;
+
+    @MYGENE_NT_SV_INSTANCE = .@id;
+    @MYGENE_NT_SV_MAP$ = .@map$;
+
+    if (!callfunc("MYgene_NT_Survival_Valid"))
+        return;
+
+    if (@MYGENE_NT_SV_ACTIVE)
+        deltimer "MYgene_NT_Survival::OnPoll";
+
+    @MYGENE_NT_SV_ACTIVE = 0;
+    @MYGENE_NT_SV_TARGET = 0;
+    @MYGENE_NT_SV_HEALED = 0;
+
+    // Clean up previous attempts.
+
+    killmonster .@map$,
+        "MYgene_NT_Survival::OnFirstDead";
+
+    killmonster .@map$,
+        "MYgene_NT_Survival::OnSecondDead";
+
+    killmonster .@map$,
+        "MYgene_NT_Survival::OnTrialDead";
+
+    setmapflag .@map$,MF_NOBASEEXP;
+    setmapflag .@map$,MF_NOJOBEXP;
+    setmapflag .@map$,MF_NOMOBLOOT;
+
+    percentheal 100,100;
+
+    @MYGENE_NT_SV_ACTIVE = 1;
+
+    if (MYGENE_NT_F2_PASSED) {
+        @MYGENE_NT_SV_STEP = 9;
+
+    } else if (MYGENE_NT_F2_FINAL_READY) {
+
+        @MYGENE_NT_SV_STEP = 8;
+        dispbottom "Final trial checkpoint restored.";
+
+    } else {
+        @MYGENE_NT_SV_STEP = 1;
+    }
+
+    dispbottom "=== FLOOR 2: SURVIVAL ===";
+
+    if (!MYGENE_NT_F2_PASSED) {
+
+        if (!MYGENE_NT_F2_SUPPLIES &&
+            checkweight(569,5)) {
+
+            getitem 569,5;
+            MYGENE_NT_F2_SUPPLIES = 1;
+
+            dispbottom "Training supplies: 5 Novice Potions.";
+        }
+    }
+
+    addtimer 1000,"MYgene_NT_Survival::OnPoll";
+
+    return;
+}
+
+-	script	MYgene_NT_Survival	-1,{
+
+OnInit:
+
+    // GM recovery command, not a normal lesson.
+    bindatcmd "survivallesson",
+        "MYgene_NT_Survival::OnLesson",99,99;
+
+    end;
+
+OnPoll:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_SV_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_Survival_Valid"))
+        goto L_Stop;
+
+    .@step = @MYGENE_NT_SV_STEP;
+
+    if (.@step == 1 ||
+        .@step == 6 ||
+        .@step == 8) {
+
+        .@gid = @MYGENE_NT_SV_TARGET;
+
+        if (.@gid <= 0 || !unitexists(.@gid)) {
+
+            @MYGENE_NT_SV_TARGET = 0;
+
+            callfunc "MYgene_NT_Survival_Spawn",.@step;
+        }
+
+    } else if (.@step == 2 ||
+               .@step == 4 ||
+               .@step == 7 ||
+               .@step == 9) {
+
+        goto OnLesson;
+
+    } else if (.@step == 3 ||
+               .@step == 5) {
+
+        if (@MYGENE_NT_SV_HEALED) {
+
+            @MYGENE_NT_SV_HEALED = 0;
+            @MYGENE_NT_SV_STEP++;
+
+            if (.@step == 3) {
+
+                dispbottom "Potion recovery verified!";
+                dispbottom "Next: Hotkey Academy.";
+
+            } else {
+
+                dispbottom "Potion practice verified!";
+                dispbottom "Alt + E: Close Inventory.";
+                dispbottom "Prepare for survival combat.";
+
+                addtimer 4000,
+                    "MYgene_NT_Survival::OnPoll";
+
+                end;
+            }
+
+        } else if (Hp >= MaxHp) {
+
+            // Maintain a recovery opportunity
+            // until the player uses a potion.
+
+            percentheal -35,0;
+        }
+
+    } else {
+        goto L_Stop;
+    }
+
+    addtimer 1000,"MYgene_NT_Survival::OnPoll";
+
+    end;
+
+OnTrialDead:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_SV_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_Survival_Valid"))
+        end;
+
+    if (killedgid != @MYGENE_NT_SV_TARGET)
+        end;
+
+    @MYGENE_NT_SV_TARGET = 0;
+
+    switch (@MYGENE_NT_SV_STEP) {
+
+        case 1:
+            @MYGENE_NT_SV_STEP = 2;
+            dispbottom "Basic combat complete!";
+            break;
+
+        case 6:
+            @MYGENE_NT_SV_STEP = 7;
+            dispbottom "Aggressive monster defeated!";
+            break;
+
+        case 8:
+            @MYGENE_NT_SV_STEP = 9;
+            MYGENE_NT_F2_PASSED = 1;
+            dispbottom "Survival Guardian defeated!";
+            break;
+    }
+
+    end;
+
+OnLesson:
+
+    if (!callfunc("MYgene_NT_Survival_Valid") ||
+        !@MYGENE_NT_SV_ACTIVE)
+        end;
+
+    .@step = @MYGENE_NT_SV_STEP;
+
+    if (.@step == 2 ||
+        .@step == 4 ||
+        .@step == 7 ||
+        .@step == 9) {
+
+        deltimer "MYgene_NT_Survival::OnPoll";
+
+    } else {
+        end;
+    }
+
+    if (.@step == 2) {
+
+        mes "[Recovery Academy]";
+        mes "HP keeps you alive.";
+        mes "Do not wait until HP reaches zero.";
+        mes "Use healing items before you die.";
+        next;
+
+        mes "[Inventory]";
+        mes "Your Inventory will open automatically.";
+        mes "Alt + E opens or closes Inventory.";
+        mes "Find a Novice Potion.";
+        mes "Double-click it to restore HP.";
+        next;
+
+        mes "[Practical Lesson]";
+        mes "I will lower your HP safely.";
+        mes "Recover using a Novice Potion.";
+
+        close2;
+
+        if (!callfunc("MYgene_NT_Survival_Valid"))
+            end;
+
+        @MYGENE_NT_SV_STEP = 3;
+        @MYGENE_NT_SV_HEALED = 0;
+
+        percentheal 100,100;
+        percentheal -40,0;
+
+        mygenetowerinventory;
+
+        dispbottom "Use a Novice Potion.";
+
+        addtimer 1000,
+            "MYgene_NT_Survival::OnPoll";
+
+        end;
+    }
+
+    if (.@step == 4) {
+
+        mes "[Hotkey Academy]";
+        mes "Opening inventory during battle";
+        mes "can waste valuable time.";
+        next;
+
+        mes "[Quick Slots]";
+        mes "Drag a Novice Potion from";
+        mes "Inventory to your F1 slot.";
+        mes "Press F1 to use it quickly.";
+        next;
+
+        mes "[Practical Lesson]";
+        mes "Close Inventory with Alt + E.";
+        mes "Use F1 to recover your HP.";
+        mes "You can change keys in settings.";
+
+        close2;
+
+        if (!callfunc("MYgene_NT_Survival_Valid"))
+            end;
+
+        @MYGENE_NT_SV_STEP = 5;
+        @MYGENE_NT_SV_HEALED = 0;
+
+        percentheal 100,100;
+        percentheal -40,0;
+
+        mygenetowerinventory;
+
+        dispbottom "Assign a potion to F1.";
+        dispbottom "Close Inventory and use the hotkey.";
+
+        addtimer 1000,
+            "MYgene_NT_Survival::OnPoll";
+
+        end;
+    }
+
+    if (.@step == 7) {
+
+        mes "[Status Ailments]";
+        mes "^559933Poison^000000: Can drain your HP.";
+        mes "^666666Blind^000000: Reduces accuracy.";
+        mes "^CC9933Stun^000000: Prevents normal actions.";
+        next;
+
+        mes "[Survival Advice]";
+        mes "Use appropriate recovery items.";
+        mes "Watch your status icons.";
+        mes "Move away from dangerous enemies.";
+        next;
+
+        mes "[Final Trial]";
+        mes "Defeat the Survival Guardian.";
+        mes "Watch your HP during combat.";
+        mes "Use your potion shortcut.";
+
+        close2;
+
+        if (!callfunc("MYgene_NT_Survival_Valid"))
+            end;
+
+        percentheal 100,100;
+
+        MYGENE_NT_F2_FINAL_READY = 1;
+        @MYGENE_NT_SV_STEP = 8;
+
+        addtimer 1000,
+            "MYgene_NT_Survival::OnPoll";
+
+        end;
+    }
+
+    if (.@step == 9) {
+
+        callfunc "MYgene_NT_Survival_Reward";
+
+        close;
+    }
+
+    end;
+
+OnPCDieEvent:
+
+    if (@MYGENE_NT_SV_ACTIVE &&
+        strcharinfo(3) == @MYGENE_NT_SV_MAP$) {
+
+        @MYGENE_NT_SV_ACTIVE = 0;
+
+        dispbottom "Survival attempt failed.";
+        dispbottom "Floor 1 progress remains saved.";
+        dispbottom "Re-enter to retry Floor 2.";
+    }
+
+    end;
+
+L_Stop:
+
+    @MYGENE_NT_SV_ACTIVE = 0;
+
+    end;
+}

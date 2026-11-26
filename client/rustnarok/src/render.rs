@@ -1,0 +1,740 @@
+//! 2D drawing on wgpu: textured rectangles in logical pixels, in order.
+
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use image::RgbaImage;
+use rustnarok_client::grf::Grf;
+use rustnarok_client::text::{self, Font};
+use wgpu::util::DeviceExt;
+use winit::window::Window;
+
+use crate::screen;
+
+const SHADER: &str = r"
+struct Screen { size: vec2<f32> };
+@group(0) @binding(0) var<uniform> screen: Screen;
+@group(1) @binding(0) var image: texture_2d<f32>;
+@group(1) @binding(1) var image_sampler: sampler;
+
+struct VertexOutput { @builtin(position) position: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) alpha: f32 };
+
+@vertex fn vs(@location(0) pixel: vec2<f32>, @location(1) uv: vec2<f32>, @location(2) alpha: f32) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4(pixel.x / screen.size.x * 2.0 - 1.0, 1.0 - pixel.y / screen.size.y * 2.0, 0.0, 1.0);
+    out.uv = uv;
+    out.alpha = alpha;
+    return out;
+}
+
+@fragment fn fs(in: VertexOutput) -> @location(0) vec4<f32> {
+    let color = textureSample(image, image_sampler, in.uv);
+    return vec4(color.rgb, color.a * in.alpha);
+}
+";
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    pixel: [f32; 2],
+    uv: [f32; 2],
+    alpha: f32,
+}
+
+#[derive(Clone)]
+pub struct Texture {
+    bind_group: wgpu::BindGroup,
+    pub size: [f32; 2],
+}
+
+impl Texture {
+    pub fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
+}
+
+/// A texture drawn at a position with a size, in logical pixels.
+pub type Sprite<'a> = (&'a Texture, [f32; 2], [f32; 2]);
+/// How opaque a sprite is drawn (0 to 1), and the rectangle on screen it is cut to, if any.
+pub type Shade = (f32, Option<[f32; 4]>);
+
+pub struct Gpu {
+    pub window: Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    pub config: wgpu::SurfaceConfiguration,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pipeline: wgpu::RenderPipeline,
+    screen_buffer: wgpu::Buffer,
+    screen_bind_group: wgpu::BindGroup,
+    /// Texture + sampler at bindings 0 and 1; shared by UI images, ground textures, lightmaps and sprites.
+    pub texture_layout: wgpu::BindGroupLayout,
+    pixel_sampler: wgpu::Sampler,
+    smooth_sampler: wgpu::Sampler,
+    /// The window was fully covered at the last draw, so nothing was presented and nothing waits for the display; and
+    /// when that draw began. `request_frame` paces frames by them.
+    occluded: bool,
+    drawn_at: Instant,
+    /// How close two presented frames may come (`frame_floor`).
+    frame_floor: Duration,
+    /// Lines of text as textures, with the frame each was last drawn in; and the frame count.
+    texts: RefCell<TextCache>,
+    frame: Cell<u64>,
+}
+
+/// Lines of text (with their color and pixel size) as textures, with the frame each was last drawn in.
+type TextCache = HashMap<(String, [u8; 3], u32), (Texture, u64)>;
+
+/// How many frames a line of text stays rasterized without being drawn.
+const TEXT_FRAMES: u64 = 120;
+
+/// Where the canvas goes in a target of `size` pixels: at `screen_scale`, or smaller to fit (a 1x screenshot), centered
+/// (left, top, width, height).
+pub fn viewport(size: [u32; 2]) -> [f32; 4] {
+    let [width, height] = size.map(|side| side as f32);
+    let scale = crate::screen_scale().min(width / screen()[0]).min(height / screen()[1]);
+    let [canvas_width, canvas_height] = [screen()[0] * scale, screen()[1] * scale];
+    [((width - canvas_width) / 2.0).floor(), ((height - canvas_height) / 2.0).floor(), canvas_width, canvas_height]
+}
+
+/// Something drawn before the UI (the 3D world), into a target of the given pixel size.
+pub trait WorldPass {
+    fn encode(&self, gpu: &Gpu, encoder: &mut wgpu::CommandEncoder, target: &wgpu::TextureView, size: [u32; 2]);
+}
+
+impl Gpu {
+    pub fn new(window: Arc<Window>) -> Self {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let surface = instance.create_surface(window.clone()).expect("create surface");
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions { compatible_surface: Some(&surface), ..Default::default() }))
+            .expect("no GPU adapter");
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).expect("request device");
+
+        let size = window.inner_size();
+        let mut config = surface.get_default_config(&adapter, size.width, size.height).expect("surface unsupported");
+        // Metal keeps latency + 1 drawables, so 1 saves a window-sized one; a frame takes ~1.5 ms, well inside 8.3 ms.
+        // ponytail: macOS only, where frame pacing was measured; Vulkan and DX12 count frame latency differently.
+        if cfg!(target_os = "macos") {
+            config.desired_maximum_frame_latency = 1;
+        }
+        // Original assets are sRGB; keep them unchanged on screen.
+        config.format = config.format.add_srgb_suffix();
+        surface.configure(&device, &config);
+        crate::fit_screen([config.width, config.height], window.scale_factor());
+
+        let screen_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+
+        let screen_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&screen()),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let screen_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &screen_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: screen_buffer.as_entire_binding() }],
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: None, source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[Some(&screen_layout), Some(&texture_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: None,
+            layout: Some(&layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: size_of::<Vertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32],
+                })],
+            },
+            primitive: Default::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let pixel_sampler = device.create_sampler(&wgpu::SamplerDescriptor::default());
+        let smooth_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
+        let frame_floor = frame_floor(&window);
+        Self {
+            window,
+            surface,
+            config,
+            device,
+            queue,
+            pipeline,
+            screen_buffer,
+            screen_bind_group,
+            texture_layout,
+            pixel_sampler,
+            smooth_sampler,
+            occluded: false,
+            drawn_at: Instant::now(),
+            frame_floor,
+            texts: RefCell::new(HashMap::new()),
+            frame: Cell::new(0),
+        }
+    }
+
+    /// Screen pixels per canvas pixel (2 on a Retina display, more in fullscreen).
+    pub fn ui_scale(&self) -> f32 {
+        viewport([self.config.width, self.config.height])[3] / screen()[1]
+    }
+
+    /// A line of UI text, rasterized at the screen's own pixel size so it stays sharp however the canvas is scaled,
+    /// and kept while it's drawn.
+    pub fn text(&self, font: &Font, line: &str, color: [u8; 3]) -> Texture {
+        self.text_sized(font, line, color, text::SIZE)
+    }
+
+    /// The same at another pixel size (an announcement comes in the server's own).
+    pub fn text_sized(&self, font: &Font, line: &str, color: [u8; 3], size: f32) -> Texture {
+        let frame = self.frame.get();
+        let mut texts = self.texts.borrow_mut();
+        let key = (line.to_owned(), color, size.to_bits());
+        if let Some((texture, drawn)) = texts.get_mut(&key) {
+            *drawn = frame;
+            return texture.clone();
+        }
+        let scale = self.ui_scale();
+        let image = font.render_sized(line, color, size * scale);
+        let mut texture = self.texture(&image, scale != 1.0);
+        texture.size = [image.width() as f32 / scale, image.height() as f32 / scale];
+        texts.insert(key, (texture.clone(), frame));
+        texture
+    }
+
+    /// Drops the lines of text rasterized so far (another font).
+    pub fn forget_texts(&self) {
+        self.texts.borrow_mut().clear();
+    }
+
+    /// Decodes an image from the GRF; magenta (the client's color key) becomes transparent.
+    /// Different Ragnarok data releases omit or rename UI bitmaps. Do not let a
+    /// missing decorative UI texture prevent MYgene from reaching the login screen.
+    /// Keep non-UI assets strict so broken maps and sprites remain visible failures.
+    pub fn load_texture(&self, grf: &Grf, path: &str, smooth: bool) -> Texture {
+        self.try_load_texture(grf, path, smooth).unwrap_or_else(|error| {
+            let ui_path = path.replace('/', "\\").to_lowercase();
+            if ui_path.starts_with("data\\texture\\유저인터페이스\\") {
+                // A legacy GRF can lack hundreds of optional Ragnarok buttons
+                // and emblems. Keep useful examples without flooding PowerShell.
+                // MYGENE_VERBOSE_MISSING_UI=1 restores every individual warning.
+                static MISSING_UI_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                let count = MISSING_UI_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count < 12 || std::env::var_os("MYGENE_VERBOSE_MISSING_UI").is_some() {
+                    eprintln!("MYgene UI texture missing (transparent fallback): {path}: {error}");
+                } else if count == 12 {
+                    eprintln!("MYgene: additional optional UI texture warnings suppressed; set MYGENE_VERBOSE_MISSING_UI=1 to see all paths");
+                }
+                self.solid([0, 0, 0, 0])
+            } else {
+                panic!("{path}: {error}")
+            }
+        })
+    }
+
+    /// A client image with its magenta background keyed out, or why it couldn't be loaded.
+    pub fn try_load_texture(&self, grf: &Grf, path: &str, smooth: bool) -> Result<Texture, String> {
+        Ok(self.texture(&load_image(grf, path)?, smooth))
+    }
+
+    pub fn texture(&self, image: &RgbaImage, smooth: bool) -> Texture {
+        self.texture_with_sampler(image, if smooth { &self.smooth_sampler } else { &self.pixel_sampler })
+    }
+
+    pub fn texture_with_sampler(&self, image: &RgbaImage, sampler: &wgpu::Sampler) -> Texture {
+        let texture = self.device.create_texture_with_data(
+            &self.queue,
+            &wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d { width: image.width(), height: image.height(), depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            image,
+        );
+        let view = texture.create_view(&Default::default());
+        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.texture_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+
+        Texture { bind_group, size: [image.width() as f32, image.height() as f32] }
+    }
+
+    /// A 1x1 texture, stretched to draw solid rectangles.
+    pub fn solid(&self, rgba: [u8; 4]) -> Texture {
+        self.texture(&RgbaImage::from_pixel(1, 1, image::Rgba(rgba)), false)
+    }
+
+    pub fn resize(&mut self) {
+        let size = self.window.inner_size();
+        self.config.width = size.width.max(1);
+        self.config.height = size.height.max(1);
+        self.surface.configure(&self.device, &self.config);
+        crate::fit_screen([self.config.width, self.config.height], self.window.scale_factor());
+        self.queue.write_buffer(&self.screen_buffer, 0, bytemuck::cast_slice(&screen()));
+        // Text rasterized for the old size would be blurry or wasteful now.
+        self.texts.borrow_mut().clear();
+    }
+
+    /// Asks for the next frame once it's due, and says when to look again: when it's due, or a `FRAME_TIME` away.
+    /// Presenting usually waits for the display, but a display gone to sleep waits for nothing, so presented frames are
+    /// kept `frame_floor` apart too; a covered window presents nothing, and its frames are kept `COVERED_FRAME_TIME` apart.
+    pub fn request_frame(&self) -> Instant {
+        let due = self.drawn_at + frame_gap(self.occluded, crate::control::driven(), self.frame_floor);
+        let now = Instant::now();
+        if now < due {
+            return due.min(now + crate::FRAME_TIME);
+        }
+        // The frame asked for wakes the loop itself; a wait already over would spin it until the frame is drawn.
+        self.window.request_redraw();
+        now + crate::FRAME_TIME
+    }
+
+    /// Whether a frame now would come too close to the last presented one. A packet, the pointer or a command asks for
+    /// a frame of its own; a covered window still draws it (it presents nothing), else `request_frame` does.
+    pub fn too_soon(&self) -> bool {
+        !self.occluded && self.drawn_at.elapsed() < self.frame_floor
+    }
+
+    /// The window moved, maybe onto a display with another refresh rate.
+    pub fn moved(&mut self) {
+        self.frame_floor = frame_floor(&self.window);
+    }
+
+    /// Draws the world and then `sprites` in order, each at its `alphas` opacity and cut (opaque and whole past the list's end).
+    pub fn draw(&mut self, world: Option<&dyn WorldPass>, sprites: &[Sprite], alphas: &[Shade]) {
+        crate::control::on_draw(self, world, sprites, alphas);
+        self.drawn_at = Instant::now();
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => frame,
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                // Covered: the uploads still go out, or they'd pile up (gigabytes in a minute) until it shows again.
+                self.occluded = true;
+                self.queue.submit([]);
+                return;
+            }
+            _ => return self.resize(),
+        };
+        self.occluded = false;
+        let size = [self.config.width, self.config.height];
+        let encoder = self.encode(&frame.texture.create_view(&Default::default()), size, world, sprites, alphas);
+        self.queue.submit([encoder.finish()]);
+        self.queue.present(frame);
+        let now = self.frame.get() + 1;
+        self.frame.set(now);
+        self.texts.borrow_mut().retain(|_, (_, drawn)| now - *drawn < TEXT_FRAMES);
+    }
+
+    /// Renders one frame at 1x into a PNG, for checking output against the real client.
+    pub fn capture(&self, world: Option<&dyn WorldPass>, sprites: &[Sprite], alphas: &[Shade], path: &str) {
+        self.snapshot(world, sprites, alphas).save(path).expect("save screenshot");
+    }
+
+    /// Renders one frame at 1x.
+    pub fn snapshot(&self, world: Option<&dyn WorldPass>, sprites: &[Sprite], alphas: &[Shade]) -> RgbaImage {
+        let [width, height] = screen().map(|value| value as u32);
+        let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let target = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let bytes_per_row = (width * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: None,
+            size: u64::from(bytes_per_row * height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder = self.encode(&target.create_view(&Default::default()), [width, height], world, sprites, alphas);
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bytes_per_row), rows_per_image: Some(height) },
+            },
+            size,
+        );
+        self.queue.submit([encoder.finish()]);
+        buffer.slice(..).map_async(wgpu::MapMode::Read, |result| result.expect("map screenshot"));
+        self.device.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+
+        let mapped = buffer.slice(..).get_mapped_range().expect("screenshot mapped");
+        let bgra = matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb);
+        let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+        for row in mapped.chunks(bytes_per_row as usize) {
+            for pixel in row[..(width * 4) as usize].chunks(4) {
+                rgba.extend_from_slice(&if bgra { [pixel[2], pixel[1], pixel[0], 255] } else { [pixel[0], pixel[1], pixel[2], 255] });
+            }
+        }
+        RgbaImage::from_raw(width, height, rgba).expect("frame size")
+    }
+
+    fn encode(&self, view: &wgpu::TextureView, size: [u32; 2], world: Option<&dyn WorldPass>, sprites: &[Sprite], alphas: &[Shade]) -> wgpu::CommandEncoder {
+        let [left, top, width, height] = viewport(size);
+        // At a scale that isn't whole (a window under 1024×768, the Extras' UI scale) every edge goes to the target's
+        // nearest pixel: text, rasterized at that scale, lands on its own pixels, and pictures side by side still meet.
+        // ponytail: the pictures' own pixels then come out a target pixel wider or narrower than their neighbours; a
+        // shader that blends only at their seams would even that out.
+        let scale = width / screen()[0];
+        let snap = |at: f32| if scale.fract() == 0.0 { at } else { (at * scale).round() / scale };
+        let vertices: Vec<Vertex> = sprites
+            .iter()
+            .enumerate()
+            .flat_map(|(index, &(_, [x, y], [w, h]))| {
+                let alpha = alphas.get(index).map_or(1.0, |shade| shade.0);
+                let corner = |dx: f32, dy: f32| Vertex { pixel: [snap(x + dx * w), snap(y + dy * h)], uv: [dx, dy], alpha };
+                [corner(0., 0.), corner(1., 0.), corner(0., 1.), corner(0., 1.), corner(1., 0.), corner(1., 1.)]
+            })
+            .collect();
+        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: None,
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let mut encoder = self.device.create_command_encoder(&Default::default());
+        if let Some(world) = world {
+            world.encode(self, &mut encoder, view, size);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: if world.is_some() { wgpu::LoadOp::Load } else { wgpu::LoadOp::Clear(wgpu::Color::BLACK) },
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_viewport(left, top, width, height, 0.0, 1.0);
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &self.screen_bind_group, &[]);
+            pass.set_vertex_buffer(0, vertex_buffer.slice(..));
+            // A cut sprite draws only inside its rectangle, in the target's pixels.
+            let target = |[x, y, w, h]: [f32; 4]| {
+                let [x0, y0] = [(left + x * scale).round().clamp(0.0, size[0] as f32), (top + y * scale).round().clamp(0.0, size[1] as f32)];
+                let [x1, y1] = [(left + (x + w) * scale).round().clamp(x0, size[0] as f32), (top + (y + h) * scale).round().clamp(y0, size[1] as f32)];
+                [x0 as u32, y0 as u32, (x1 - x0) as u32, (y1 - y0) as u32]
+            };
+            let mut cut = None;
+            for (index, (texture, ..)) in sprites.iter().enumerate() {
+                let clip = alphas.get(index).and_then(|shade| shade.1);
+                let [x, y, w, h] = clip.map_or([0, 0, size[0], size[1]], target);
+                if w == 0 || h == 0 {
+                    continue;
+                }
+                if clip != cut {
+                    pass.set_scissor_rect(x, y, w, h);
+                    cut = clip;
+                }
+                let first = index as u32 * 6;
+                pass.set_bind_group(1, &texture.bind_group, &[]);
+                pass.draw(first..first + 6, 0..1);
+            }
+        }
+        encoder
+    }
+}
+
+/// A client image with its magenta background keyed out.
+/// Procedural fallback artwork for the MYgene Thief Bug weapon family.
+/// The player can override these with normal BMPs in their local data folder;
+/// no extra resources are needed for the built-in icons or collection pictures.
+fn mygene_thief_bug_art(path: &str) -> Option<RgbaImage> {
+    let normalized = path.replace('/', "\\").to_ascii_lowercase();
+    let item = normalized.contains("\\item\\");
+    let collection = normalized.contains("\\collection\\");
+    if !item && !collection { return None; }
+    let perfect = normalized.ends_with("mygene_perfect_thief_bug_slayer.bmp");
+    let ordinary = normalized.ends_with("mygene_thief_bug_slayer.bmp");
+    let card = normalized.ends_with("mygene_red_thief_bug_card.bmp");
+    if !perfect && !ordinary && !card { return None; }
+
+    let (w, h) = if item { (32u32, 32u32) } else { (75u32, 100u32) };
+    let mut art = RgbaImage::new(w, h);
+    let px = |art: &mut RgbaImage, x: i32, y: i32, color: [u8; 4]| {
+        if x >= 0 && y >= 0 && (x as u32) < w && (y as u32) < h {
+            art.put_pixel(x as u32, y as u32, image::Rgba(color));
+        }
+    };
+    // Pixel-art line drawing with a thick edge, glints and a colored aura.
+    let stroke = |art: &mut RgbaImage, x0: i32, y0: i32, x1: i32, y1: i32, thick: i32, color: [u8; 4]| {
+        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        for i in 0..=steps {
+            let x = x0 + (x1 - x0) * i / steps;
+            let y = y0 + (y1 - y0) * i / steps;
+            for dy in -thick..=thick {
+                for dx in -thick..=thick {
+                    if dx * dx + dy * dy <= thick * thick + 1 {
+                        px(art, x + dx, y + dy, color);
+                    }
+                }
+            }
+        }
+    };
+    if card {
+        let dark = [78, 12, 23, 255];
+        let bright = [218, 44, 56, 255];
+        for y in h/6..h*5/6 {
+            for x in w/6..w*5/6 {
+                let edge = x == w/6 || x == w*5/6 - 1 || y == h/6 || y == h*5/6 - 1;
+                px(&mut art, x as i32, y as i32, if edge { bright } else { dark });
+            }
+        }
+        let cx = (w/2) as i32;
+        let cy = (h/2) as i32;
+        stroke(&mut art, cx-8, cy-3, cx+8, cy-3, if item {1}else{2}, [255, 135, 104, 255]);
+        stroke(&mut art, cx-7, cy-3, cx, cy+13, if item {1}else{3}, bright);
+        stroke(&mut art, cx+7, cy-3, cx, cy+13, if item {1}else{3}, bright);
+        px(&mut art, cx-3, cy+1, [255, 230, 146, 255]);
+        px(&mut art, cx+3, cy+1, [255, 230, 146, 255]);
+    } else {
+        // Slanted longsword with a dark-steel blade, gold crossguard and
+        // an emerald (normal) or crimson (Perfect relic) energy edge.
+        let sx = w as f32 / 32.0;
+        let sy = h as f32 / 40.0;
+        let point = |x: i32, y: i32| ((x as f32 * sx) as i32, (y as f32 * sy) as i32);
+        let (ax, ay) = point(5, 35);
+        let (bx, by) = point(26, 4);
+        let thick = if item { 2 } else { 4 };
+        let aura = if perfect { [255, 43, 69, 200] } else { [31, 228, 135, 200] };
+        let core = if perfect { [253, 191, 148, 255] } else { [174, 210, 206, 255] };
+        stroke(&mut art, ax, ay, bx, by, thick + 2, aura);
+        stroke(&mut art, ax, ay, bx, by, thick + 1, [35, 37, 47, 255]);
+        stroke(&mut art, ax, ay, bx, by, thick, [92, 116, 126, 255]);
+        stroke(&mut art, ax+2, ay-2, bx, by, 1, core);
+        let (gx, gy) = point(10, 28);
+        let (hx, hy) = point(18, 33);
+        stroke(&mut art, gx, gy, hx, hy, if item {1}else{3}, [237, 171, 71, 255]);
+        let (tx, ty) = point(4, 38);
+        stroke(&mut art, tx, ty, ax+1, ay-1, if item {1}else{2}, [87, 41, 32, 255]);
+        px(&mut art, tx, ty, [245, 202, 95, 255]);
+    }
+    Some(art)
+}
+
+pub fn load_image(grf: &Grf, path: &str) -> Result<RgbaImage, String> {
+    // Custom MYgene images may live beside DATA.INI, without modifying
+    // original Ragnarok GRFs. This includes all three card presentation
+    // paths: inventory icon, collection thumbnail and full card artwork.
+    // Keep the allowlist explicit so normal GRF resource resolution remains
+    // untouched. Future MYgene custom cards should follow this same rule.
+    let key = path.replace('/', "\\").to_ascii_lowercase();
+    let mygene_overlay = ((key.contains("\\item\\") || key.contains("\\collection\\"))
+        && (key.ends_with("mygene_thief_bug_slayer.bmp")
+            || key.ends_with("mygene_perfect_thief_bug_slayer.bmp")
+            || key.ends_with("mygene_pcsb.bmp")
+            || key.ends_with("mygene_red_thief_bug_card.bmp")))
+        || (key.contains("\\cardbmp\\") && key.ends_with("mygene_red_thief_bug_card.bmp"));
+    let slayer456_art = ((key.contains("\\item\\") || key.contains("\\collection\\"))
+        && ["mygene_willow_slayer.bmp", "mygene_perfect_willow_slayer.bmp",
+            "mygene_rideword_slayer.bmp", "mygene_perfect_rideword_slayer.bmp",
+            "mygene_orc_slayer.bmp", "mygene_perfect_orc_slayer.bmp"]
+            .iter().any(|&name| key.ends_with(name)))
+        || (key.contains("\\cardbmp\\") && ["mygene_purple_willow_card.bmp",
+            "mygene_orange_rideword_card.bmp", "mygene_dark_orc_card.bmp"]
+            .iter().any(|&name| key.ends_with(name)));
+    if mygene_overlay || slayer456_art {
+        let root = std::env::var_os("RUSTNAROK_CLIENT_DATA")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_exe().ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf)));
+        if let Some(root) = root {
+            let local_path = root.join(path.replace('\\', "/"));
+            let local_path = if slayer456_art { local_path.with_extension("png") } else { local_path };
+            if let Ok(bytes) = std::fs::read(&local_path) {
+                return Ok(key_out(decode_image(path, &bytes)
+                    .map_err(|error| format!("{}: {error}", local_path.display()))?.to_rgba8()));
+            }
+        }
+    }
+    match grf.read(path) {
+        Ok(bytes) => Ok(key_out(decode_image(path, &bytes).map_err(|error| format!("{path}: {error}"))?.to_rgba8())),
+        Err(error) => mygene_thief_bug_art(path).ok_or_else(|| format!("{path}: {error}")),
+    }
+}
+
+/// Decodes an image file of the data by its contents, or, for TGA, which has no magic number to recognize it by, by
+/// its name.
+pub fn decode_image(path: &str, bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
+    if path.to_lowercase().ends_with(".tga") { image::load_from_memory_with_format(bytes, image::ImageFormat::Tga) } else { image::load_from_memory(bytes) }
+}
+
+/// A glow drawn on black (effect pictures): black becomes transparent, the brightest channel the opacity.
+pub fn glow(mut image: RgbaImage) -> RgbaImage {
+    for pixel in image.pixels_mut() {
+        let [r, g, b, _] = pixel.0;
+        let alpha = r.max(g).max(b);
+        let lift = |channel: u8| (u16::from(channel) * 255 / u16::from(alpha.max(1))) as u8;
+        pixel.0 = [lift(r), lift(g), lift(b), alpha];
+    }
+    image
+}
+
+/// STR textures are loaded with a black key too: a texel whose colour is 0 in the 16-bit format the game keeps the
+/// picture in becomes transparent. A BMP is A1R5G5B5 (r, g and b all below 8), a TGA A4R4G4B4 (all below 16).
+pub fn key_out_black(mut image: RgbaImage, tga: bool) -> RgbaImage {
+    let below = if tga { 16 } else { 8 };
+    for pixel in image.pixels_mut() {
+        if pixel.0[..3].iter().all(|&channel| channel < below) {
+            pixel.0 = [0; 4];
+        }
+    }
+    image
+}
+
+/// Magenta, the client's color key, becomes transparent.
+pub fn key_out(mut image: RgbaImage) -> RgbaImage {
+    for pixel in image.pixels_mut() {
+        let [r, g, b, _] = pixel.0;
+        if r >= 0xFE && g <= 0x03 && b >= 0xFE {
+            pixel.0 = [0; 4];
+        }
+    }
+    image
+}
+/// How often a covered or minimised window draws while nothing happens. Packets, input and control commands each ask
+/// for a frame of their own, so they aren't held back; this only slows the idle animation no one can see.
+const COVERED_FRAME_TIME: Duration = Duration::from_millis(250);
+
+/// How long after a frame began the next may: `frame_floor` while frames are presented, else `COVERED_FRAME_TIME`. A
+/// client driven over the control socket, often launched behind other windows, keeps a frame time: its scenarios' shots
+/// follow the camera's easing frame by frame.
+fn frame_gap(occluded: bool, driven: bool, floor: Duration) -> Duration {
+    if !occluded {
+        floor
+    } else if driven {
+        crate::FRAME_TIME
+    } else {
+        COVERED_FRAME_TIME
+    }
+}
+
+/// How close presented frames may come: three quarters of a refresh of the window's display (6.25 ms at 120 Hz), or zero
+/// when the system doesn't say. A display awake paces them itself; a whole refresh would let each frame begin a little
+/// later than the last until one misses its refresh (108 of 120 fps). A display asleep paces nothing: about 150 fps
+/// then, not as many as the GPU can draw.
+fn frame_floor(window: &Window) -> Duration {
+    window
+        .current_monitor()
+        .and_then(|monitor| monitor.refresh_rate_millihertz())
+        .filter(|&millihertz| millihertz > 0)
+        .map_or(Duration::ZERO, |millihertz| Duration::from_nanos(750_000_000_000 / u64::from(millihertz)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    #[test]
+    fn decodes_a_tga_by_its_name() {
+        // An uncompressed 24-bit 1x1 TGA (the pixel stored blue, green, red): nothing in it says TGA.
+        let tga = [0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0, 24, 0, 0x30, 0x20, 0x10];
+        assert_eq!(super::decode_image("texture\\hero\\hero07.TGA", &tga).unwrap().to_rgba8().get_pixel(0, 0).0, [0x10, 0x20, 0x30, 255]);
+        assert!(super::decode_image("hero07.bmp", &tga).is_err());
+    }
+
+    #[test]
+    fn thief_bug_weapon_art_has_expected_icon_and_collection_sizes() {
+        let normal = super::mygene_thief_bug_art("data\\texture\\유저인터페이스\\item\\MYGENE_THIEF_BUG_SLAYER.bmp").unwrap();
+        let perfect = super::mygene_thief_bug_art("data\\texture\\유저인터페이스\\collection\\MYGENE_PERFECT_THIEF_BUG_SLAYER.bmp").unwrap();
+        let card = super::mygene_thief_bug_art("data\\texture\\유저인터페이스\\item\\MYGENE_RED_THIEF_BUG_CARD.bmp").unwrap();
+        assert_eq!(normal.dimensions(), (32, 32));
+        assert_eq!(perfect.dimensions(), (75, 100));
+        assert_eq!(card.dimensions(), (32, 32));
+        assert!(normal.pixels().any(|p| p.0[3] > 0));
+        assert!(perfect.pixels().any(|p| p.0[3] > 0));
+        assert!(super::mygene_thief_bug_art("data\\texture\\other.bmp").is_none());
+    }
+
+    #[test]
+    fn presented_frames_keep_a_floor_apart() {
+        let floor = Duration::from_micros(6250);
+        // Presenting: the floor, even while the display sleeps and waits for nothing; none known, none.
+        assert_eq!(super::frame_gap(false, false, floor), floor);
+        assert_eq!(super::frame_gap(false, true, floor), floor);
+        assert_eq!(super::frame_gap(false, false, Duration::ZERO), Duration::ZERO);
+        // Covered: `COVERED_FRAME_TIME`; driven over the control socket, a frame time, as before.
+        assert_eq!(super::frame_gap(true, false, floor), super::COVERED_FRAME_TIME);
+        assert_eq!(super::frame_gap(true, true, floor), crate::FRAME_TIME);
+    }
+}

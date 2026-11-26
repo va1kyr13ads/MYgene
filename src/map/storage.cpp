@@ -238,20 +238,71 @@ static enum e_storage_add storage_canGetItem(struct s_storage *stor, int32 idx, 
  * @param amount : quantity of items
  * @return 0:success, 1:failed, 2:failed because of room or stack checks
  */
-static int32 storage_additem(map_session_data* sd, struct s_storage *stor, struct item *it, int32 amount)
+static int32 storage_additem(map_session_data* sd, struct s_storage *stor, struct item *it, int32 amount, bool notify = true)
 {
+    // MYgene account-shared Space Box protection.
+    if (stor->stor_id == 90) {
+        if (pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1 ||
+            stor->id != sd->status.account_id)
+            return 1;
+
+        if (it->bound > BOUND_ACCOUNT) {
+            if (notify)
+                clif_displaymessage(sd->fd,
+                    "[Space Box] This bound item cannot be stored.");
+            return 1;
+        }
+    }
+
 	struct item_data *data;
 	int32 i;
 
 	if( it->nameid == 0 || amount <= 0 )
 		return 1;
 
-	data = itemdb_search(it->nameid);
+	        // MYgene Space Box: dynamic per-item limits.
+        if (stor->stor_id == 90) {
+            int32 total = 0;
+
+            for (int32 slot = 0; slot < stor->max_amount; ++slot) {
+                if (stor->u.items_storage[slot].nameid == it->nameid)
+                    total += stor->u.items_storage[slot].amount;
+            }
+
+            // MYgene Space Box: 700 stackable, 50 non-stackable.
+            const int32 limit =
+                itemdb_isstackable2(itemdb_search(it->nameid))
+                ? 700 : 50;
+
+            if (total + amount > limit) {
+                if (notify) {
+                    char message[128];
+
+                    snprintf(message, sizeof(message),
+                        "[Space Box] Maximum %d units per item type.",
+                        (int)limit);
+
+                    clif_displaymessage(sd->fd, message);
+                }
+
+                return 2;
+            }
+        }
+
+        data = itemdb_search(it->nameid);
 
 	if( data->stack.storage && amount > data->stack.amount ) // item stack limitation
 		return 2;
 
-	if( !itemdb_canstore(it, pc_get_group_level(sd)) ) { // Check if item is storable. [Skotlex]
+	if (pc_mygene_is_awakened(it)) {
+        clif_displaymessage(
+            sd->fd,
+            "Awakened Slayer weapons cannot be stored."
+        );
+        return 1;
+    }
+
+    if( !itemdb_canstore(it, pc_get_group_level(sd)) ) { // Check if item is storable. [Skotlex]
 		clif_displaymessage (sd->fd, msg_txt(sd,264));
 		return 1;
 	}
@@ -263,13 +314,13 @@ static int32 storage_additem(map_session_data* sd, struct s_storage *stor, struc
 
 	if( itemdb_isstackable2(data) ) { // Stackable
 		for( i = 0; i < stor->max_amount; i++ ) {
-			if( compare_item(&stor->u.items_storage[i], it) ) { // existing items found, stack them
+			if( compare_item(&stor->u.items_storage[i], it) && (stor->stor_id != 90 || (memcmp(stor->u.items_storage[i].option, it->option, sizeof(it->option)) == 0 && stor->u.items_storage[i].enchantgrade == it->enchantgrade)) ) { // existing items found, stack them
 				if( amount > MAX_AMOUNT - stor->u.items_storage[i].amount || ( data->stack.storage && amount > data->stack.amount - stor->u.items_storage[i].amount ) )
 					return 2;
 
 				stor->u.items_storage[i].amount += amount;
 				stor->dirty = true;
-				clif_storageitemadded(sd,&stor->u.items_storage[i],i,amount);
+				if (notify) clif_storageitemadded(sd,&stor->u.items_storage[i],i,amount);
 
 				return 0;
 			}
@@ -289,8 +340,8 @@ static int32 storage_additem(map_session_data* sd, struct s_storage *stor, struc
 	stor->amount++;
 	stor->u.items_storage[i].amount = amount;
 	stor->dirty = true;
-	clif_storageitemadded(sd,&stor->u.items_storage[i],i,amount);
-	clif_updatestorageamount(*sd, stor->amount, stor->max_amount);
+	if (notify) clif_storageitemadded(sd,&stor->u.items_storage[i],i,amount);
+	if (notify) clif_updatestorageamount(*sd, stor->amount, stor->max_amount);
 
 	return 0;
 }
@@ -480,7 +531,7 @@ void storage_storageclose(map_session_data *sd)
 		else
 			storage_storagesave(sd);
 	}
-	
+
 	if( sd->state.storage_flag == 1 ){
 		sd->state.storage_flag = 0;
 		clif_storageclose( *sd );
@@ -493,7 +544,7 @@ void storage_storageclose(map_session_data *sd)
  * @param sd : player to close storage
  * @param flag :
  *  1: Character is quitting
- *	2(x): Character is changing map-servers 
+ *	2(x): Character is changing map-servers
  */
 void storage_storage_quit(map_session_data* sd, int32 flag)
 {
@@ -519,7 +570,7 @@ struct s_storage *guild2storage(int32 guild_id)
 		return nullptr;
 
 	gs = guild2storage2(guild_id);
-	
+
 	if( gs == nullptr ){
 		gs = &guild_storage_db[guild_id];
 		gs->id = guild_id;
@@ -1133,6 +1184,11 @@ void storage_premiumStorage_open(map_session_data *sd) {
  * @author [Cydh]
  **/
 bool storage_premiumStorage_load(map_session_data *sd, uint8 num, uint8 mode) {
+
+    if (num == 90 && (!sd ||
+        pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1))
+        return false;
+
 	nullpo_ret(sd);
 
 	if (sd->state.storage_flag)
@@ -1182,7 +1238,7 @@ void storage_premiumStorage_close(map_session_data *sd) {
 		if (save_settings&CHARSAVE_STORAGE)
 			chrif_save(sd, CSAVE_INVENTORY|CSAVE_CART);
 		else
-			storage_premiumStorage_save(sd);	
+			storage_premiumStorage_save(sd);
 	}
 
 	if( sd->state.storage_flag == 3 ){
@@ -1203,4 +1259,70 @@ void storage_premiumStorage_quit(map_session_data *sd) {
 		chrif_save(sd, CSAVE_INVENTORY|CSAVE_CART);
 	else
 		storage_premiumStorage_save(sd);
+}
+
+
+// MYgene Space Box: redirect eligible monster autoloot.
+bool storage_spacebox_autoloot(map_session_data* sd, struct item* it)
+{
+    if (!sd || !it || pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") != 1 || !sd->mygene_spacebox_loot ||
+        sd->mygene_spacebox_pending || !chrif_isconnected())
+        return false;
+
+    auto& box = sd->premiumStorage;
+
+    if (box.stor_id != 90 ||
+        box.id != sd->status.account_id ||
+        box.max_amount != MAX_STORAGE ||
+        !box.state.put || box.lock ||
+        sd->state.storage_flag || sd->state.trading ||
+        sd->state.vending || sd->state.buyingstore ||
+        sd->state.autotrade || sd->npc_id)
+        return false;
+
+    if (!pc_can_give_items(sd) ||
+        !it->nameid || it->amount <= 0 ||
+        it->amount > MAX_AMOUNT ||
+        it->expire_time || itemdb_ishatched_egg(it))
+        return false;
+
+    auto* data = itemdb_search(it->nameid);
+
+    if (data->flag.autoequip ||
+        !itemdb_canstore(it, pc_get_group_level(sd)) ||
+        it->bound > BOUND_ACCOUNT)
+        return false;
+
+    struct item copy = *it;
+
+    copy.equip = 0;
+    copy.equipSwitch = 0;
+    copy.favorite = 0;
+    copy.id = 0;
+
+    if (!itemdb_isstackable2(data) || data->flag.guid) {
+        if (copy.amount != 1 && !itemdb_isstackable2(data))
+            return false;
+
+        if (!copy.unique_id)
+            copy.unique_id = pc_generate_unique_id(sd);
+    }
+
+    if (storage_additem(sd, &box, &copy, copy.amount, false) != 0)
+        return false;
+
+    log_pick_pc(sd, LOG_TYPE_PICKDROP_PLAYER, copy.amount, &copy);
+    box.dirty = true;
+
+    // MYgene Space Box loot notification.
+    char message[256];
+
+    snprintf(message, sizeof(message),
+        "[Space Box] %s x%d",
+        itemdb_name(copy.nameid),
+        (int)copy.amount);
+
+    clif_displaymessage(sd->fd, message);
+
+    return true;
 }

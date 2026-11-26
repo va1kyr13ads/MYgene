@@ -95,6 +95,44 @@ izlude_in,74,172,4	script	Swordman#swd_1	119,{
 	next;
 	switch(select("Job Change:About Swordman.:About the Job requirements.:Cancel.")) {
 	case 1:
+    // MYgene: Vanilla First Job Fast Advancement
+    if (Class == Job_Novice && Upper == 0 &&
+        BaseLevel >= 20 && JobLevel >= 10 &&
+        getskilllv("NV_BASIC") >= 9 &&
+        (MYGENE_NT_ROUTE == 0 || MYGENE_NT_ROUTE == 1) &&
+        MYGENE_NT_DEV_ROUTE != 2 &&
+        MYGENE_NT_INSTANCE == 0) {
+
+        mes "[First Job Advancement]";
+        mes "Your training is complete.";
+        mes "You qualify to become a Swordsman";
+        mes "without taking the job change test.";
+        next;
+
+        if (select("Become a Swordsman:Cancel") != 1)
+            close;
+
+        skill "NV_TRICKDEAD",0,SKILL_PERM;
+        callfunc "Job_Change",Job_Swordman;
+
+        if (Class != Job_Swordman) {
+            mes "Job change failed.";
+            close;
+        }
+
+        callfunc "F_ClearJobVar";
+
+        for (.@q = 1001; .@q <= 1014; .@q++) {
+            if (isbegin_quest(.@q) == 1)
+                erasequest .@q;
+        }
+
+        mes "[First Job Advancement]";
+        mes "Congratulations!";
+        mes "You are now a Swordsman.";
+        close;
+    }
+
 		if (BaseJob == Job_Swordman) {
 			mes "[Swordman]";
 			mes "Job change? Muhahaha! But you're already a Swordman! Be proud and be strong!";

@@ -3,6 +3,7 @@
 
 #include "battle.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -39,6 +40,9 @@ using namespace rathena;
 
 struct Battle_Config battle_config;
 static struct eri *delay_damage_ers; //For battle delay damage structures.
+
+// MYGENE_ARCANE_V1: internal delayed-damage bit, not a client packet flag.
+static constexpr uint16 MYGENE_ARCANE_NO_PROC = 0x8000;
 
 #ifndef MAX_ENEMY_SEARCH_COUNT
 	#define MAX_ENEMY_SEARCH_COUNT 30
@@ -316,15 +320,367 @@ static t_tick battle_calc_walkdelay(block_list& bl, int64 damage, int16 div_, t_
 * @param is_norm_attacked: If it should trigger the special normal attacked event on monsters
 * @return HP+SP+AP (0 if HP/SP/AP remained unchanged)
 */
+// MYGENE_BLOOD_REAPER_V106
+static constexpr uint16 MYGENE_AXE_DRAIN_BASE = 0x2000;
+static constexpr uint16 MYGENE_AXE_DRAIN_PERFECT = 0x4000;
+
+// MYGENE_SLAYED_SOUL_V1010
+static constexpr uint16 MYGENE_SOUL_EXECUTION = 0x1000;
+
+static constexpr const char* MYGENE_SOUL_BALANCE =
+    "MYGENE_SLAYED_SOULS";
+
+static constexpr const char* MYGENE_SOUL_LIFETIME_LO =
+    "MYGENE_SOUL_LIFETIME_LO";
+
+static constexpr const char* MYGENE_SOUL_LIFETIME_HI =
+    "MYGENE_SOUL_LIFETIME_HI";
+
+static bool mygene_soul_special(const mob_data* md) {
+    switch (md->mob_id) {
+    case 31050: return strcmp(md->npc_event, "MYgene_Yellow_Fabre::OnYellowFabreDead") == 0;
+    case 31051: return strcmp(md->npc_event, "MYgene_Red_Thief_Bug::OnRedThiefBugDead") == 0;
+    case 31052: return strcmp(md->npc_event, "MYgene_Blue_Chon_Chon::OnBlueChonChonDead") == 0;
+    case 31053: return strcmp(md->npc_event, "MYgene_Purple_Willow::OnEncounterDead") == 0;
+    case 31054: return strcmp(md->npc_event, "MYgene_Orange_Rideword::OnEncounterDead") == 0;
+    case 31055: return strcmp(md->npc_event, "MYgene_Dark_Orc::OnEncounterDead") == 0;
+    default:
+        return false;
+    }
+}
+
+static int32 mygene_soul_reward(
+    block_list* target
+) {
+    if (!target ||
+        target->type != BL_MOB ||
+        status_isdead(*target))
+        return 0;
+
+    const auto* md =
+        reinterpret_cast<const mob_data*>(target);
+
+    if (md->master_id != 0 ||
+        md->special_state.clone ||
+        md->get_bosstype() != BOSSTYPE_NONE)
+        return 0;
+
+    const auto* map = map_getmapdata(target->m);
+
+    if (!map ||
+        map->instance_id != 0 ||
+        mapdata_flag_vs2(
+            map_getmapdata(target->m)
+        ) ||
+        map_getmapflag(target->m, MF_RESTRICTED) ||
+        map_getmapflag(target->m, MF_TOWN))
+        return 0;
+
+    // Colored Slayer hunting events only.
+    if (md->mob_id >= 31050 &&
+        md->mob_id <= 31055) {
+        return mygene_soul_special(md) ? 20 : 0;
+    }
+
+    // Require natural respawn data.
+    // Reject temporary GM and NPC summons.
+    if (!md->spawn)
+        return 0;
+
+    return std::clamp<int32>(
+        (md->level + 9) / 10, 1, 10
+    );
+}
+
+static void mygene_award_soul(
+    map_session_data* sd,
+    int32 reward
+) {
+    if (!sd || reward <= 0)
+        return;
+
+    constexpr int64 capacity = 3000;
+    constexpr int64 lifetime_unit = 1000000000;
+
+    const int64 before =
+        std::clamp<int64>(
+            pc_readreg2(
+                sd, MYGENE_SOUL_BALANCE
+            ),
+            0, capacity
+        );
+
+    // Lifetime record is independent of storage.
+    // Split counters avoid the 32-bit registry limit.
+    int64 low = std::max<int64>(
+        0,
+        pc_readreg2(
+            sd, MYGENE_SOUL_LIFETIME_LO
+        )
+    ) + reward;
+
+    int64 high = std::max<int64>(
+        0,
+        pc_readreg2(
+            sd, MYGENE_SOUL_LIFETIME_HI
+        )
+    );
+
+    high += low / lifetime_unit;
+    low %= lifetime_unit;
+
+    pc_setreg2(
+        sd, MYGENE_SOUL_LIFETIME_LO, low
+    );
+
+    pc_setreg2(
+        sd, MYGENE_SOUL_LIFETIME_HI, high
+    );
+
+    char message[160];
+
+    // Overflow only if already full before this kill.
+    if (before >= capacity) {
+        if (rnd() % 100 < 65) {
+
+            const int32 rolled =
+                10 + rnd() % 291;
+
+            const int32 zeny =
+                std::min<int32>(
+                    rolled,
+                    MAX_ZENY - sd->status.zeny
+                );
+
+            if (zeny > 0) {
+                pc_getzeny(
+                    sd, zeny, LOG_TYPE_OTHER, 0
+                );
+
+                snprintf(
+                    message, sizeof(message),
+                    "[Soul Overflow] Obtained %d Zeny.",
+                    zeny
+                );
+
+                clif_displaymessage(
+                    sd->fd, message
+                );
+            }
+        }
+
+        return;
+    }
+
+    const int64 added =
+        std::min<int64>(
+            reward, capacity - before
+        );
+
+    const int64 after = before + added;
+
+    pc_setreg2(
+        sd, MYGENE_SOUL_BALANCE, after
+    );
+
+    snprintf(
+        message, sizeof(message),
+        "[Slayer] Souls +%d | %d/3000",
+        static_cast<int32>(added),
+        static_cast<int32>(after)
+    );
+
+    clif_displaymessage(sd->fd, message);
+
+    if (before < 500 && after >= 500) {
+        clif_displaymessage(
+            sd->fd,
+            "[Slayer] Renewal soul requirement reached."
+        );
+    }
+
+    if (after == capacity) {
+        clif_displaymessage(
+            sd->fd,
+            "[Slayer] Reservoir full. Soul Overflow active."
+        );
+    }
+}
+
 int32 battle_damage(block_list *src, block_list *target, int64 damage, int16 div_, uint16 skill_lv, uint16 skill_id, enum damage_lv dmg_lv, uint16 attack_type, bool additional_effects, t_tick tick, bool isspdamage, bool is_norm_attacked) {
 	if (target == nullptr)
 		return 0;
+
+    // MYGENE_WISDOM_DUMMY_V3
+
+    if (target &&
+        target->type == BL_MOB &&
+        map_getmapdata(target->m)->instance_id) {
+
+        const auto* dummy =
+            static_cast<const mob_data*>(target);
+
+        if (strcmp(
+                dummy->npc_event,
+                "MYgene_NT_Wisdom::OnDemoDead"
+            ) == 0) {
+
+            if (!src || src->type != BL_MOB)
+                return 0;
+
+            const auto* mentor =
+                static_cast<const mob_data*>(src);
+
+            if (!mentor->mygene_cq_role ||
+                !mygene_cq_mentor_valid(mentor) ||
+                mentor->mygene_cq_guardian != target->id ||
+                src->m != target->m ||
+                isspdamage)
+                return 0;
+
+            const int64 hp = status_get_hp(target);
+
+            if (hp <= 1 || damage <= 0)
+                return 0;
+
+            damage = std::min<int64>(damage,hp-1);
+        }
+    }
+
+// MYGENE_TIME_GUARDIAN_PROTECTION_V13
+
+    if (target &&
+        target->type == BL_MOB &&
+        map_getmapdata(target->m)->instance_id) {
+
+        const auto* guardian =
+            static_cast<const mob_data*>(target);
+
+        if (strcmp(
+                guardian->npc_event,
+                "MYgene_NT_TimeGuardian::OnRemoved"
+            ) == 0)
+            return 0;
+    }
+
+// MYGENE_CONQUEST_PHASE_V33
+
+    if (src && target->type == BL_MOB &&
+        !isspdamage && damage > 0) {
+
+        auto* cq_boss =
+            static_cast<mob_data*>(target);
+
+        if (strcmp(
+                cq_boss->npc_event,
+                "MYgene_NT_Conquest::OnGuardianDead"
+            ) == 0 &&
+            src->m == target->m &&
+            map_getmapdata(target->m)->instance_id) {
+
+            map_session_data* cq_owner = nullptr;
+
+            if (src->type == BL_PC) {
+
+                cq_owner =
+                    static_cast<map_session_data*>(src);
+
+            } else if (src->type == BL_MOB) {
+
+                auto* cq_mentor =
+                    static_cast<mob_data*>(src);
+
+                if (cq_mentor->mygene_cq_role) {
+
+                    cq_owner = map_id2sd(
+                        cq_mentor->master_id
+                    );
+                }
+            }
+
+            if (cq_owner &&
+                cq_owner->m == target->m &&
+                pc_readreg2(
+                    cq_owner,"MYGENE_NT_DEV_CLEARED"
+                ) == 3 &&
+                pc_readreg2(
+                    cq_owner,"@MYGENE_NT_CQ_ACTIVE"
+                ) &&
+                pc_readreg2(
+                    cq_owner,"@MYGENE_NT_CQ_BOSS"
+                ) == target->id &&
+                !pc_readreg2(
+                    cq_owner,"@MYGENE_NT_CQ_RELEASE"
+                )) {
+
+                const int64 floor_hp =
+                    std::max<int64>(
+                        1,
+                        static_cast<int64>(
+                            cq_boss->status.max_hp
+                        ) * 40 / 100
+                    );
+
+                const int64 current_hp =
+                    status_get_hp(target);
+
+                if (current_hp <= floor_hp)
+                    return 0;
+
+                damage = std::min<int64>(
+                    damage,
+                    current_hp - floor_hp
+                );
+            }
+        }
+    }
+
+// MYGENE_CONQUEST_DAMAGE_V3
+    if (src && src->type == BL_MOB) {
+
+        const auto* mentor =
+            static_cast<const mob_data*>(src);
+
+        if (mentor->mygene_cq_role) {
+
+            if (!mygene_cq_mentor_valid(mentor) ||
+                target->m != src->m ||
+                target->id != mentor->mygene_cq_guardian ||
+                isspdamage)
+                return 0;
+
+            const int64 hp = status_get_hp(target);
+
+            if (hp <= 1 || damage <= 0)
+                return 0;
+
+            damage = std::min<int64>(
+                damage,hp-1
+            );
+        }
+    }
 
 	// SP damage does not trigger anything, just substracts SP
 	if (isspdamage)
 		return status_zap(target, 0, damage, 0);
 
-	int32 dmg_change = 0;
+	const bool mygene_soul_mark =
+        (attack_type & MYGENE_SOUL_EXECUTION) != 0;
+
+    attack_type &= static_cast<uint16>(
+        ~MYGENE_SOUL_EXECUTION
+    );
+
+    const int32 mygene_axe_drain_rate =
+        (attack_type & MYGENE_AXE_DRAIN_PERFECT) ? 6 :
+        (attack_type & MYGENE_AXE_DRAIN_BASE) ? 3 : 0;
+
+    attack_type &= static_cast<uint16>(
+        ~(MYGENE_AXE_DRAIN_BASE |
+          MYGENE_AXE_DRAIN_PERFECT)
+    );
+
+    int32 dmg_change = 0;
 	map_session_data* sd = nullptr;
 
 	t_tick delay = battle_calc_walkdelay(*target, damage, div_, tick);
@@ -332,10 +688,127 @@ int32 battle_damage(block_list *src, block_list *target, int64 damage, int16 div
 	if (src)
 		sd = BL_CAST(BL_PC, src);
 	FreeBlockLock freeLock;
-	if (sd && battle_check_coma(*sd, *target, (e_battle_flag)attack_type))
+	const bool mygene_no_proc = (attack_type & MYGENE_ARCANE_NO_PROC) != 0;
+	attack_type &= ~MYGENE_ARCANE_NO_PROC;
+	const bool mygene_coma_attack =
+        sd && !mygene_no_proc &&
+        battle_check_coma(
+            *sd, *target,
+            (e_battle_flag)attack_type
+        );
+
+    const int32 mygene_pending_souls =
+        mygene_soul_mark &&
+        sd &&
+        src &&
+        !status_isdead(*src) &&
+        !mygene_coma_attack &&
+        !mygene_no_proc &&
+        !isspdamage &&
+        skill_id == 0 &&
+        dmg_lv > ATK_BLOCK &&
+        damage > 0 &&
+        (attack_type & BF_NORMAL) &&
+        (attack_type & BF_WEAPON)
+        ? mygene_soul_reward(target)
+        : 0;
+
+    if (mygene_coma_attack)
 		dmg_change = status_damage(src, target, damage, 0, delay, 16, skill_id); // Coma attack
 	else if (dmg_lv > ATK_BLOCK)
 		dmg_change = status_fix_damage(src, target, damage, delay, skill_id);
+
+    if (mygene_pending_souls > 0 &&
+        dmg_change > 0 &&
+        status_isdead(*target)) {
+
+        mygene_award_soul(
+            sd, mygene_pending_souls
+        );
+    }
+
+    // MYGENE_BLOOD_REAPER_APPLY_V106
+    if (mygene_axe_drain_rate > 0 &&
+        sd && src &&
+        src->prev &&
+        !status_isdead(*src) &&
+        target->type == BL_MOB &&
+        skill_id == 0 &&
+        (attack_type & BF_WEAPON) &&
+        (attack_type & BF_NORMAL) &&
+        !mygene_no_proc &&
+        !mygene_coma_attack &&
+        !isspdamage &&
+        dmg_lv > ATK_BLOCK &&
+        dmg_change > 0 &&
+        damage > 0 &&
+        !mapdata_flag_vs2(map_getmapdata(src->m)) &&
+        !map_getmapflag(src->m, MF_RESTRICTED)) {
+
+        const status_data* axe_status =
+            status_get_status_data(*src);
+
+        // Use actual HP removed, never overkill.
+        const int64 actual =
+            std::min<int64>(dmg_change, damage);
+
+        const int64 raw_heal =
+            actual * mygene_axe_drain_rate / 100;
+
+        // Maximum 2 percent of player's Max HP.
+        const int64 heal_cap =
+            static_cast<int64>(
+                axe_status->max_hp
+            ) * 2 / 100;
+
+        const int64 missing_hp =
+            std::max<int64>(
+                0,
+                static_cast<int64>(
+                    axe_status->max_hp
+                ) - axe_status->hp
+            );
+
+        const int64 requested =
+            std::min<int64>(
+                raw_heal,
+                std::min<int64>(
+                    heal_cap, missing_hp
+                )
+            );
+
+        int32 healed = 0;
+
+        if (requested > 0) {
+            // Native green heal effect.
+            // No forced healing or Berserk bypass.
+            healed = status_heal(
+                src, requested, 0, 0, 2
+            );
+        }
+
+        ShowInfo(
+            "[MYGENE-BLOOD-REAPER] Rate=%d Damage=%lld RawHeal=%lld Cap=%lld Healed=%d\n",
+            mygene_axe_drain_rate,
+            static_cast<long long>(actual),
+            static_cast<long long>(raw_heal),
+            static_cast<long long>(heal_cap),
+            healed
+        );
+    }
+
+    // MYGENE_MAGIC_NUMBER_V8
+    if (mygene_no_proc) {
+        ShowInfo("[MYGENE-MAGIC-APPLIED] Requested=%lld HP=%d\n",
+            static_cast<long long>(damage),
+            static_cast<int>(dmg_change));
+    }
+    // Notify clients only after actual HP damage.
+    if (mygene_no_proc && dmg_change > 0 &&
+        target->type == BL_MOB) {
+        clif_specialeffect_value(
+            target, 62091, dmg_change, AREA);
+    }
 	if (attack_type && !status_isdead(*target) && additional_effects)
 		skill_additional_effect(src, target, skill_id, skill_lv, attack_type, dmg_lv, tick);
 	if (dmg_lv > ATK_BLOCK && attack_type && additional_effects)
@@ -5313,7 +5786,25 @@ static struct Damage initialize_weapon_data(const block_list* src, const block_l
 		wd.flag |= battle_range_type(src, target, skill_id, skill_lv);
 	} else {
 		// wd.flag from basic attacks
-		if (is_skill_using_arrow(src, skill_id) || (sc != nullptr && sc->hasSCE(SC_SOULATTACK)))
+		bool mygene_ranged_slayer = false;
+
+        if (auto* ranged_sd = BL_CAST(BL_PC, src)) {
+            const int16 idx = ranged_sd->equip_index[EQI_HAND_R];
+
+            if (idx >= 0 && ranged_sd->inventory_data[idx] != nullptr) {
+                const t_itemid id =
+                    ranged_sd->inventory_data[idx]->nameid;
+
+                mygene_ranged_slayer =
+                    id == 60010 || id == 60012 ||
+                    id == 60013 || id == 60015 ||
+                    id == 60016 || id == 60018;
+            }
+        }
+
+        if (mygene_ranged_slayer ||
+            is_skill_using_arrow(src, skill_id) ||
+            (sc != nullptr && sc->hasSCE(SC_SOULATTACK)))
 			wd.flag |= BF_LONG;
 		else
 			wd.flag |= BF_SHORT;
@@ -5384,8 +5875,17 @@ void battle_do_reflect(int32 attack_type, struct Damage *wd, block_list* src, bl
  *	Initial refactoring by Baalberith
  *	Refined and optimized by helvetica
  */
+// MYGENE_PHYSICAL_MASTERY_V102
+// MYGENE_X2_DISPLAY_V1041
+static thread_local bool mygene_mastery_normal_entry = false;
+static thread_local bool mygene_x2_proc = false;
+
 static struct Damage battle_calc_weapon_attack(block_list *src, block_list *target, uint16 skill_id, uint16 skill_lv, int32 wflag)
 {
+    const bool mygene_mastery_normal =
+        mygene_mastery_normal_entry;
+    mygene_mastery_normal_entry = false;
+
 	map_session_data *sd, *tsd;
 	struct Damage wd;
 	status_change *sc = status_get_sc(src);
@@ -5768,6 +6268,203 @@ static struct Damage battle_calc_weapon_attack(block_list *src, block_list *targ
 	battle_apply_div_fix(&wd, skill_id);
 
 	battle_calc_attack_left_right_hands(&wd, src, target, skill_id, skill_lv);
+
+#ifndef RENEWAL
+    if (mygene_mastery_normal &&
+        sd && skill_id == 0 &&
+        target->type == BL_MOB &&
+        wd.dmg_lv > ATK_BLOCK &&
+        wd.damage + wd.damage2 > 0 &&
+        !wd.isspdamage &&
+        !is_infinite_defense(target, wd.flag) &&
+        !mapdata_flag_vs2(map_getmapdata(target->m)) &&
+        !map_getmapflag(target->m, MF_RESTRICTED) &&
+        !(battle_config.ksprotection &&
+            mob_ksprotected(src, target))) {
+
+        const int16 idx =
+            sd->equip_index[EQI_HAND_R];
+
+        const t_itemid id =
+            idx >= 0 && sd->inventory_data[idx]
+                ? sd->inventory_data[idx]->nameid
+                : 0;
+
+        int64 atk_rate = 0;
+        int64 str_rate = 0;
+        int64 hp_rate = 0;
+
+        // ATK: units of 0.1 percent.
+        // STR: units of 1/100.
+        // HP: units of 0.001 percent.
+
+        switch (id) {
+            case 31001: // Base Knife
+                atk_rate = 75;
+                str_rate = 25;
+                hp_rate = 50;
+                break;
+
+            case 31004: // Perfect Knife
+                atk_rate = 150;
+                str_rate = 50;
+                hp_rate = 100;
+                break;
+
+            case 31006: // Base Sword
+                atk_rate = 125;
+                str_rate = 50;
+                hp_rate = 75;
+                break;
+
+            case 31008: // Perfect Sword
+                atk_rate = 250;
+                str_rate = 100;
+                hp_rate = 150;
+                break;
+
+            case 60019: // Base Axe
+                atk_rate = 175;
+                str_rate = 75;
+                hp_rate = 100;
+                break;
+
+            case 60021: // Perfect Axe
+                atk_rate = 350;
+                str_rate = 150;
+                hp_rate = 200;
+                break;
+        }
+
+        if (atk_rate > 0) {
+            const int64 level =
+                std::clamp<int64>(
+                    sd->status.base_level, 1, 99);
+
+            const int64 atk = std::max<int64>(
+                0,
+                static_cast<int64>(sstatus->batk) +
+                sstatus->rhw.atk
+            );
+
+            const int64 atk_bonus =
+                atk * atk_rate *
+                (level + 97) / 98000;
+
+            const int64 str_bonus =
+                static_cast<int64>(sstatus->str) *
+                str_rate / 100;
+
+            const int64 core =
+                atk_bonus + str_bonus;
+
+            const bool boss =
+                reinterpret_cast<mob_data*>(target)
+                    ->get_bosstype() != BOSSTYPE_NONE;
+
+            const int64 hp_raw =
+                static_cast<int64>(tstatus->max_hp) *
+                hp_rate /
+                (boss ? 1000000 : 100000);
+
+            const int64 hp_bonus =
+                std::min<int64>(hp_raw, core / 2);
+
+            const int64 raw =
+                core + hp_bonus;
+
+            // Independent mastery DEF calculation.
+            // Critical hits do not bypass this DEF.
+            int64 hard_def =
+                std::clamp<int64>(
+                    status_get_def(target), 0, 100);
+
+            // MYGENE_PHYSICAL_BALANCE_V103
+            // Native physical damage already pays
+            // the flat defense deduction.
+            // Mastery retains percentage DEF reduction.
+
+            if (battle_config.weapon_defense_type)
+                hard_def = 0;
+
+            int64 bonus = std::max<int64>(
+                0,
+                raw * (100 - hard_def) / 100
+            );
+
+            // Respect weapon and monster elements.
+            if (CHK_ELEMENT(right_element) &&
+                CHK_ELEMENT(tstatus->def_ele) &&
+                CHK_ELEMENT_LEVEL(tstatus->ele_lv)) {
+
+                bonus = std::max<int64>(
+                    0,
+                    bonus *
+                    elemental_attribute_db.getAttribute(
+                        tstatus->ele_lv,
+                        right_element,
+                        tstatus->def_ele
+                    ) / 100
+                );
+            }
+
+            // Add only once per attack, after native
+            // critical and multi-hit calculations,
+            // before final combat damage protections.
+            // MYGENE_DOUBLE_CRITICAL_V104
+            // Only eligible normal critical attacks.
+            // Preserve native Double Attack and offhand damage.
+
+            if ((id == 31001 || id == 31004) &&
+                wd.type == DMG_CRITICAL &&
+                wd.div_ == 1 &&
+                wd.damage > 0) {
+
+                const int32 chance =
+                    id == 31004 ? 10 : 5;
+
+                if (rnd() % 100 < chance) {
+                    const int64 extra_critical =
+                        wd.damage;
+
+                    // Add one extra main-hand critical.
+                    wd.damage += extra_critical;
+                    mygene_x2_proc = true;
+
+                    if (wd.damage2 == 0) {
+                        wd.div_ = 2;
+
+#if PACKETVER >= 20161207
+                        wd.type = DMG_MULTI_HIT_CRITICAL;
+#endif
+                    }
+
+                    ShowInfo(
+                        "[MYGENE-DOUBLE-CRITICAL] ID=%u Chance=%d Extra=%lld Combined=%lld\n",
+                        static_cast<unsigned int>(id),
+                        chance,
+                        static_cast<long long>(extra_critical),
+                        static_cast<long long>(wd.damage)
+                    );
+                }
+            }
+
+            // Mastery applies once, not twice.
+            wd.damage += bonus;
+
+            ShowInfo(
+                "[MYGENE-PHYSICAL] ID=%u Lv=%lld ATK=%lld STR=%lld HP=%lld Raw=%lld Bonus=%lld\n",
+                static_cast<unsigned int>(id),
+                static_cast<long long>(level),
+                static_cast<long long>(atk_bonus),
+                static_cast<long long>(str_bonus),
+                static_cast<long long>(hp_bonus),
+                static_cast<long long>(raw),
+                static_cast<long long>(bonus)
+            );
+        }
+    }
+#endif
 
 #ifdef RENEWAL
 	switch (skill_id) {
@@ -7127,6 +7824,111 @@ void battle_autocast_elembuff_skill(map_session_data* sd, block_list* target, ui
 	sd->state.autocast = 0;
 }
 
+
+// MYGENE_ARCANE_VISUAL_V7: custom tags in the existing effect-value packet.
+// Preserve EF_BLUELINE itself for unmodified clients; no new packet format.
+static void mygene_arcane_visual(block_list* src, block_list* target, uint32 kind) {
+	if (!src || !target || !target->prev || src->id <= 0 ||
+		static_cast<uint32>(src->id) > 0x0fffffffu)
+		return;
+	const uint32 payload = (kind << 28) | static_cast<uint32>(src->id);
+	clif_specialeffect_value(target, EF_BLUELINE, static_cast<int32>(payload), AREA);
+}
+
+// MYGENE_ARCANE_V1: normal-attack-only, neutral magical extra damage.
+static int32 mygene_arcane_range(t_itemid id) {
+	switch (id) {
+		case 60010: return 5;
+		case 60012: return 7;
+		case 60013: return 4;
+		case 60015: return 6;
+		case 60016: return 3;
+		case 60018: return 5;
+		default: return 0;
+	}
+}
+
+static int32 mygene_arcane_matk_rate(t_itemid id) {
+	switch (id) {
+		case 60010: return 5;
+		case 60012: return 10;
+		case 60013: return 15;
+		case 60015: return 30;
+		case 60016: return 10;
+		case 60018: return 20;
+		default: return 0;
+	}
+}
+
+// MYGENE_PURE_ARCANE_V9
+static int64 mygene_arcane_reduce(
+    block_list* src, block_list* target, int64 raw) {
+
+    if (!src || !target || raw <= 0 ||
+        !target->prev || status_isdead(*target) ||
+        target->type != BL_MOB ||
+        battle_check_target(src, target, BCT_ENEMY) <= 0)
+        return 0;
+
+    // Preserve absolute immunity protections.
+    if (is_infinite_defense(target, BF_MAGIC | BF_LONG) ||
+        is_infinite_defense(target, BF_WEAPON | BF_LONG))
+        return 0;
+
+    if (battle_config.ksprotection &&
+        mob_ksprotected(src, target))
+        return 0;
+
+    // Pure arcane damage: no MDEF, DEF, elemental
+    // resistance or ordinary damage reduction.
+    return raw;
+}
+
+static void mygene_arcane_deliver(block_list* src, block_list* target, int64 damage, t_tick tick, int32 amotion) {
+	if (damage <= 0 || !target->prev || status_isdead(*target))
+		return;
+
+	// V8: damage number is sent after HP deduction.
+	battle_delay_damage(tick, amotion, src, target,
+		BF_MAGIC | BF_LONG | BF_NORMAL | MYGENE_ARCANE_NO_PROC,
+		0, 0, damage, ATK_DEF, 1, false, false, false);
+}
+
+struct MygeneArcaneSplash {
+	block_list* src;
+	int32 primary_id;
+	int32 x, y;
+	int32 remaining;
+	int32 reach;
+	bool cross;
+	int64 raw;
+	t_tick tick;
+	int32 amotion;
+};
+
+static int32 mygene_arcane_splash_sub(block_list* bl, va_list ap) {
+	auto* ctx = va_arg(ap, MygeneArcaneSplash*);
+	if (ctx->remaining <= 0 || bl->type != BL_MOB ||
+		bl->id == ctx->primary_id || !bl->prev || status_isdead(*bl))
+		return 0;
+	const int32 dx = std::abs(bl->x - ctx->x);
+	const int32 dy = std::abs(bl->y - ctx->y);
+	if (dx > 1 || dy > 1 || (dx == 0 && dy == 0) || (ctx->cross && dx + dy != 1))
+		return 0;
+	if (reinterpret_cast<mob_data*>(bl)->get_bosstype() != BOSSTYPE_NONE ||
+		is_infinite_defense(bl, BF_WEAPON | BF_LONG) ||
+		!status_check_visibility(ctx->src, bl, false) ||
+		!battle_check_range(ctx->src, bl, ctx->reach + 1))
+		return 0;
+
+	const int64 dealt = mygene_arcane_reduce(ctx->src, bl, ctx->raw);
+	if (dealt <= 0)
+		return 0;
+	--ctx->remaining;
+	mygene_arcane_deliver(ctx->src, bl, dealt, ctx->tick, ctx->amotion);
+	return 1;
+}
+
 /*==========================================
  * Do a basic physical attack (call through unit_attack_timer)
  *------------------------------------------*/
@@ -7158,13 +7960,46 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 	if (tsc != nullptr && tsc->empty())
 		tsc = nullptr;
 
+	t_itemid mygene_arcane_id = 0;
+	if (sd) {
+		const int16 idx = sd->equip_index[EQI_HAND_R];
+		if (idx >= 0 && sd->inventory_data[idx] != nullptr)
+			mygene_arcane_id = sd->inventory_data[idx]->nameid;
+	}
+	const int32 mygene_reach = mygene_arcane_range(mygene_arcane_id);
+	if (mygene_reach && !battle_check_range(src, target, mygene_reach))
+		return ATK_NONE;
+
+	bool chonchon_slayer = false;
+	bool chonchon_sp_ammo = false;
 	if (sd)
 	{
+		if (sd->status.weapon == W_BOW) {
+			const int16 weapon_index = sd->equip_index[EQI_HAND_R];
+			if (weapon_index >= 0 && sd->inventory_data[weapon_index] != nullptr) {
+				const t_itemid weapon_id = sd->inventory_data[weapon_index]->nameid;
+				chonchon_slayer = weapon_id == 60010 || weapon_id == 60012;
+			}
+		}
 		sd->state.arrow_atk = (sd->status.weapon == W_BOW || (sd->status.weapon >= W_REVOLVER && sd->status.weapon <= W_GRENADE));
 		if (sd->state.arrow_atk)
 		{
 			int16 index = sd->equip_index[EQI_AMMO];
-			if (index < 0) {
+			if (chonchon_slayer) {
+                if (index >= 0) {
+                    sd->state.arrow_atk = 0;
+                    clif_displaymessage(sd->fd,
+                        "Unequip arrows. Slayer Bow uses SP.");
+                    return ATK_NONE;
+                }
+				if (sstatus->sp == 0) {
+					sd->state.arrow_atk = 0;
+					clif_displaymessage(sd->fd, "Slayer ranged weapons require at least 1 SP.");
+					return ATK_NONE;
+				}
+				// Keep arrow_atk set so this is still a ranged bow attack.
+				chonchon_sp_ammo = true;
+			} else if (index < 0) {
 				if (sd->weapontype1 > W_KATAR && sd->weapontype1 < W_HUUMA)
 					clif_skill_fail( *sd, 0, USESKILL_FAIL_NEED_MORE_BULLET );
 				else
@@ -7172,7 +8007,7 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 				return ATK_NONE;
 			}
 			//Ammo check by Ishizu-chan
-			if (sd->inventory_data[index]) {
+			if (index >= 0 && sd->inventory_data[index]) {
 				switch (sd->status.weapon) {
 					case W_BOW:
 						if (sd->inventory_data[index]->subtype != AMMO_ARROW) {
@@ -7203,6 +8038,111 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 				}
 			}
 		}
+	}
+	// MYGENE_RANGED_SLAYER_SP
+    bool mygene_rod_book = false;
+
+    if (sd) {
+        const int16 idx = sd->equip_index[EQI_HAND_R];
+
+        if (idx >= 0 && sd->inventory_data[idx] != nullptr) {
+            const t_itemid id = sd->inventory_data[idx]->nameid;
+
+            mygene_rod_book =
+                id == 60013 || id == 60015 ||
+                id == 60016 || id == 60018;
+        }
+
+        if (mygene_rod_book) {
+            sd->state.arrow_atk = 0;
+
+            if (sstatus->sp == 0) {
+                clif_displaymessage(sd->fd,
+                    "Slayer ranged weapons require at least 1 SP.");
+                return ATK_NONE;
+            }
+
+            chonchon_sp_ammo = true;
+        }
+    }
+
+    // Shared fractional SP across all ranged Slayer weapons.
+	// MYGENE_UNIVERSAL_SP_V103
+    int64 mygene_melee_sp_cost = 0;
+
+    if (sd) {
+        switch (mygene_arcane_id) {
+            case 31001: // Base Knife
+            case 31006: // Base Sword
+                mygene_melee_sp_cost = 1;
+                break;
+
+            case 31004: // Perfect Knife
+            case 31008: // Perfect Sword
+            case 60019: // Base Axe
+                mygene_melee_sp_cost = 2;
+                break;
+
+            case 60021: // Perfect Axe
+                mygene_melee_sp_cost = 3;
+                break;
+        }
+    }
+
+    if (mygene_melee_sp_cost > 0 &&
+        sstatus->sp == 0) {
+
+        clif_displaymessage(
+            sd->fd,
+            "Slayer weapons require at least 1 SP."
+        );
+
+        return ATK_NONE;
+    }
+
+    if (chonchon_sp_ammo ||
+        mygene_melee_sp_cost > 0) {
+
+        constexpr const char* counter =
+            "MYGENE_CHONCHON_SP_TENTHS";
+		// MYGENE_RANGED_PROGRESSION_V1
+        int64 sp_cost_tenths = mygene_melee_sp_cost > 0 ? mygene_melee_sp_cost : 1;
+
+        const int16 idx = sd->equip_index[EQI_HAND_R];
+
+        if (idx >= 0 && sd->inventory_data[idx] != nullptr) {
+            const t_itemid id = sd->inventory_data[idx]->nameid;
+
+            if (id == 60015)
+                sp_cost_tenths = 2;
+            else if (id == 60018)
+                sp_cost_tenths = 3;
+        }
+
+        const auto tenths =
+            std::clamp<int64>(pc_readreg2(sd, counter), 0, 9)
+            + sp_cost_tenths;
+		if (tenths >= 10 && !status_charge(src, 0, 1)) {
+			sd->state.arrow_atk = 0;
+			return ATK_NONE;
+		}
+		pc_setreg2(sd, counter, tenths % 10);
+
+        if (tenths >= 10) {
+            ShowInfo(
+                "[MYGENE-SP] ID=%u CostTenths=%lld SP=%lld Carry=%lld\n",
+                static_cast<unsigned int>(mygene_arcane_id),
+                static_cast<long long>(sp_cost_tenths),
+                static_cast<long long>(sstatus->sp),
+                static_cast<long long>(tenths % 10)
+            );
+        }
+	}
+	// MYGENE_ARCANE_VISUAL_V7: send a cosmetic cue only after SP authorization.
+	if (chonchon_sp_ammo && mygene_reach) {
+		const uint32 visual = (mygene_arcane_id == 60010 || mygene_arcane_id == 60012) ? 10u :
+			(mygene_arcane_id == 60013 || mygene_arcane_id == 60015) ? 11u : 12u;
+		mygene_arcane_visual(src, target, visual);
 	}
 	if (sc != nullptr && !sc->empty()) {
 		if (sc->getSCE(SC_CLOAKING) && !(sc->getSCE(SC_CLOAKING)->val4 & 2))
@@ -7337,7 +8277,179 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 			status_heal(target, hp_heal, 0, 2);
 	}
 
-	wd = battle_calc_attack(BF_WEAPON, src, target, 0, 0, flag);
+	mygene_x2_proc = false;
+    mygene_mastery_normal_entry = true;
+    wd = battle_calc_attack(BF_WEAPON, src, target, 0, 0, flag);
+    const bool mygene_show_x2 = mygene_x2_proc;
+    mygene_x2_proc = false;
+    mygene_mastery_normal_entry = false;
+
+	// Snapshot before any Slayer execution or critical/multihit amplification
+	// can be reused by the arcane splash. Splash uses an independent stat basis.
+	const int64 mygene_average_matk =
+		(static_cast<int64>(sstatus->matk_min) + sstatus->matk_max) / 2;
+	// MYGENE_ARCANE_MASTERY_V101
+
+    // Base Level progression: 1x at Lv.1,
+    // increasing to 2x at Lv.99.
+    const int64 mygene_level = sd
+        ? std::clamp<int64>(sd->status.base_level, 1, 99)
+        : 1;
+
+    const int64 mygene_matk_bonus =
+        mygene_average_matk *
+        mygene_arcane_matk_rate(mygene_arcane_id) *
+        (mygene_level + 97) / 9800;
+
+    int64 mygene_sp_rate = 0;
+    int64 mygene_hp_rate = 0;
+
+    // SP rates use units of 0.1 percent.
+    // HP rates use units of 0.001 percent.
+    switch (mygene_arcane_id) {
+        case 60010:
+            mygene_sp_rate = 5;
+            mygene_hp_rate = 50;
+            break;
+        case 60012:
+            mygene_sp_rate = 10;
+            mygene_hp_rate = 100;
+            break;
+        case 60013:
+            mygene_sp_rate = 15;
+            mygene_hp_rate = 100;
+            break;
+        case 60015:
+            mygene_sp_rate = 30;
+            mygene_hp_rate = 200;
+            break;
+        case 60016:
+            mygene_sp_rate = 10;
+            mygene_hp_rate = 75;
+            break;
+        case 60018:
+            mygene_sp_rate = 20;
+            mygene_hp_rate = 150;
+            break;
+    }
+
+    const int64 mygene_sp_bonus =
+        static_cast<int64>(sstatus->max_sp) *
+        mygene_sp_rate / 1000;
+
+    const int64 mygene_arcane_core =
+        mygene_matk_bonus + mygene_sp_bonus;
+
+    int64 mygene_hp_bonus = 0;
+
+    if (mygene_hp_rate > 0 &&
+        target->type == BL_MOB) {
+
+        const bool mygene_boss =
+            reinterpret_cast<mob_data*>(target)
+                ->get_bosstype() != BOSSTYPE_NONE;
+
+        const int64 mygene_hp_divisor =
+            mygene_boss ? 1000000 : 100000;
+
+        const int64 mygene_hp_raw =
+            static_cast<int64>(tstatus->max_hp) *
+            mygene_hp_rate / mygene_hp_divisor;
+
+        // Target HP contribution cannot exceed
+        // 50% of combined MATK and Max SP damage.
+        mygene_hp_bonus = std::min<int64>(
+            mygene_hp_raw,
+            mygene_arcane_core / 2
+        );
+    }
+
+    const int64 mygene_raw_magic =
+        mygene_arcane_core + mygene_hp_bonus;
+	const int64 mygene_splash_basis = std::max<int64>(0,
+		static_cast<int64>(sstatus->batk) + sstatus->rhw.atk) + mygene_arcane_core;
+	const bool mygene_arcane_hit =
+        mygene_reach && chonchon_sp_ammo &&
+        target->type == BL_MOB &&
+        !wd.isspdamage &&
+        !is_infinite_defense(target, BF_WEAPON | BF_LONG) &&
+        !is_infinite_defense(target, BF_MAGIC | BF_LONG) &&
+        !mapdata_flag_vs2(map_getmapdata(target->m)) &&
+        !map_getmapflag(target->m, MF_RESTRICTED);
+	// MYGENE_MAGIC_TRACE_V81
+    if (mygene_reach) {
+        ShowInfo("[MYGENE-MAGIC-CALC] Item=%u MATK=%lld Raw=%lld Physical=%lld Eligible=%d\n",
+            static_cast<unsigned int>(mygene_arcane_id),
+            static_cast<long long>(mygene_average_matk),
+            static_cast<long long>(mygene_raw_magic),
+            static_cast<long long>(wd.damage + wd.damage2),
+            static_cast<int>(mygene_arcane_hit));
+    }
+    if (mygene_arcane_hit) {
+        ShowInfo(
+            "[MYGENE-MASTERY] ID=%u Lv=%d MATK=%lld SP=%lld HP=%lld Total=%lld\n",
+            static_cast<unsigned int>(mygene_arcane_id),
+            static_cast<int>(mygene_level),
+            static_cast<long long>(mygene_matk_bonus),
+            static_cast<long long>(mygene_sp_bonus),
+            static_cast<long long>(mygene_hp_bonus),
+            static_cast<long long>(mygene_raw_magic)
+        );
+    }
+
+    bool mygene_executed = false;
+    bool mygene_soul_execution = false;
+
+	// MYgene Slayer weapons: a successful normal weapon hit may execute
+	// only the designated non-boss monster family. Boss/miniboss/MVP
+	// exclusions are unconditional, including custom family variants.
+	// Perfect weapons require their correct compounded family card.
+	// battle_weapon_attack is the basic-attack entry point: skills are
+	// handled separately. Its caller flag is not a BF_SKILL bitmask, so
+	// masking flag here could suppress every execution roll in-game.
+	if (sd && target->type == BL_MOB && wd.damage + wd.damage2 > 0) {
+		auto* hunted = reinterpret_cast<mob_data*>(target);
+		const int32 mob_class = hunted->mob_id;
+		const bool fabre_family = mob_class == 1007 || mob_class == 1008 ||
+			mob_class == 1018 || mob_class == 31050;
+		const bool thief_bug_family = mob_class == 1048 || mob_class == 1051 ||
+			mob_class == 1053 || mob_class == 1054 || mob_class == 31051;
+		const bool chonchon_family = mob_class == 1011 || mob_class == 1042 ||
+		    mob_class == 1035 || mob_class == 31052;
+		const bool rod_family = mob_class == 1010 || mob_class == 1033 || mob_class == 31053;
+		const bool book_family = mob_class == 1195 || mob_class == 1698 || mob_class == 31054;
+		const bool axe_family = mob_class == 1023 || mob_class == 1273 || mob_class == 1686 || mob_class == 1189 || mob_class == 1213 || mob_class == 1177 || mob_class == 1152 || mob_class == 1153 || mob_class == 31055;
+		if ((fabre_family || thief_bug_family || chonchon_family || rod_family || book_family || axe_family) && hunted->get_bosstype() == BOSSTYPE_NONE) {
+			const int16 weapon_idx = sd->equip_index[EQI_HAND_R];
+			if (weapon_idx >= 0 && sd->inventory_data[weapon_idx] != nullptr) {
+				const t_itemid weapon_id = sd->inventory_data[weapon_idx]->nameid;
+				const struct item& weapon = sd->inventory.u.items_inventory[weapon_idx];
+				int32 chance = 0;
+				if (fabre_family && (weapon_id == 31001 || weapon_id == 31004))
+					chance = weapon.card[0] == 31002 ? 90 : (weapon_id == 31001 ? 50 : 0);
+				if (thief_bug_family && (weapon_id == 31006 || weapon_id == 31008))
+					chance = weapon.card[0] == 31007 ? 90 : (weapon_id == 31006 ? 50 : 0);
+				if (chonchon_family && (weapon_id == 60010 || weapon_id == 60012))
+				    chance = weapon.card[0] == 60011 ? 90 : (weapon_id == 60010 ? 50 : 0);
+				if (rod_family && (weapon_id == 60013 || weapon_id == 60015))
+					chance = weapon.card[0] == 60014 ? 90 : (weapon_id == 60013 ? 50 : 0);
+				if (book_family && (weapon_id == 60016 || weapon_id == 60018))
+					chance = weapon.card[0] == 60017 ? 90 : (weapon_id == 60016 ? 50 : 0);
+				if (axe_family && (weapon_id == 60019 || weapon_id == 60021))
+					chance = weapon.card[0] == 60020 ? 90 : (weapon_id == 60019 ? 50 : 0);
+				if (chance > 0) {
+					const int32 roll = rnd() % 100;
+					if (roll < chance) {
+						mygene_executed = true;
+                        mygene_soul_execution =
+                            chance == 90;
+						wd.damage = std::max<int64>(wd.damage, static_cast<int64>(tstatus->hp));
+						wd.damage2 = 0;
+					}
+				}
+			}
+		}
+	}
 
 	if (sd && wd.damage + wd.damage2 > 0 && battle_vellum_damage(sd, target, &wd))
 		vellum_damage = true;
@@ -7379,7 +8491,9 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 			}
 		}
 	}
-	if (sd && sd->state.arrow_atk) //Consume arrow.
+	if (chonchon_sp_ammo)
+		sd->state.arrow_atk = 0;
+	else if (sd && sd->state.arrow_atk) //Consume arrow.
 		battle_consume_ammo(sd, 0, 0);
 
 	damage = wd.damage + wd.damage2;
@@ -7396,9 +8510,26 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 		}
 	}
 
-	clif_damage(*src, *target, tick, wd.amotion, wd.dmotion, wd.damage, wd.div_, wd.type, wd.damage2, wd.isspdamage);
+	if (mygene_show_x2 &&
+        !mygene_executed &&
+        wd.damage > 0 &&
+        wd.dmg_lv > ATK_BLOCK) {
 
-	if (sd && sd->bonus.splash_range > 0 && damage > 0)
+        clif_specialeffect_value(
+            target, 62092, src->id, AREA
+        );
+
+        ShowInfo(
+            "[MYGENE-X2] Source=%d Target=%d Damage=%lld\n",
+            src->id,
+            target->id,
+            static_cast<long long>(wd.damage)
+        );
+    }
+
+    clif_damage(*src, *target, tick, wd.amotion, wd.dmotion, wd.damage, wd.div_, wd.type, wd.damage2, wd.isspdamage);
+
+	if (sd && !mygene_reach && sd->bonus.splash_range > 0 && damage > 0)
 		skill_castend_damage_id(src, target, 0, 1, tick, 0);
 
 	bool is_norm_attacked = false;
@@ -7433,8 +8564,75 @@ enum damage_lv battle_weapon_attack(block_list* src, block_list* target, t_tick 
 			skill_additional_effect(src, target, 0, 0, wd.flag, wd.dmg_lv, tick);
 		if( wd.dmg_lv > ATK_BLOCK )
 			skill_counter_additional_effect(src, target, 0, 0, wd.flag, tick);
-	} else
-		battle_delay_damage(tick, wd.amotion, src, target, wd.flag, 0, 0, damage, wd.dmg_lv, wd.div_, true, wd.isspdamage, is_norm_attacked);
+	} else {
+		int32 mygene_damage_flags = wd.flag;
+
+        if (mygene_soul_execution &&
+            !vellum_damage &&
+            !wd.isspdamage &&
+            damage > 0 &&
+            wd.dmg_lv > ATK_BLOCK &&
+            !(battle_config.ksprotection &&
+                mob_ksprotected(src, target))) {
+
+            mygene_damage_flags |=
+                MYGENE_SOUL_EXECUTION;
+        }
+
+        if (sd &&
+            target->type == BL_MOB &&
+            !mygene_executed &&
+            !vellum_damage &&
+            !wd.isspdamage &&
+            wd.dmg_lv > ATK_BLOCK &&
+            damage > 0 &&
+            !is_infinite_defense(target, wd.flag) &&
+            !mapdata_flag_vs2(map_getmapdata(target->m)) &&
+            !map_getmapflag(target->m, MF_RESTRICTED) &&
+            !(battle_config.ksprotection &&
+                mob_ksprotected(src, target))) {
+
+            if (mygene_arcane_id == 60019) {
+                mygene_damage_flags |=
+                    MYGENE_AXE_DRAIN_BASE;
+            }
+            else if (mygene_arcane_id == 60021) {
+                mygene_damage_flags |=
+                    MYGENE_AXE_DRAIN_PERFECT;
+            }
+        }
+
+        battle_delay_damage(
+            tick, wd.amotion, src, target,
+            mygene_damage_flags,
+            0, 0, damage,
+            wd.dmg_lv, wd.div_,
+            true, wd.isspdamage,
+            is_norm_attacked
+        );
+		if (mygene_arcane_hit && !vellum_damage && !wd.isspdamage) {
+			if (!mygene_executed && !status_isdead(*target)) {
+				const int64 bonus = mygene_arcane_reduce(src, target, mygene_raw_magic);
+    ShowInfo("[MYGENE-MAGIC-REDUCE] Raw=%lld Final=%lld\n",
+        static_cast<long long>(mygene_raw_magic),
+        static_cast<long long>(bonus));
+				mygene_arcane_deliver(src, target, bonus, tick, wd.amotion);
+			}
+			// No execution, critical, drain or autocast propagation to neighbours.
+			if (mygene_arcane_id == 60015 || mygene_arcane_id == 60018) {
+				const bool rod = mygene_arcane_id == 60015;
+				MygeneArcaneSplash ctx{src, target->id, target->x, target->y,
+					rod ? 3 : 5, mygene_reach, rod,
+					mygene_splash_basis * (rod ? 25 : 15) / 100, tick, wd.amotion};
+				if (ctx.raw > 0) {
+					map_foreachinallarea(mygene_arcane_splash_sub, target->m,
+						ctx.x - 1, ctx.y - 1, ctx.x + 1, ctx.y + 1, BL_MOB, &ctx);
+					if (ctx.remaining < (rod ? 3 : 5))
+						mygene_arcane_visual(src, target, rod ? 13u : 14u);
+				}
+			}
+		}
+	}
 	if( tsc ) {
 		if( tsc->getSCE(SC_DEVOTION) ) {
 			struct status_change_entry *sce = tsc->getSCE(SC_DEVOTION);
@@ -7876,6 +9074,61 @@ int32 battle_check_target( const block_list* src, const block_list* target, int3
 
 	nullpo_ret(src);
 	nullpo_ret(target);
+
+    // MYGENE_CONQUEST_TARGET_V3
+    const auto* mentor_src =
+        src->type == BL_MOB
+            ? static_cast<const mob_data*>(src)
+            : nullptr;
+
+    const auto* mentor_dst =
+        target->type == BL_MOB
+            ? static_cast<const mob_data*>(target)
+            : nullptr;
+
+    if (mentor_src && mentor_src->mygene_cq_role) {
+
+        if (!mygene_cq_mentor_valid(mentor_src) ||
+            src->m != target->m)
+            return 0;
+
+        const bool ally =
+            target->id == mentor_src->master_id ||
+            (mentor_dst &&
+             mentor_dst->mygene_cq_role &&
+             mentor_dst->master_id == mentor_src->master_id &&
+             mentor_dst->mygene_cq_guardian ==
+                mentor_src->mygene_cq_guardian);
+
+        if (target->id != mentor_src->mygene_cq_guardian &&
+            !ally)
+            return 0;
+
+        if (ally && flag == BCT_ENEMY)
+            return -1;
+    }
+
+    if (mentor_dst && mentor_dst->mygene_cq_role) {
+
+        if (!mygene_cq_mentor_valid(mentor_dst) ||
+            src->m != target->m)
+            return 0;
+
+        const bool ally =
+            src->id == mentor_dst->master_id ||
+            (mentor_src &&
+             mentor_src->mygene_cq_role &&
+             mentor_src->master_id == mentor_dst->master_id &&
+             mentor_src->mygene_cq_guardian ==
+                mentor_dst->mygene_cq_guardian);
+
+        if (src->id != mentor_dst->mygene_cq_guardian &&
+            !ally)
+            return 0;
+
+        if (ally && flag == BCT_ENEMY)
+            return -1;
+    }
 
 	ud = unit_bl2ud(target);
 	m = target->m;

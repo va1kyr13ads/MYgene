@@ -1,0 +1,995 @@
+//! Game Settings (2374): one 400×350 window, centred and made fresh each time it opens, with the game's five tabs and
+//! this client's Extras. Basic has the music and effect sound rows, Effect the effect switches this client has,
+//! Control the Quick Slots switch, Graphics the screen mode; Other stays empty here. Extras has switches the game
+//! doesn't have, all off at first, the UI scale's size and the font the text is drawn in.
+
+use std::path::{Path, PathBuf};
+
+use rustnarok_client::grf::Grf;
+use rustnarok_client::text::{self, Font};
+
+use crate::options::{self, GraphicsSettings};
+use crate::render::{Gpu, Texture};
+use crate::sound::{MAX_VOLUME, Settings};
+use crate::window::{self, Chrome, Frame, TITLE_HEIGHT};
+use crate::{Layer, UI, contains};
+
+const SIZE: [f32; 2] = [400.0, 350.0];
+const TITLE: usize = 2374;
+/// The tabs (x, width), 18 high at y 17 and overlapping by a pixel: the game's Basic, Effect, Control, Graphics and
+/// Other, 72 wide, then this client's Extras in the 45 px left.
+// The English message table lacks the newer lines; these words stand in for an empty one.
+const TABS: [(f32, f32, usize, &str); 6] = [
+    (0.0, 72.0, 4142, "Basic"),
+    (71.0, 72.0, 4143, "Effect"),
+    (142.0, 72.0, 4144, "Control"),
+    (213.0, 72.0, 4145, "Graphics"),
+    (284.0, 72.0, 4222, "Other"),
+    (355.0, 45.0, usize::MAX, "Extras"),
+];
+const TAB_HEIGHT: f32 = 18.0;
+const TAB_TOP: f32 = 17.0;
+pub const BASIC: usize = 0;
+pub const EFFECT: usize = 1;
+pub const CONTROL: usize = 2;
+pub const GRAPHICS: usize = 3;
+pub const EXTRAS: usize = 5;
+/// The pages: 400×288 at (0, 34), outlined in #CECECE (`options::OUTLINE`).
+const PAGE_TOP: f32 = 34.0;
+const PAGE_HEIGHT: f32 = 288.0;
+/// Reset, Apply and Close, 42×20 at y 326.
+const BUTTONS: [f32; 3] = [5.0, 301.0, 348.0];
+const BUTTON: [f32; 2] = [42.0, 20.0];
+const BUTTON_TOP: f32 = 326.0;
+/// Every group's heading at (19, 12) inside it.
+const HEADING: [f32; 2] = [19.0, 12.0];
+/// The skin group, page y 0: "Skin" and the combo box at (110, 9), 182×18 in all: white in a 1 px edge, the skin in
+/// use from x 4, and the drop button 18×18 at x 164 (the box opens the list too). The list opens 1 px over the box's
+/// bottom (at y 17): 177 wide, white in the same edge, rows 16 high from (1, 1), 5 shown: "<Basic Skin>", then the
+/// skins.
+const SKIN_TITLE: usize = 1497;
+const BASIC_SKIN: usize = 3090;
+const COMBO: [f32; 2] = [110.0, 9.0];
+const COMBO_SIZE: [f32; 2] = [182.0, 18.0];
+const DROP: [f32; 2] = [164.0, 0.0];
+const COMBO_TEXT: f32 = 4.0;
+const LIST_TOP: f32 = 17.0;
+const LIST_WIDTH: f32 = 177.0;
+const LIST_ROW: f32 = 16.0;
+const LIST_ROWS: usize = 5;
+/// The box's and the list's edge, the row of the skin in use, the row under the pointer (but on the one in use).
+const COMBO_EDGE: [u8; 4] = [0xC6, 0xC6, 0xC6, 0xFF];
+const LIST_IN_USE: [u8; 4] = [0xCE, 0xDE, 0xFF, 0xFF];
+const LIST_HOVER: [u8; 4] = [0x73, 0x9C, 0xEF, 0xFF];
+/// The sound group, page y 36: "Audio Settings"; rows at y 12 and 36, each with its label (BGM, SFX) at x 110, a
+/// slider 174×13 at (152, y − 1), the Off box at (334, y + 1) and "Off" at (348, y).
+const SOUND_TOP: f32 = 36.0;
+const SOUND_TITLE: usize = 1485;
+const SOUND_ROWS: [f32; 2] = [12.0, 36.0];
+const SOUND_LABELS: [usize; 2] = [1495, 1496];
+const LABEL_X: f32 = 110.0;
+const SLIDER_X: f32 = 152.0;
+const SLIDER: f32 = 174.0;
+const ARROW: f32 = 13.0;
+// ponytail: a 24 px thumb with the volume on it; the game's is sized by the bar's page.
+const THUMB: f32 = 24.0;
+const OFF_BOX: f32 = 334.0;
+const OFF_X: f32 = 348.0;
+const OFF: (usize, &str) = (4148, "Off");
+/// The Effect page's rows, 387×26 from page y 1: the switch at (8, 5), the title at (47, 6), the description 252
+/// wide at (138, 6).
+const ROW: f32 = 26.0;
+const SWITCH: [f32; 2] = [8.0, 5.0];
+const ROW_TITLE: f32 = 47.0;
+const ROW_TEXT: f32 = 138.0;
+const ROW_TEXT_WIDTH: f32 = 252.0;
+// ponytail: the game's rows come from GameSettings.lub, which this data lacks; these are the switches this client
+// has, titled and described by their messages, with checkboxes for the game's toggle images.
+/// A message id and the words that stand in when the table's line is empty.
+type Worded = (usize, &'static str);
+/// Effects (/effect), the aura shown (/aura2), the mini aura (/aura), the screen shaking (/quake), the extended damage
+/// numbers (the English table lacks their lines, 4164–4166).
+const SWITCHES: [(Worded, Worded); 5] = [
+    ((3172, "Effects"), (37, "")),
+    ((4160, "Show aura"), (3162, "")),
+    ((4163, "Mini aura"), (710, "")),
+    ((2805, "Screen shake"), (3161, "")),
+    ((4164, "Extended damage"), (usize::MAX, "Big damage in thousands (K) or millions (M)")),
+];
+/// The Control page's row, laid out as the Effect page's: the game's Quick Slots (TT_QUICK_SLOT_ON_OFF, on at first),
+/// the quick slot window. Its words are ours; the game's come from GameSettings.lub, which this data lacks.
+const CONTROL_ROWS: [(&str, &str); 1] = [("Quick Slots", "The two quick slots in a window of their own")];
+/// The Extras page's rows, laid out as the Effect page's: title and description (`extras`, `extra`).
+const EXTRA_ROWS: [(&str, &str); 9] = [
+    ("Monster HP", "A hurt monster's HP in numbers under its bar"),
+    ("Monster level", "A monster's level after its name"),
+    ("Far zoom", "The camera goes out much further"),
+    ("Item options", "An item's random options in its name box"),
+    ("Cooldown numbers", "Seconds left on a cooling skill's hotkey"),
+    ("Exp to 0.01%", "The exp bar's hover with two decimals"),
+    ("Kill exp", "Base and job exp over each monster killed"),
+    ("UI scale", "The interface grows with the window"),
+    ("FPS and ping", "Frames a second and the server's round trip"),
+];
+/// The Extras rows under the switches, each a value between a left and a right arrow that step through its choices:
+/// the UI scale's size (`options::UI_SIZES`, the right arrow a bigger interface), then the font's name
+/// (`text::choices`).
+const SIZE_ROW: usize = EXTRA_ROWS.len();
+const SIZE_TITLE: &str = "UI size";
+const FONT_ROW: usize = SIZE_ROW + 1;
+const FONT_TITLE: &str = "Font";
+const FONT_LESS: f32 = ROW_TEXT;
+const FONT_MORE: f32 = ROW_TEXT + ROW_TEXT_WIDTH - ARROW;
+/// The screen mode group, Graphics page y 160: "Screen mode", the Full screen and Window radios at (150, 12) and
+/// (270, 12), their labels 17 px right.
+const SCREEN_TOP: f32 = 160.0;
+const SCREEN_TITLE: (usize, &str) = (4183, "Screen mode");
+const SCREEN_RADIOS: [(f32, (usize, &str)); 2] = [(150.0, (4184, "Full screen")), (270.0, (4185, "Window"))];
+/// Reset asks first.
+pub const RESET_ASKS: usize = 3166;
+
+pub struct Assets {
+    radio: [Texture; 2],
+    /// The skin box's drop button (one look whatever the pointer does).
+    drop: Texture,
+    /// The skin box's and list's edge, the row in use, the row under the pointer.
+    edge: Texture,
+    in_use: Texture,
+    hover: Texture,
+    reset: [Texture; 3],
+    apply: [Texture; 3],
+    close: [Texture; 3],
+}
+
+impl Assets {
+    pub fn load(gpu: &Gpu, grf: &Grf) -> Self {
+        let image = |name: String| gpu.load_texture(grf, &format!("{UI}{name}.bmp"), false);
+        let button = |name: &str| ["", "_a", "_b"].map(|look| image(format!("btn_{name}{look}")));
+        Self {
+            radio: ["radiobtn_off", "radiobtn_on"].map(|name| image(name.into())),
+            drop: image("basic_interface\\txtbox_btn_a".into()),
+            edge: gpu.solid(COMBO_EDGE),
+            in_use: gpu.solid(LIST_IN_USE),
+            hover: gpu.solid(LIST_HOVER),
+            reset: button("reset"),
+            apply: button("apply"),
+            close: button("close"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Hit {
+    Close,
+    Tab(usize),
+    Reset,
+    Apply,
+    CloseButton,
+    /// A sound row's left or right arrow, its track at a volume, its Off box.
+    Less(usize),
+    More(usize),
+    Track(usize, u8),
+    Off(usize),
+    /// An Effect page switch.
+    Switch(usize),
+    /// A screen mode radio: full screen or not.
+    Screen(bool),
+    /// The font row's left (-1) or right (1) arrow.
+    Font(isize),
+    /// The UI size row's left (-1, smaller) or right (1, bigger) arrow.
+    Size(isize),
+    /// The skin's combo box, which opens and shuts its list, and a row of the open list (0 the basic look, then the
+    /// skins).
+    SkinBox,
+    Skin(usize),
+    Title,
+    Window,
+}
+
+/// What a click asks the client to do.
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    /// The sound settings changed.
+    Sound,
+    /// The effect switches changed.
+    Graphics,
+    /// Reset asks first (3166).
+    AskReset,
+    /// Apply: full screen or not.
+    Screen(bool),
+    Close,
+}
+
+pub struct GameSettings {
+    pub frame: Frame,
+    pub tab: usize,
+    /// The slider whose thumb is held.
+    dragging: Option<usize>,
+    /// The screen mode picked on the Graphics page, until Apply.
+    pub fullscreen: bool,
+    /// The skins the list offers after the basic look, found when the window opens.
+    skins: Vec<String>,
+    /// The skin list while it's open: the rows scrolled past.
+    list: Option<usize>,
+}
+
+impl GameSettings {
+    /// Opens centred on Basic, the screen mode as it is.
+    pub fn new(screen: [f32; 2], fullscreen: bool) -> Self {
+        let mut frame = Frame::new([((screen[0] - SIZE[0]) / 2.0).floor(), ((screen[1] - SIZE[1]) / 2.0).floor()], SIZE[0]);
+        frame.open = true;
+        Self { frame, tab: BASIC, dragging: None, fullscreen, skins: skins().to_vec(), list: None }
+    }
+
+    /// The screen changed size under the window (the Extras' UI scale) and the pointer went from `pointer[0]` to
+    /// `pointer[1]`: the window goes with it, so what was under the pointer still is, as far as it stays on `screen`.
+    pub fn keep_under(&mut self, pointer: [[f32; 2]; 2], screen: [f32; 2]) {
+        let moved = |axis: usize| (self.frame.position[axis] + pointer[1][axis] - pointer[0][axis]).round().min(screen[axis] - SIZE[axis]).max(0.0);
+        self.frame.position = [moved(0), moved(1)];
+    }
+
+    /// The volume at `x` across the window (the thumb's middle there).
+    fn volume_at(x: f32) -> u8 {
+        let along = ((x - SLIDER_X - ARROW - THUMB / 2.0) / (SLIDER - 2.0 * ARROW - THUMB)).clamp(0.0, 1.0);
+        (along * f32::from(MAX_VOLUME)).round() as u8
+    }
+
+    pub fn hit(&self, cursor: [f32; 2]) -> Option<Hit> {
+        let local = self.frame.local(cursor, SIZE[1])?;
+        if contains(self.frame.close_button(), window::BUTTON_SIZE, local) {
+            return Some(Hit::Close);
+        }
+        if local[1] < TITLE_HEIGHT {
+            return Some(Hit::Title);
+        }
+        if (TAB_TOP..PAGE_TOP).contains(&local[1]) {
+            // The later tab is on top where they overlap.
+            return Some(TABS.iter().rposition(|&(x, width, ..)| (x..x + width).contains(&local[0])).map_or(Hit::Window, Hit::Tab));
+        }
+        for (button, hit) in BUTTONS.into_iter().zip([Hit::Reset, Hit::Apply, Hit::CloseButton]) {
+            if contains([button, BUTTON_TOP], BUTTON, local) {
+                return Some(hit);
+            }
+        }
+        let [x, y] = [local[0], local[1] - PAGE_TOP];
+        if self.tab == BASIC {
+            if let Some(row) = self.list_row([x, y]) {
+                return Some(Hit::Skin(row));
+            }
+            if contains(COMBO, COMBO_SIZE, [x, y]) {
+                return Some(Hit::SkinBox);
+            }
+        }
+        Some(match self.tab {
+            BASIC => SOUND_ROWS
+                .iter()
+                .position(|&row| (SOUND_TOP + row - 1.0..SOUND_TOP + row + ARROW).contains(&y))
+                .and_then(|row| match x {
+                    x if (SLIDER_X..SLIDER_X + ARROW).contains(&x) => Some(Hit::Less(row)),
+                    x if (SLIDER_X + SLIDER - ARROW..SLIDER_X + SLIDER).contains(&x) => Some(Hit::More(row)),
+                    x if (SLIDER_X..SLIDER_X + SLIDER).contains(&x) => Some(Hit::Track(row, Self::volume_at(x))),
+                    x if (OFF_BOX..SIZE[0]).contains(&x) => Some(Hit::Off(row)),
+                    _ => None,
+                })
+                .unwrap_or(Hit::Window),
+            EXTRAS if ((y - 1.0) / ROW).floor() >= SIZE_ROW as f32 => {
+                let row = ((y - 1.0) / ROW).floor();
+                let arrow = [(FONT_LESS, -1), (FONT_MORE, 1)]
+                    .into_iter()
+                    .find(|&(left, _)| (left..left + ARROW).contains(&x) && (5.0..5.0 + ARROW).contains(&(y - 1.0 - row * ROW)));
+                match (arrow, row as usize) {
+                    (Some((_, by)), SIZE_ROW) => Hit::Size(by),
+                    (Some((_, by)), FONT_ROW) => Hit::Font(by),
+                    _ => Hit::Window,
+                }
+            }
+            EFFECT | CONTROL | EXTRAS => {
+                let row = ((y - 1.0) / ROW).floor();
+                if (0.0..row_count(self.tab) as f32).contains(&row) && x < ROW_TITLE { Hit::Switch(row as usize) } else { Hit::Window }
+            }
+            GRAPHICS if (SCREEN_TOP..SCREEN_TOP + 32.0).contains(&y) => {
+                SCREEN_RADIOS.iter().position(|&(radio, _)| (radio..radio + 90.0).contains(&x)).map_or(Hit::Window, |radio| Hit::Screen(radio == 0))
+            }
+            _ => Hit::Window,
+        })
+    }
+
+    /// The open skin list's row (0 the basic look) at a point on the page.
+    fn list_row(&self, [x, y]: [f32; 2]) -> Option<usize> {
+        let scroll = self.list?;
+        let line = ((y - list_row_top(0)) / LIST_ROW).floor();
+        let shown = self.list_len().saturating_sub(scroll).min(LIST_ROWS);
+        ((COMBO[0] + 1.0..COMBO[0] + LIST_WIDTH - 1.0).contains(&x) && (0.0..shown as f32).contains(&line)).then(|| scroll + line as usize)
+    }
+
+    /// The open list's rows on screen: (row, line).
+    fn shown_rows(&self) -> impl Iterator<Item = (usize, usize)> {
+        let scroll = self.list.unwrap_or(usize::MAX);
+        (scroll..self.list_len().min(scroll.saturating_add(LIST_ROWS))).map(move |row| (row, row - scroll))
+    }
+
+    /// The row of the skin in use: 0 for the basic look, or a skin not in the list.
+    fn in_use(&self, graphics: &GraphicsSettings) -> usize {
+        self.skins.iter().position(|skin| *skin == graphics.skin).map_or(0, |row| row + 1)
+    }
+
+    /// A row of the skin list: the basic look's words (`basic`), then the skins' names.
+    fn row_name<'a>(&'a self, row: usize, basic: &'a str) -> &'a str {
+        row.checked_sub(1).and_then(|row| self.skins.get(row)).map_or(basic, String::as_str)
+    }
+
+    /// The list's rows: the basic look, then the skins.
+    fn list_len(&self) -> usize {
+        1 + self.skins.len()
+    }
+
+    /// The mouse wheel over the open skin list scrolls it; returns whether it took the wheel.
+    pub fn wheel(&mut self, cursor: [f32; 2], rows: i32) -> bool {
+        let over = self.frame.local(cursor, SIZE[1]).is_some_and(|local| self.list_row([local[0], local[1] - PAGE_TOP]).is_some());
+        let most = self.list_len().saturating_sub(LIST_ROWS);
+        match &mut self.list {
+            Some(scroll) if over => {
+                *scroll = scroll.saturating_add_signed(rows as isize).min(most);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// A press: the title bar grabs the window, a track the thumb there. Returns whether the sound changed.
+    pub fn press(&mut self, hit: Hit, cursor: [f32; 2], sound: &mut Settings) -> bool {
+        match hit {
+            Hit::Title => self.frame.start_drag(cursor),
+            // An Off sound doesn't move.
+            Hit::Track(row, volume) if sound.on[row] => {
+                self.dragging = Some(row);
+                sound.volume[row] = volume;
+                return true;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    /// A click. The sound and the switches change at once; the screen mode waits for Apply.
+    pub fn click(&mut self, hit: Hit, sound: &mut Settings, graphics: &mut GraphicsSettings) -> Option<Action> {
+        // The skin list shuts at any click but on itself.
+        let list = self.list.take();
+        match hit {
+            Hit::SkinBox if list.is_none() => {
+                self.list = Some(0);
+                None
+            }
+            Hit::Skin(row) => {
+                graphics.skin = self.row_name(row, "").to_owned();
+                Some(Action::Graphics)
+            }
+            Hit::Close | Hit::CloseButton => {
+                self.frame.open = false;
+                Some(Action::Close)
+            }
+            Hit::Tab(tab) => {
+                self.tab = tab;
+                None
+            }
+            Hit::Reset => Some(Action::AskReset),
+            Hit::Apply if self.tab == GRAPHICS => Some(Action::Screen(self.fullscreen)),
+            Hit::Less(row) if sound.on[row] => {
+                sound.volume[row] = sound.volume[row].saturating_sub(1);
+                Some(Action::Sound)
+            }
+            Hit::More(row) if sound.on[row] => {
+                sound.volume[row] = (sound.volume[row] + 1).min(MAX_VOLUME);
+                Some(Action::Sound)
+            }
+            Hit::Off(row) => {
+                sound.on[row] = !sound.on[row];
+                Some(Action::Sound)
+            }
+            Hit::Switch(_) if self.tab == CONTROL => {
+                graphics.quick_slot = !graphics.quick_slot;
+                Some(Action::Graphics)
+            }
+            Hit::Switch(row) if self.tab == EXTRAS => {
+                let on = extra(graphics, row);
+                *on = !*on;
+                Some(Action::Graphics)
+            }
+            Hit::Switch(row) => {
+                let on = !switch_on(graphics, row);
+                set_switch(graphics, row, on);
+                Some(Action::Graphics)
+            }
+            Hit::Screen(fullscreen) => {
+                self.fullscreen = fullscreen;
+                None
+            }
+            Hit::Font(by) => {
+                graphics.font = text::stepped(text::choices(), &graphics.font, by).to_owned();
+                Some(Action::Graphics)
+            }
+            // Picking a size turns the UI scale on: off, no size shows.
+            Hit::Size(by) => {
+                graphics.ui_size = options::ui_size_stepped(graphics.ui_size, by);
+                graphics.ui_scale = true;
+                Some(Action::Graphics)
+            }
+            _ => None,
+        }
+    }
+
+    /// The held thumb (or the window) follows the pointer; returns whether the sound changed.
+    pub fn drag_to(&mut self, cursor: [f32; 2], sound: &mut Settings) -> bool {
+        self.frame.drag_to(cursor, SIZE[1]);
+        let Some(row) = self.dragging else { return false };
+        let volume = Self::volume_at(cursor[0] - self.frame.position[0]);
+        std::mem::replace(&mut sound.volume[row], volume) != volume
+    }
+
+    /// Lets go of the thumb or the window; returns whether a thumb was held.
+    pub fn drop_drag(&mut self) -> bool {
+        self.frame.drop_drag();
+        self.dragging.take().is_some()
+    }
+
+    /// The tabs and buttons on screen (for the test driver).
+    pub fn button_boxes(&self) -> Vec<(String, [f32; 4])> {
+        let place = |[x, y]: [f32; 2], [width, height]: [f32; 2]| {
+            let [x, y] = self.frame.at([x, y]);
+            [x, y, width, height]
+        };
+        let mut boxes: Vec<_> = TABS
+            .iter()
+            .enumerate()
+            .map(|(tab, &(x, width, ..))| (format!("settings_tab:{tab}"), place([x + 1.0, TAB_TOP], [width - 2.0, TAB_HEIGHT])))
+            .collect();
+        boxes.extend(
+            ["settings_reset", "settings_apply", "settings_close"].into_iter().zip(BUTTONS).map(|(name, x)| (name.to_owned(), place([x, BUTTON_TOP], BUTTON))),
+        );
+        match self.tab {
+            BASIC => {
+                boxes.extend(
+                    SOUND_ROWS.iter().enumerate().map(|(row, &y)| (format!("sound_off:{row}"), place([OFF_BOX, PAGE_TOP + SOUND_TOP + y + 1.0], [10.0, 10.0]))),
+                );
+                // The skin's box (`skin_box`) and the open list's rows (`skin:<row>`, 0 the basic look).
+                boxes.push(("skin_box".into(), place([COMBO[0], PAGE_TOP + COMBO[1]], COMBO_SIZE)));
+                boxes.extend(
+                    self.shown_rows()
+                        .map(|(row, line)| (format!("skin:{row}"), place([COMBO[0] + 1.0, PAGE_TOP + list_row_top(line)], [LIST_WIDTH - 2.0, LIST_ROW]))),
+                );
+            }
+            EFFECT | CONTROL | EXTRAS => {
+                boxes.extend(
+                    (0..row_count(self.tab))
+                        .map(|row| (format!("switch:{row}"), place([SWITCH[0], PAGE_TOP + 1.0 + row as f32 * ROW + SWITCH[1]], [20.0, 15.0]))),
+                );
+                if self.tab == EXTRAS {
+                    for (row, names) in [(SIZE_ROW, ["ui_size_less", "ui_size_more"]), (FONT_ROW, ["font_less", "font_more"])] {
+                        let top = PAGE_TOP + 1.0 + row as f32 * ROW + 5.0;
+                        boxes.extend(names.into_iter().zip([FONT_LESS, FONT_MORE]).map(|(name, x)| (name.to_owned(), place([x, top], [ARROW, ARROW]))));
+                    }
+                }
+            }
+            GRAPHICS => boxes.extend(
+                SCREEN_RADIOS.iter().enumerate().map(|(radio, &(x, _))| (format!("screen:{radio}"), place([x, PAGE_TOP + SCREEN_TOP + 12.0], [12.0, 12.0]))),
+            ),
+            _ => {}
+        }
+        boxes
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw<'a>(
+        &self,
+        layer: &mut Layer<'a>,
+        chrome: &'a Chrome,
+        assets: &'a Assets,
+        options: &'a crate::options::Assets,
+        font: &Font,
+        messages: &[String],
+        (sound, graphics): (&Settings, &GraphicsSettings),
+        pointer: ([f32; 2], bool),
+    ) {
+        let at = |local: [f32; 2]| self.frame.at(local);
+        let message = |id: usize| messages.get(id).map_or("", String::as_str);
+        let worded = |(id, words): (usize, &'static str)| Some(message(id)).filter(|text| !text.trim().is_empty()).unwrap_or(words).to_owned();
+        let black = [0, 0, 0];
+        self.frame.draw_bar(layer, chrome);
+        self.frame.draw_bare_title(layer, chrome, message(TITLE), pointer.0);
+        let [width, height] = SIZE;
+        layer.sprites.push((&chrome.white, at([0.0, TITLE_HEIGHT]), [width, height - TITLE_HEIGHT]));
+        // The tabs: white with a #CECECE edge, the open one joined to its page.
+        let outline = &options.outline;
+        for (tab, &(x, width, label, words)) in TABS.iter().enumerate() {
+            let open = tab == self.tab;
+            layer.sprites.push((outline, at([x, TAB_TOP]), [width, 1.0]));
+            layer.sprites.push((outline, at([x, TAB_TOP]), [1.0, TAB_HEIGHT]));
+            layer.sprites.push((outline, at([x + width - 1.0, TAB_TOP]), [1.0, TAB_HEIGHT]));
+            layer.sprites.push((&chrome.white, at([x + 1.0, TAB_TOP + 1.0]), [width - 2.0, TAB_HEIGHT - 1.0 + f32::from(u8::from(open))]));
+            let text = window::fit(font, &worded((label, words)), width - 6.0);
+            let color = if open { black } else { [0x70, 0x70, 0x70] };
+            layer.texts.push((text.clone(), at([x + ((width - font.width(&text)) / 2.0).floor(), TAB_TOP + 3.0]), color));
+        }
+        // The page's outline, under the open tab left open.
+        let page = |local: [f32; 2]| at([local[0], PAGE_TOP + local[1]]);
+        let (open_x, open_width, ..) = TABS[self.tab];
+        layer.sprites.push((outline, page([0.0, 0.0]), [open_x, 1.0]));
+        layer.sprites.push((outline, page([open_x + open_width - 1.0, 0.0]), [width - open_x - open_width + 1.0, 1.0]));
+        layer.sprites.push((outline, page([0.0, 0.0]), [1.0, PAGE_HEIGHT]));
+        layer.sprites.push((outline, page([width - 1.0, 0.0]), [1.0, PAGE_HEIGHT]));
+        layer.sprites.push((outline, page([0.0, PAGE_HEIGHT - 1.0]), [width, 1.0]));
+        let hit = self.hit(pointer.0);
+        match self.tab {
+            BASIC => {
+                // The skin's box: the skin in use, the drop button over its right end.
+                layer.texts.push((message(SKIN_TITLE).to_owned(), page(HEADING), black));
+                outlined(layer, page(COMBO), COMBO_SIZE, &assets.edge, &chrome.white);
+                let text = window::fit(font, self.row_name(self.in_use(graphics), message(BASIC_SKIN)), DROP[0] - COMBO_TEXT - 5.0);
+                layer.texts.push((text, page([COMBO[0] + COMBO_TEXT, COMBO[1] + 1.0 + ((LIST_ROW - font.line_height()) / 2.0).trunc()]), black));
+                layer.sprites.push((&assets.drop, page([COMBO[0] + DROP[0], COMBO[1] + DROP[1]]), assets.drop.size));
+                let group = |local: [f32; 2]| page([local[0], SOUND_TOP + local[1]]);
+                layer.texts.push((message(SOUND_TITLE).to_owned(), group(HEADING), black));
+                for (row, (&y, &label)) in SOUND_ROWS.iter().zip(&SOUND_LABELS).enumerate() {
+                    layer.texts.push((message(label).trim().to_owned(), group([LABEL_X, y]), black));
+                    let [less, more] = &options.arrows;
+                    layer.sprites.push((less, group([SLIDER_X, y - 1.0]), less.size));
+                    layer.sprites.push((&options.track, group([SLIDER_X + ARROW, y - 1.0]), [SLIDER - 2.0 * ARROW, ARROW]));
+                    layer.sprites.push((more, group([SLIDER_X + SLIDER - ARROW, y - 1.0]), more.size));
+                    // The thumb, placed by the volume, with the volume on it.
+                    let left = SLIDER_X + ARROW + (SLIDER - 2.0 * ARROW - THUMB) * f32::from(sound.volume[row]) / f32::from(MAX_VOLUME);
+                    let [start, body, end] = &options.thumb;
+                    layer.sprites.push((start, group([left, y - 1.0]), start.size));
+                    layer.sprites.push((body, group([left + start.size[0], y - 1.0]), [THUMB - start.size[0] - end.size[0], body.size[1]]));
+                    layer.sprites.push((end, group([left + THUMB - end.size[0], y - 1.0]), end.size));
+                    let volume = sound.volume[row].to_string();
+                    layer.texts.push((volume.clone(), group([left + ((THUMB - font.width(&volume)) / 2.0).floor(), y]), black));
+                    let check = &options.check[usize::from(!sound.on[row])];
+                    layer.sprites.push((check, group([OFF_BOX, y + 1.0]), check.size));
+                    layer.texts.push((worded(OFF), group([OFF_X, y]), black));
+                }
+            }
+            EFFECT | CONTROL | EXTRAS => {
+                let rows: Vec<(String, String, bool)> = match self.tab {
+                    EFFECT => {
+                        let title = |title| worded(title).trim_end_matches(" ON").to_owned();
+                        SWITCHES.iter().enumerate().map(|(row, &(title_id, text))| (title(title_id), worded(text), switch_on(graphics, row))).collect()
+                    }
+                    CONTROL => CONTROL_ROWS.iter().map(|&(title, text)| (title.to_owned(), text.to_owned(), graphics.quick_slot)).collect(),
+                    _ => EXTRA_ROWS.iter().zip(extras(graphics)).map(|(&(title, text), on)| (title.to_owned(), text.to_owned(), on)).collect(),
+                };
+                for (row, (title, text, on)) in rows.into_iter().enumerate() {
+                    let top = 1.0 + row as f32 * ROW;
+                    let check = &options.check[usize::from(on)];
+                    layer.sprites.push((check, page([SWITCH[0], top + SWITCH[1] + 2.0]), check.size));
+                    layer.texts.push((window::fit(font, &title, ROW_TEXT - ROW_TITLE - 4.0), page([ROW_TITLE, top + 6.0]), black));
+                    layer.texts.push((window::fit(font, &text, ROW_TEXT_WIDTH), page([ROW_TEXT, top + 6.0]), black));
+                }
+                if self.tab == EXTRAS {
+                    // The UI size (the 4:3 screen the interface is as large as on) and the font's name, each centred
+                    // between its arrows.
+                    let choices = text::choices();
+                    let values = [
+                        (SIZE_ROW, SIZE_TITLE, size_label(graphics.ui_size)),
+                        (FONT_ROW, FONT_TITLE, choices[text::index_of(choices, &graphics.font)].name.clone()),
+                    ];
+                    for (row, title, value) in values {
+                        let top = 1.0 + row as f32 * ROW;
+                        layer.texts.push((title.to_owned(), page([ROW_TITLE, top + 6.0]), black));
+                        let [less, more] = &options.arrows;
+                        layer.sprites.push((less, page([FONT_LESS, top + 5.0]), less.size));
+                        layer.sprites.push((more, page([FONT_MORE, top + 5.0]), more.size));
+                        let room = FONT_MORE - FONT_LESS - ARROW;
+                        let value = window::fit(font, &value, room - 4.0);
+                        layer.texts.push((value.clone(), page([FONT_LESS + ARROW + ((room - font.width(&value)) / 2.0).floor(), top + 6.0]), black));
+                    }
+                }
+            }
+            GRAPHICS => {
+                let group = |local: [f32; 2]| page([local[0], SCREEN_TOP + local[1]]);
+                layer.texts.push((worded(SCREEN_TITLE), group(HEADING), black));
+                for (radio, &(x, label)) in SCREEN_RADIOS.iter().enumerate() {
+                    let image = &assets.radio[usize::from(self.fullscreen == (radio == 0))];
+                    layer.sprites.push((image, group([x, 12.0]), image.size));
+                    layer.texts.push((worded(label), group([x + 17.0, 12.0]), black));
+                }
+            }
+            _ => {}
+        }
+        // The open skin list, over the page: the row in use and the one under the pointer filled.
+        // ponytail: more than 5 rows scroll by the wheel alone; the game also has a 13 px scroll bar at the list's right.
+        if self.tab == BASIC && self.list.is_some() {
+            let shown = self.shown_rows().count() as f32;
+            outlined(layer, page([COMBO[0], COMBO[1] + LIST_TOP]), [LIST_WIDTH, shown * LIST_ROW + 2.0], &assets.edge, &chrome.white);
+            let in_use = self.in_use(graphics);
+            for (row, line) in self.shown_rows() {
+                let top = list_row_top(line);
+                let fill = if row == in_use { Some(&assets.in_use) } else { (hit == Some(Hit::Skin(row))).then_some(&assets.hover) };
+                if let Some(fill) = fill {
+                    layer.sprites.push((fill, page([COMBO[0] + 1.0, top]), [LIST_WIDTH - 2.0, LIST_ROW]));
+                }
+                let text = window::fit(font, self.row_name(row, message(BASIC_SKIN)), LIST_WIDTH - COMBO_TEXT - 4.0);
+                layer.texts.push((text, page([COMBO[0] + COMBO_TEXT, top + ((LIST_ROW - font.line_height()) / 2.0).trunc()]), black));
+            }
+        }
+        for ((images, x), target) in [&assets.reset, &assets.apply, &assets.close].into_iter().zip(BUTTONS).zip([Hit::Reset, Hit::Apply, Hit::CloseButton]) {
+            let look = if hit == Some(target) { 1 + usize::from(pointer.1) } else { 0 };
+            layer.sprites.push((&images[look], at([x, BUTTON_TOP]), BUTTON));
+        }
+    }
+}
+
+/// The page y of the open skin list's `line`th row.
+fn list_row_top(line: usize) -> f32 {
+    COMBO[1] + LIST_TOP + 1.0 + line as f32 * LIST_ROW
+}
+
+/// A box `size` at `corner`: `fill` inside a 1 px `edge`.
+fn outlined<'a>(layer: &mut Layer<'a>, corner: [f32; 2], size: [f32; 2], edge: &'a Texture, fill: &'a Texture) {
+    layer.sprites.push((edge, corner, size));
+    layer.sprites.push((fill, [corner[0] + 1.0, corner[1] + 1.0], [size[0] - 2.0, size[1] - 2.0]));
+}
+
+/// The client folder's `Skin` folder, beside the data folder (`RUSTNAROK_CLIENT_DATA`): each folder in it is a skin.
+fn skins_root() -> PathBuf {
+    let root = std::env::var("RUSTNAROK_CLIENT_DATA").ok().filter(|root| root != "none").unwrap_or_else(|| ".".into());
+    Path::new(&root).join("Skin")
+}
+
+/// Where the skin named `name` keeps its images.
+pub fn skin_folder(name: &str) -> PathBuf {
+    skins_root().join(name)
+}
+
+/// The skins the list offers after the basic look: the folders in `Skin`, found once (new ones show after a restart).
+// ponytail: folders only; the game also takes a skin packed in a .zip there.
+pub fn skins() -> &'static [String] {
+    static SKINS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    SKINS.get_or_init(|| skins_in(&skins_root()))
+}
+
+fn skins_in(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    // By name, as Windows lists them.
+    names.sort_by_key(|name| name.to_lowercase());
+    names
+}
+
+/// Reset: the sound and the effect switches back to their defaults (the screen mode stays).
+pub fn reset(sound: &mut Settings, graphics: &mut GraphicsSettings) {
+    *sound = Settings::default();
+    *graphics = GraphicsSettings { fullscreen: graphics.fullscreen, ..GraphicsSettings::default() };
+}
+
+/// The UI size row's words for a size of `rows`: the 4:3 screen the interface is as large as on.
+fn size_label(rows: u16) -> String {
+    format!("As at {}x{rows}", u32::from(rows) * 4 / 3)
+}
+
+/// How many switch rows a page has: Effect's, Control's, Extras'.
+fn row_count(tab: usize) -> usize {
+    match tab {
+        EFFECT => SWITCHES.len(),
+        CONTROL => CONTROL_ROWS.len(),
+        _ => EXTRA_ROWS.len(),
+    }
+}
+
+/// Whether an Effect page switch is on: effects shown, the aura shown, the mini aura, the screen shaking, the extended
+/// damage numbers.
+pub fn switch_on(graphics: &GraphicsSettings, row: usize) -> bool {
+    match row {
+        0 => graphics.effects_on,
+        1 => !graphics.aura_off,
+        2 => !graphics.aura,
+        3 => graphics.quake,
+        _ => graphics.extended_damage,
+    }
+}
+
+/// The Extras page's switches, in its rows' order: monster HP, monster level, far zoom, item options, cooldown numbers,
+/// exp to a hundredth, exp over monsters, the interface's scale, the frames a second and ping.
+fn extras(graphics: &GraphicsSettings) -> [bool; 9] {
+    [
+        graphics.monster_hp,
+        graphics.monster_level,
+        graphics.far_zoom,
+        graphics.item_options,
+        graphics.cooldown_numbers,
+        graphics.exp_hundredths,
+        graphics.kill_exp,
+        graphics.ui_scale,
+        graphics.fps_ping,
+    ]
+}
+
+fn extra(graphics: &mut GraphicsSettings, row: usize) -> &mut bool {
+    match row {
+        0 => &mut graphics.monster_hp,
+        1 => &mut graphics.monster_level,
+        2 => &mut graphics.far_zoom,
+        3 => &mut graphics.item_options,
+        4 => &mut graphics.cooldown_numbers,
+        5 => &mut graphics.exp_hundredths,
+        6 => &mut graphics.kill_exp,
+        7 => &mut graphics.ui_scale,
+        _ => &mut graphics.fps_ping,
+    }
+}
+
+fn set_switch(graphics: &mut GraphicsSettings, row: usize, on: bool) {
+    match row {
+        0 => graphics.effects_on = on,
+        1 => graphics.aura_off = !on,
+        2 => graphics.aura = !on,
+        3 => graphics.quake = on,
+        _ => graphics.extended_damage = on,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opens_centred_with_six_tabs_and_three_buttons() {
+        let window = GameSettings::new([1024.0, 768.0], false);
+        assert_eq!(window.frame.position, [312.0, 209.0]);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        assert_eq!(window.hit(at([386.0 + 5.0, 8.0])), Some(Hit::Close));
+        assert_eq!(window.hit(at([71.5, 20.0])), Some(Hit::Tab(1)), "the later tab on top");
+        assert_eq!(window.hit(at([300.0, 25.0])), Some(Hit::Tab(4)));
+        assert_eq!(window.hit(at([355.5, 25.0])), Some(Hit::Tab(EXTRAS)), "Extras on top of Other");
+        assert_eq!(window.hit(at([399.0, 25.0])), Some(Hit::Tab(EXTRAS)));
+        assert_eq!(window.hit(at([10.0, 330.0])), Some(Hit::Reset));
+        assert_eq!(window.hit(at([305.0, 330.0])), Some(Hit::Apply));
+        assert_eq!(window.hit(at([350.0, 330.0])), Some(Hit::CloseButton));
+        assert_eq!(window.hit([0.0, 0.0]), None);
+    }
+
+    #[test]
+    fn sound_rows_step_by_one_and_turn_off() {
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        let row = |row: usize| PAGE_TOP + SOUND_TOP + SOUND_ROWS[row] + 4.0;
+        assert_eq!(window.hit(at([SLIDER_X + 2.0, row(0)])), Some(Hit::Less(0)));
+        assert_eq!(window.hit(at([SLIDER_X + SLIDER - 2.0, row(1)])), Some(Hit::More(1)));
+        assert_eq!(window.hit(at([SLIDER_X + ARROW + 1.0, row(0)])), Some(Hit::Track(0, 0)));
+        assert_eq!(window.hit(at([SLIDER_X + SLIDER - ARROW - 1.0, row(0)])), Some(Hit::Track(0, MAX_VOLUME)));
+        assert_eq!(window.hit(at([OFF_BOX + 3.0, row(1)])), Some(Hit::Off(1)));
+        assert_eq!(window.click(Hit::More(0), &mut sound, &mut graphics), Some(Action::Sound));
+        assert_eq!(sound.volume[0], 101);
+        assert_eq!(window.click(Hit::Off(0), &mut sound, &mut graphics), Some(Action::Sound));
+        assert!(!sound.on[0]);
+        // Off, the slider doesn't move.
+        assert_eq!(window.click(Hit::Less(0), &mut sound, &mut graphics), None);
+        assert!(!window.press(Hit::Track(0, 5), at([0.0, 0.0]), &mut sound));
+        assert!(window.press(Hit::Track(1, 20), at([0.0, 0.0]), &mut sound));
+        assert!(window.drag_to(at([SLIDER_X + SLIDER / 2.0, 0.0]), &mut sound));
+        assert_eq!(sound.volume[1], 64);
+        assert!(window.drop_drag());
+    }
+
+    #[test]
+    fn switches_effects_and_waits_for_apply_on_the_screen_mode() {
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        window.click(Hit::Tab(EFFECT), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + ROW + 8.0])), Some(Hit::Switch(1)));
+        assert_eq!(window.click(Hit::Switch(0), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert!(!graphics.effects_on);
+        window.click(Hit::Switch(1), &mut sound, &mut graphics);
+        assert!(graphics.aura_off);
+        window.click(Hit::Switch(2), &mut sound, &mut graphics);
+        assert!(!graphics.aura && switch_on(&graphics, 2));
+        // The extended damage numbers start on, like the game's.
+        assert!(switch_on(&graphics, 4));
+        window.click(Hit::Switch(4), &mut sound, &mut graphics);
+        assert!(!graphics.extended_damage);
+        // Apply does nothing but on the Graphics page, where it sets the screen mode picked.
+        assert_eq!(window.click(Hit::Apply, &mut sound, &mut graphics), None);
+        window.click(Hit::Tab(GRAPHICS), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        assert_eq!(window.hit(at([152.0, PAGE_TOP + SCREEN_TOP + 14.0])), Some(Hit::Screen(true)));
+        window.click(Hit::Screen(true), &mut sound, &mut graphics);
+        assert_eq!(window.click(Hit::Apply, &mut sound, &mut graphics), Some(Action::Screen(true)));
+        assert_eq!(window.click(Hit::Reset, &mut sound, &mut graphics), Some(Action::AskReset));
+        assert_eq!(window.click(Hit::CloseButton, &mut sound, &mut graphics), Some(Action::Close));
+        assert!(!window.frame.open);
+    }
+
+    #[test]
+    fn control_has_the_quick_slots_switch_on_at_first() {
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        assert!(graphics.quick_slot);
+        window.click(Hit::Tab(CONTROL), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + 8.0])), Some(Hit::Switch(0)));
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + ROW + 8.0])), Some(Hit::Window), "one row only");
+        assert_eq!(window.click(Hit::Switch(0), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert!(!graphics.quick_slot);
+        assert_eq!(graphics, GraphicsSettings { quick_slot: false, ..GraphicsSettings::default() }, "nothing else moved");
+        assert!(window.button_boxes().iter().any(|(name, _)| name == "switch:0"));
+        reset(&mut sound, &mut graphics);
+        assert!(graphics.quick_slot);
+    }
+
+    /// The font row's arrows step through the fonts found and back; Reset puts Tahoma back.
+    #[test]
+    fn the_font_row_steps_through_the_fonts() {
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        assert_eq!(graphics.font, text::DEFAULT);
+        window.click(Hit::Tab(EXTRAS), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        let row = PAGE_TOP + 1.0 + FONT_ROW as f32 * ROW + 8.0;
+        assert_eq!(window.hit(at([FONT_LESS + 3.0, row])), Some(Hit::Font(-1)));
+        assert_eq!(window.hit(at([FONT_MORE + 3.0, row])), Some(Hit::Font(1)));
+        assert_eq!(window.hit(at([FONT_LESS + 40.0, row])), Some(Hit::Window), "the name itself does nothing");
+        assert_eq!(window.hit(at([12.0, row])), Some(Hit::Window), "no switch on the font row");
+        let names = ["font_less", "font_more"];
+        assert!(names.iter().all(|name| window.button_boxes().iter().any(|(target, _)| target == name)));
+        assert_eq!(window.click(Hit::Font(1), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert_eq!(graphics.font, text::stepped(text::choices(), text::DEFAULT, 1));
+        assert_eq!(graphics, GraphicsSettings { font: graphics.font.clone(), ..GraphicsSettings::default() }, "nothing else moved");
+        window.click(Hit::Font(-1), &mut sound, &mut graphics);
+        assert_eq!(graphics.font, text::DEFAULT);
+        window.click(Hit::Font(-1), &mut sound, &mut graphics);
+        reset(&mut sound, &mut graphics);
+        assert_eq!(graphics, GraphicsSettings::default());
+        // Not on the other pages.
+        window.click(Hit::Tab(EFFECT), &mut sound, &mut graphics);
+        assert_eq!(window.hit(at([FONT_MORE + 3.0, row])), Some(Hit::Window));
+        assert!(!window.button_boxes().iter().any(|(target, _)| target == "font_more"));
+    }
+
+    /// The UI size row's arrows step the interface's size, stopping at the ends, and turn the UI scale on; the window
+    /// then stays under the pointer as the screen changes size, so the arrow can be clicked again.
+    #[test]
+    fn the_ui_size_row_steps_through_the_sizes() {
+        let mut window = GameSettings::new([1440.0, 900.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        assert_eq!((graphics.ui_scale, graphics.ui_size), (false, 768));
+        window.click(Hit::Tab(EXTRAS), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        let row = PAGE_TOP + 1.0 + SIZE_ROW as f32 * ROW + 8.0;
+        assert_eq!(window.hit(at([FONT_LESS + 3.0, row])), Some(Hit::Size(-1)));
+        assert_eq!(window.hit(at([FONT_MORE + 3.0, row])), Some(Hit::Size(1)));
+        assert_eq!(window.hit(at([FONT_MORE + 3.0, row + ROW])), Some(Hit::Font(1)), "the font row under it");
+        // Under it the page ends (the footer's Close button is there): no third row of arrows.
+        assert!(!matches!(window.hit(at([FONT_MORE + 3.0, row + 2.0 * ROW])), Some(Hit::Size(_) | Hit::Font(_))), "no third row");
+        assert_eq!(window.hit(at([FONT_LESS + 40.0, row])), Some(Hit::Window));
+        assert!(["ui_size_less", "ui_size_more", "font_less", "font_more"].iter().all(|name| window.button_boxes().iter().any(|(target, _)| target == name)));
+        // A smaller size, and the UI scale is on at it.
+        assert_eq!(window.click(Hit::Size(-1), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert_eq!((graphics.ui_scale, graphics.ui_size, graphics.ui_rows()), (true, 864, Some(864.0)));
+        assert_eq!(graphics, GraphicsSettings { ui_scale: true, ui_size: 864, ..GraphicsSettings::default() }, "nothing else moved");
+        window.click(Hit::Size(1), &mut sound, &mut graphics);
+        window.click(Hit::Size(1), &mut sound, &mut graphics);
+        assert_eq!(graphics.ui_size, 768, "the largest: the right arrow stops");
+        assert_eq!([768, 864, 1440].map(size_label), ["As at 1024x768", "As at 1152x864", "As at 1920x1440"]);
+        // The screen turns from 1440x900 to 1228x768 and the pointer, on the right arrow, from one place to another:
+        // the arrow is under it still.
+        let on_arrow = at([FONT_MORE + 3.0, row]);
+        let now = [on_arrow[0] * 768.0 / 900.0, on_arrow[1] * 768.0 / 900.0];
+        window.keep_under([on_arrow, now], [1228.0, 768.0]);
+        assert_eq!(window.hit(now), Some(Hit::Size(1)));
+        // But the window stays on the screen.
+        window.keep_under([now, [2000.0, 2000.0]], [1228.0, 768.0]);
+        assert_eq!(window.frame.position, [1228.0 - SIZE[0], 768.0 - SIZE[1]]);
+        reset(&mut sound, &mut graphics);
+        assert_eq!((graphics.ui_scale, graphics.ui_size), (false, 768));
+    }
+
+    /// Basic's skin box opens a list of the basic look then the skins (the folders in `Skin`, by name); a row picks
+    /// one, any click shuts the list, and Reset puts the basic look back.
+    #[test]
+    fn the_skin_box_lists_the_skins_and_picks_one() {
+        let root = std::env::temp_dir().join(format!("rustnarok-skins-{}", std::process::id()));
+        for name in ["Spring", "Autumn", "dusk"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        std::fs::write(root.join("colorchip.bmp"), b"not a skin").unwrap();
+        let found = skins_in(&root);
+        std::fs::remove_dir_all(&root).unwrap();
+        assert_eq!(found, ["Autumn", "dusk", "Spring"]);
+        assert!(skins_in(&root).is_empty(), "no Skin folder, no skins");
+
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        window.skins = (1..=6).map(|n| format!("skin {n}")).collect();
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        assert_eq!(graphics.skin, "", "the basic look at first");
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        let [x, y] = [COMBO[0] + DROP[0] + 5.0, PAGE_TOP + COMBO[1] + 5.0];
+        assert_eq!(window.hit(at([x, y])), Some(Hit::SkinBox), "the drop button");
+        assert_eq!(window.hit(at([COMBO[0] + 5.0, y])), Some(Hit::SkinBox), "the box");
+        assert_eq!(window.hit(at([x, y + 2.0 * LIST_ROW])), Some(Hit::Window), "no list yet");
+        assert_eq!(window.click(Hit::SkinBox, &mut sound, &mut graphics), None);
+        // Five rows under the box: the basic look, then the first four skins; the wheel shows the rest.
+        assert_eq!(window.hit(at([x, y + LIST_ROW])), Some(Hit::Skin(0)));
+        assert_eq!(window.hit(at([x, y + 5.0 * LIST_ROW])), Some(Hit::Skin(4)));
+        assert_eq!(window.hit(at([x, y + 6.0 * LIST_ROW])), Some(Hit::Window), "five rows shown");
+        assert!(window.wheel(at([x, y + LIST_ROW]), 9));
+        assert_eq!(window.hit(at([x, y + 5.0 * LIST_ROW])), Some(Hit::Skin(6)), "scrolled to the end");
+        assert!(!window.wheel(at([x, y + 9.0 * LIST_ROW]), 1), "not over the list");
+        let names: Vec<_> = window.button_boxes().into_iter().map(|(name, _)| name).filter(|name| name.starts_with("skin")).collect();
+        assert_eq!(names, ["skin_box", "skin:2", "skin:3", "skin:4", "skin:5", "skin:6"]);
+        assert_eq!(window.click(Hit::Skin(3), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert_eq!(graphics.skin, "skin 3");
+        assert_eq!(window.hit(at([x, y + LIST_ROW])), Some(Hit::Window), "the list shut");
+        assert_eq!(graphics, GraphicsSettings { skin: "skin 3".into(), ..GraphicsSettings::default() }, "nothing else moved");
+        // A click on the box shuts an open list; one elsewhere does too.
+        window.click(Hit::SkinBox, &mut sound, &mut graphics);
+        window.click(Hit::SkinBox, &mut sound, &mut graphics);
+        assert_eq!(window.hit(at([x, y + LIST_ROW])), Some(Hit::Window));
+        window.click(Hit::SkinBox, &mut sound, &mut graphics);
+        window.click(Hit::Window, &mut sound, &mut graphics);
+        assert_eq!(window.hit(at([x, y + LIST_ROW])), Some(Hit::Window));
+        window.click(Hit::SkinBox, &mut sound, &mut graphics);
+        window.click(Hit::Skin(0), &mut sound, &mut graphics);
+        assert_eq!(graphics.skin, "", "the basic look again");
+        graphics.skin = "skin 1".into();
+        reset(&mut sound, &mut graphics);
+        assert_eq!(graphics.skin, "");
+        // Only on Basic.
+        window.click(Hit::Tab(EFFECT), &mut sound, &mut graphics);
+        assert_eq!(window.hit(at([x, y])), Some(Hit::Window));
+    }
+
+    #[test]
+    fn extras_start_off_and_switch_on_their_own_page() {
+        let mut window = GameSettings::new([1024.0, 768.0], false);
+        let (mut sound, mut graphics) = (Settings::default(), GraphicsSettings::default());
+        assert_eq!(extras(&graphics), [false; 9]);
+        window.click(Hit::Tab(EXTRAS), &mut sound, &mut graphics);
+        let corner = window.frame.position;
+        let at = |local: [f32; 2]| [corner[0] + local[0], corner[1] + local[1]];
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + 2.0 * ROW + 8.0])), Some(Hit::Switch(2)));
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + 8.0 * ROW + 8.0])), Some(Hit::Switch(8)));
+        assert_eq!(window.hit(at([12.0, PAGE_TOP + 1.0 + 9.0 * ROW + 8.0])), Some(Hit::Window), "nine switches only");
+        assert_eq!(window.click(Hit::Switch(2), &mut sound, &mut graphics), Some(Action::Graphics));
+        assert!(graphics.far_zoom);
+        window.click(Hit::Switch(0), &mut sound, &mut graphics);
+        window.click(Hit::Switch(1), &mut sound, &mut graphics);
+        window.click(Hit::Switch(3), &mut sound, &mut graphics);
+        window.click(Hit::Switch(4), &mut sound, &mut graphics);
+        window.click(Hit::Switch(5), &mut sound, &mut graphics);
+        window.click(Hit::Switch(6), &mut sound, &mut graphics);
+        window.click(Hit::Switch(7), &mut sound, &mut graphics);
+        window.click(Hit::Switch(8), &mut sound, &mut graphics);
+        assert_eq!(extras(&graphics), [true; 9]);
+        // The Effect page's switches didn't move.
+        let all = GraphicsSettings {
+            monster_hp: true,
+            monster_level: true,
+            far_zoom: true,
+            item_options: true,
+            cooldown_numbers: true,
+            exp_hundredths: true,
+            kill_exp: true,
+            ui_scale: true,
+            fps_ping: true,
+            ..GraphicsSettings::default()
+        };
+        assert_eq!(graphics, all);
+        assert!(window.button_boxes().iter().any(|(name, _)| name == "switch:2"));
+        reset(&mut sound, &mut graphics);
+        assert_eq!(extras(&graphics), [false; 9]);
+    }
+}

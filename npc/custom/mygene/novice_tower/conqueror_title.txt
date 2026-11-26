@@ -1,0 +1,35 @@
+// MYGENE_PUBLIC_RC1
+// MYgene Conqueror V1.4
+// Manual achievement registration test.
+
+function	script	MYgene_NT_AwardTitle	{
+
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 5 ||
+        MYGENE_NT_DEV_GRAD_DONE != 1)
+        return 0;
+
+    if (MYGENE_NT_DEV_JOB < 1 ||
+        MYGENE_NT_DEV_JOB > 6)
+        return 0;
+
+    debugmes "[CONQUEROR V1.4] Award requested.";
+
+    if (achievementexists(900001))
+        return 1;
+
+    .@result = achievementcomplete(900001);
+
+    debugmes "[CONQUEROR V1.4] Result: " + .@result;
+
+    if (!achievementexists(900001))
+        return 0;
+
+    dispbottom "Achievement unlocked!";
+    dispbottom "Novice Tower Conqueror";
+
+    debugmes "[CONQUEROR V1.4] SUCCESS";
+
+    return 1;
+}

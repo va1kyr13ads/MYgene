@@ -1010,6 +1010,14 @@ bool npc_is_cloaked( const npc_data* nd, const map_session_data* sd ) {
 }
 
 bool npc_is_hidden_dynamicnpc( const npc_data& nd, const map_session_data& tsd ){
+
+    // MYgene: only qualified accounts can see or click the Keeper.
+    if (strcmp(nd.exname, "MYgeneSpaceKeeper") == 0) {
+        return !tsd.state.active ||
+            pc_readreg2(&tsd, "#MYgeneSBCount") < 50 ||
+            pc_readreg2(&tsd, "#MYgeneSpaceBoxUnlocked") == 1;
+    }
+
 	// If the NPC is dynamic and the target character is not the owner of the dynamic NPC
 	return nd.dynamicnpc.owner_char_id != 0 && nd.dynamicnpc.owner_char_id != tsd.status.char_id;
 }
@@ -1043,7 +1051,14 @@ bool npc_enable_target(npc_data& nd, uint32 char_id, e_npcv_status flag)
 			return false;
 		}
 
-		uint32 option = nd.sc.option;
+		        if (strcmp(nd.exname, "MYgeneSpaceKeeper") == 0 &&
+            flag == NPCVIEW_CLOAKON &&
+            pc_readreg2(sd, "#MYgeneSpaceBoxUnlocked") == 1) {
+            clif_clearunit_single(nd.id, CLR_OUTSIGHT, *sd);
+            return true;
+        }
+
+        uint32 option = nd.sc.option;
 		if (flag & NPCVIEW_CLOAKOFF)
 			nd.sc.option &= ~OPTION_CLOAK;
 		else

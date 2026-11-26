@@ -3257,6 +3257,20 @@ static int32 unit_attack_timer_sub(block_list* src, int32 tid, t_tick tick)
 		&& (target->type == BL_PC || !map_getcell(target->m,target->x,target->y,CELL_CHKICEWALL)) )
 		range++; // Extra range when chasing (does not apply to mobs locked in an icewall)
 
+	// MYGENE_ARCANE_V1: cap only ranged Slayer weapons, not normal gear.
+	if (sd) {
+		const int16 idx = sd->equip_index[EQI_HAND_R];
+		if (idx >= 0 && sd->inventory_data[idx] != nullptr) {
+			const auto& item = sd->inventory_data[idx];
+			switch (item->nameid) {
+				case 60010: case 60012: case 60013:
+				case 60015: case 60016: case 60018:
+					range = std::min<int32>(range, item->range);
+					break;
+			}
+		}
+	}
+
 	if(sd && !check_distance_client_bl(src,target,range)) {
 		// Player tries to attack but target is too far, notify client
 		clif_movetoattack( *sd, *target );

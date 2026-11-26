@@ -2352,6 +2352,114 @@ bool status_check_visibility(const block_list* src, const block_list* target, bo
  * @return base aspd after single/dual weapon and shield adjustments, passive bonuses and status changes [RENEWAL]
  *	  base amotion after single/dual weapon and stats adjustments [PRE-RENEWAL]
  */
+// MYGENE_SLAYER_AFFINITY_V1
+
+static int32 mygene_slayer_base_aspd(map_session_data* sd) {
+#ifdef RENEWAL_ASPD
+    return 0;
+#else
+    const int16 idx = sd->equip_index[EQI_HAND_R];
+
+    if (idx < 0 || sd->inventory_data[idx] == nullptr)
+        return 0;
+
+    const t_itemid id = sd->inventory_data[idx]->nameid;
+    const auto job = sd->class_ & MAPID_SECONDMASK;
+
+    int32 base = 0;
+    bool affinity = false;
+    bool novice_affinity = false;
+
+    switch (id) {
+
+        // Yellow Fabre - Knife
+        case 31001:
+        case 31004:
+            base = id == 31004 ? 155 : 150;
+            affinity = job == MAPID_THIEF ||
+                       job == MAPID_ASSASSIN ||
+                       job == MAPID_ROGUE ||
+                       job == MAPID_NINJA;
+            novice_affinity = true;
+            break;
+
+        // Red Thief Bug - Sword
+        case 31006:
+        case 31008:
+            base = id == 31008 ? 150 : 145;
+            affinity = job == MAPID_SWORDMAN ||
+                       job == MAPID_KNIGHT ||
+                       job == MAPID_CRUSADER;
+            novice_affinity = true;
+            break;
+
+        // Blue Chon Chon - Bow
+        case 60010:
+        case 60012:
+            base = id == 60012 ? 145 : 140;
+            affinity = job == MAPID_ARCHER ||
+                       job == MAPID_HUNTER ||
+                       job == MAPID_BARDDANCER ||
+                       job == MAPID_GUNSLINGER;
+            break;
+
+        // Purple Willow - Rod
+        case 60013:
+        case 60015:
+            base = id == 60015 ? 135 : 130;
+            affinity = job == MAPID_MAGE ||
+                       job == MAPID_WIZARD ||
+                       job == MAPID_ACOLYTE ||
+                       job == MAPID_SAGE ||
+                       job == MAPID_PRIEST ||
+                       job == MAPID_SOUL_LINKER;
+            novice_affinity = true;
+            break;
+
+        // Orange Rideword - Book
+        case 60016:
+        case 60018:
+            base = id == 60018 ? 140 : 135;
+            affinity = job == MAPID_SAGE ||
+                       job == MAPID_PRIEST ||
+                       job == MAPID_STAR_GLADIATOR;
+            break;
+
+        // Dark Orc - Axe
+        case 60019:
+        case 60021:
+            base = id == 60021 ? 130 : 125;
+            affinity = job == MAPID_MERCHANT ||
+                       job == MAPID_BLACKSMITH ||
+                       job == MAPID_ALCHEMIST;
+            break;
+
+        default:
+            return 0;
+    }
+
+    if (affinity)
+        base += 10;
+    else if (novice_affinity && job == MAPID_SUPER_NOVICE)
+        base += 5;
+
+    return base;
+#endif
+}
+
+static int32 mygene_slayer_min_amotion(map_session_data* sd) {
+    const int32 native_limit =
+        pc_maxaspd(sd) / AMOTION_DIVIDER_PC;
+
+    if (mygene_slayer_base_aspd(sd) == 0)
+        return native_limit;
+
+    const int32 slayer_limit =
+        AMOTION_ZERO_ASPD - 190 * AMOTION_INTERVAL;
+
+    return std::max<int32>(native_limit, slayer_limit);
+}
+
 int32 status_base_amotion_pc(map_session_data* sd, struct status_data* status)
 {
 	std::shared_ptr<s_job_info> job = job_db.find(sd->status.class_);
@@ -2406,7 +2514,19 @@ int32 status_base_amotion_pc(map_session_data* sd, struct status_data* status)
 	 ? (job->aspd_base[sd->status.weapon]) // Single weapon
 	 : (job->aspd_base[sd->weapontype1] + job->aspd_base[sd->weapontype2]) * 7 / 10; // Dual-wield
 
-	// Percentual delay reduction from stats
+	    const int32 slayer_aspd = mygene_slayer_base_aspd(sd);
+
+    if (slayer_aspd > 0) {
+        amotion = AMOTION_ZERO_ASPD -
+                  slayer_aspd * AMOTION_INTERVAL;
+
+        // Retain native dual-wield delay adjustment.
+        if (sd->status.weapon >= MAX_WEAPON_TYPE)
+            amotion = (amotion +
+                job->aspd_base[sd->weapontype2]) * 7 / 10;
+    }
+
+    // Percentual delay reduction from stats
 	amotion -= amotion * (4 * status->agi + status->dex) / 1000;
 
 	// Raw delay adjustment from bAspd bonus
@@ -4511,6 +4631,20 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
 	if ((skill = pc_checkskill(sd, SU_SOULATTACK)) > 0)
 		base_status->rhw.range += skill_get_range2(sd, SU_SOULATTACK, skill, true);
 
+// MYGENE_ARCANE_V1: cap only ranged Slayer weapons, not normal gear.
+	if (sd) {
+		const int16 idx = sd->equip_index[EQI_HAND_R];
+		if (idx >= 0 && sd->inventory_data[idx] != nullptr) {
+			const auto& item = sd->inventory_data[idx];
+			switch (item->nameid) {
+				case 60010: case 60012: case 60013:
+				case 60015: case 60016: case 60018:
+					base_status->rhw.range = std::min<int32>(base_status->rhw.range, item->range);
+					break;
+			}
+		}
+	}
+
 // ----- FLEE CALCULATION -----
 
 	// Absolute modifiers from passive skills
@@ -4584,7 +4718,58 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
 		base_status->def += 20 + (pc_checkskill(sd, NC_MAINFRAME) * 20);
 
 #ifndef RENEWAL
-	if (!battle_config.weapon_defense_type && base_status->def > battle_config.max_def) {
+	// MYGENE_IRON_GUARD_V105
+    {
+        const int16 sword_idx =
+            sd->equip_index[EQI_HAND_R];
+
+        if (sword_idx >= 0 &&
+            sd->inventory_data[sword_idx] != nullptr) {
+
+            const t_itemid sword_id =
+                sd->inventory_data[sword_idx]->nameid;
+
+            if ((sword_id == 31006 ||
+                 sword_id == 31008) &&
+                (pc_has_permission(
+                    sd, PC_PERM_USE_ALL_EQUIPMENT
+                 ) ||
+                 !itemdb_isNoEquip(
+                    sd->inventory_data[sword_idx],
+                    sd->m
+                 ))) {
+
+                const int32 hard_bonus = 5;
+
+                const int32 soft_bonus =
+                    sword_id == 31008 ? 20 : 10;
+
+                base_status->def = cap_value(
+                    static_cast<int32>(base_status->def)
+                        + hard_bonus,
+                    DEFTYPE_MIN,
+                    DEFTYPE_MAX
+                );
+
+                base_status->def2 = cap_value(
+                    static_cast<int32>(base_status->def2)
+                        + soft_bonus,
+                    0,
+                    SHRT_MAX
+                );
+
+                ShowInfo(
+                    "[MYGENE-IRON-GUARD] ID=%u HardDEF=+%d SoftDEF=+%d\n",
+                    static_cast<unsigned int>(sword_id),
+                    hard_bonus,
+                    soft_bonus
+                );
+            }
+        }
+    }
+
+    // Preserve native Pre-Renewal DEF cap.
+    if (!battle_config.weapon_defense_type && base_status->def > battle_config.max_def) {
 		base_status->def2 += battle_config.over_def_bonus*(base_status->def -battle_config.max_def);
 		base_status->def = (unsigned char)battle_config.max_def;
 	}
@@ -4617,7 +4802,7 @@ int32 status_calc_pc_sub(map_session_data* sd, uint8 opt)
 	// Renewal base value is actually ASPD and not amotion, so we need to convert it
 	i = AMOTION_ZERO_ASPD - i * AMOTION_INTERVAL;
 #endif
-	base_status->amotion = cap_value(i, pc_maxaspd(sd)/AMOTION_DIVIDER_PC, MIN_ASPD/AMOTION_DIVIDER_PC);
+	base_status->amotion = cap_value(i, mygene_slayer_min_amotion(sd), MIN_ASPD/AMOTION_DIVIDER_PC);
 
 	// Relative modifiers from passive skills
 	// Renewal modifiers are handled in status_base_amotion_pc
@@ -6412,7 +6597,7 @@ void status_calc_bl_main(block_list& bl, std::bitset<SCB_MAX> flag)
 			amotion += sd->bonus.aspd_add;
 #endif
 			amotion = status_calc_fix_aspd(&bl, sc, amotion);
-			status->amotion = cap_value(amotion, pc_maxaspd(sd)/AMOTION_DIVIDER_PC, MIN_ASPD/AMOTION_DIVIDER_PC);
+			status->amotion = cap_value(amotion, mygene_slayer_min_amotion(sd), MIN_ASPD/AMOTION_DIVIDER_PC);
 
 			status->adelay = AMOTION_DIVIDER_PC * status->amotion;
 		} else { // Mercenary and mobs

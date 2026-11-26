@@ -1,0 +1,820 @@
+// MYGENE_PUBLIC_RC1
+// MYGENE_AWAKENING_V43
+// Floor 1: Awakening
+// GM-only development stage.
+
+function	script	MYgene_NT_AW_Valid	{
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        getcharid(1) != 0)
+        return 0;
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 0)
+        return 0;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0 ||
+        .@id != @MYGENE_NT_AW_INSTANCE)
+        return 0;
+
+    if (strcharinfo(3) != @MYGENE_NT_AW_MAP$ ||
+        strcharinfo(3) != instance_mapname("1@tower",.@id))
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_NT_AW_Stats	{
+
+    return readparam(bStr)+
+           readparam(bAgi)+
+           readparam(bVit)+
+           readparam(bInt)+
+           readparam(bDex)+
+           readparam(bLuk);
+}
+
+function	script	MYgene_NT_AW_Spawn	{
+
+    if (!callfunc("MYgene_NT_AW_Valid"))
+        return 0;
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return 0;
+
+    .@trial = getarg(0);
+
+    switch (.@trial) {
+        case 5:
+            .@name$ = "Passive Training Dummy";
+            .@hp = 20;
+            .@flee = 1;
+            .@def = 0;
+            break;
+
+        case 6:
+            .@name$ = "Evasive Training Dummy";
+            .@hp = 25;
+            .@flee = 20;
+            .@def = 0;
+            break;
+
+        case 7:
+            .@name$ = "Armored Training Dummy";
+            .@hp = 30;
+            .@flee = 1;
+            .@def = 10;
+            break;
+
+        default:
+            return 0;
+    }
+
+    setarray .@ox[0],2,-2,0,0,1,-1,1,-1;
+    setarray .@oy[0],0,0,2,-2,1,1,-1,-1;
+
+    .@found = 0;
+
+    for (.@i = 0; .@i < 8; .@i++) {
+        .@sx = .@x + .@ox[.@i];
+        .@sy = .@y + .@oy[.@i];
+
+        if (checkcell(
+            .@map$,.@sx,.@sy,cell_chkpass
+        )) {
+            .@found = 1;
+            break;
+        }
+    }
+
+    if (!.@found)
+        return 0;
+
+    monster .@map$,.@sx,.@sy,
+        .@name$,1002,1,
+        "MYgene_NT_Awakening::OnDummyDead";
+
+    .@gid = $@mobid[0];
+
+    if (.@gid <= 0 || !unitexists(.@gid))
+        return 0;
+
+    setunitdata .@gid,UMOB_MODE,0;
+    setunitdata .@gid,UMOB_MAXHP,.@hp;
+    setunitdata .@gid,UMOB_HP,.@hp;
+    setunitdata .@gid,UMOB_FLEE,.@flee;
+    setunitdata .@gid,UMOB_DEF,.@def;
+
+    @MYGENE_NT_AW_DUMMY = .@gid;
+
+    dispbottom "[Awakening] Defeat the "+
+        .@name$+".";
+
+    debugmes "[AWAKENING V4] Trial: "+.@trial;
+
+    return 1;
+}
+
+function	script	MYgene_NT_AW_Reward	{
+
+    if (!callfunc("MYgene_NT_AW_Valid") ||
+        !MYGENE_NT_F1_PASSED)
+        return 0;
+
+    if (!MYGENE_NT_F1_REWARDED) {
+
+        setarray .@items[0],569,602;
+        setarray .@amounts[0],20,2;
+
+        if (!checkweight2(.@items,.@amounts)) {
+            dispbottom "Free inventory space first.";
+            dispbottom "Return to the Herald after freeing inventory space.";
+            return 0;
+        }
+
+        if (BaseLevel < 5)
+            BaseLevel = 5;
+
+        if (JobLevel < 3)
+            JobLevel = 3;
+
+        getitem 569,20;
+        getitem 602,2;
+
+        if (!#MYGENE_NT_ZENY_F1) {
+            #MYGENE_NT_ZENY_F1 = 1;
+            Zeny += 500;
+            dispbottom "Account training bonus: 500 Zeny.";
+        } else {
+            dispbottom "Account Zeny bonus already claimed.";
+        }
+
+        MYGENE_NT_F1_REWARDED = 1;
+
+        dispbottom "Reward: Base Lv.5 / Job Lv.3.";
+        dispbottom "20 Novice Potions.";
+        dispbottom "2 Butterfly Wings.";
+        dispbottom "First account clear: 500 Zeny.";
+        dispbottom "One free stat reset unlocked.";
+    }
+
+    MYGENE_NT_DEV_CLEARED = 1;
+
+    @MYGENE_NT_AW_ACTIVE = 0;
+    @MYGENE_NT_AW_STEP = 10;
+
+    percentheal 100,100;
+
+    // MYGENE_FLOOR_CHOICE_V441
+
+    dispbottom "=== AWAKENING COMPLETE ===";
+    dispbottom "Floor 1 progress saved.";
+
+    mes "[Tower Instructor]";
+    mes "^339933Congratulations!^000000";
+    mes "Floor 1: Awakening completed.";
+    mes "Progress: 1/5.";
+    mes "Your rewards and progress are saved.";
+    next;
+
+    mes "[Tower Instructor]";
+    mes "Next: Floor 2 - Survival.";
+    mes "Would you like to continue";
+    mes "or take a break?";
+    next;
+
+    .@choice = select(
+        "Continue to Floor 2:Stop and return to Prontera"
+    );
+
+    close2;
+
+    .@map$ = strcharinfo(3);
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        getcharid(1) != 0 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 1 ||
+        instance_id(IM_CHAR) <= 0 ||
+        instance_id(IM_CHAR) != @MYGENE_NT_AW_INSTANCE ||
+        .@map$ != @MYGENE_NT_AW_MAP$)
+        return 1;
+
+    if (.@choice == 1) {
+
+        percentheal 100,100;
+
+        dispbottom "Entering Floor 2 - Survival...";
+
+        callfunc "MYgene_NT_Survival_Start",.@map$;
+
+    } else {
+
+        dispbottom "Your Tower progress is saved.";
+        dispbottom "Return anytime to continue Floor 2.";
+
+        warp "prontera",158,176;
+    }
+
+    return 1;
+}
+
+function	script	MYgene_NT_Awakening_Start	{
+
+    if (Class != Job_Novice)
+        return;
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        return;
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return;
+
+    if (.@map$ != getarg(0) ||
+        .@map$ != instance_mapname("1@tower",.@id))
+        return;
+
+    @MYGENE_NT_AW_INSTANCE = .@id;
+    @MYGENE_NT_AW_MAP$ = .@map$;
+
+    if (!callfunc("MYgene_NT_AW_Valid")) {
+        dispbottom "Select Tower Path at the Herald first.";
+        return;
+    }
+
+    if (@MYGENE_NT_AW_ACTIVE)
+        deltimer "MYgene_NT_Awakening::OnPoll";
+
+    @MYGENE_NT_AW_ACTIVE = 0;
+
+    killmonster .@map$,
+        "MYgene_NT_Awakening::OnDummyDead";
+
+    @MYGENE_NT_AW_DUMMY = 0;
+    @MYGENE_NT_AW_STEP = 0;
+    @MYGENE_NT_AW_X = .@x;
+    @MYGENE_NT_AW_Y = .@y;
+    @MYGENE_NT_AW_TAUGHT = 0;
+    @MYGENE_NT_AW_WEAPONS = 0;
+
+    setmapflag .@map$,MF_NOBASEEXP;
+    setmapflag .@map$,MF_NOJOBEXP;
+    setmapflag .@map$,MF_NOMOBLOOT;
+
+    @MYGENE_NT_AW_ACTIVE = 1;
+
+    percentheal 100,100;
+
+    if (MYGENE_NT_F1_PASSED) {
+        @MYGENE_NT_AW_STEP = 9;
+        callfunc "MYgene_NT_AW_Reward";
+        return;
+    }
+
+    dispbottom "=== FLOOR 1: AWAKENING ===";
+    dispbottom "Click the ground to move.";
+    dispbottom "Walk at least 3 cells at a time.";
+    dispbottom "Movement: 0/3";
+
+    addtimer 1000,"MYgene_NT_Awakening::OnPoll";
+
+    return;
+}
+
+-	script	MYgene_NT_Awakening	-1,{
+
+OnInit:
+
+    bindatcmd "towerlesson",
+        "MYgene_NT_Awakening::OnLesson",99,99;
+
+    bindatcmd "towerreset",
+        "MYgene_NT_Awakening::OnReset",99,99;
+
+    end;
+
+OnPoll:
+
+    if (!playerattached())
+        end;
+
+    if (!@MYGENE_NT_AW_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_AW_Valid"))
+        goto L_Stop;
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        goto L_Stop;
+
+    .@step = @MYGENE_NT_AW_STEP;
+
+    // Movement checkpoints.
+
+    if (.@step < 3) {
+
+        .@dx = .@x - @MYGENE_NT_AW_X;
+        .@dy = .@y - @MYGENE_NT_AW_Y;
+
+        if (.@dx >= 3 || .@dx <= -3 ||
+            .@dy >= 3 || .@dy <= -3) {
+
+            @MYGENE_NT_AW_STEP++;
+
+            @MYGENE_NT_AW_X = .@x;
+            @MYGENE_NT_AW_Y = .@y;
+
+            dispbottom "Movement: "+
+                @MYGENE_NT_AW_STEP+"/3";
+
+            if (@MYGENE_NT_AW_STEP == 3) {
+
+                if (BaseLevel < 2)
+                    BaseLevel = 2;
+
+                @MYGENE_NT_AW_STAT_SUM =
+                    callfunc("MYgene_NT_AW_Stats");
+
+                dispbottom "Movement complete!";
+                dispbottom "Status Academy unlocked.";
+                dispbottom "Your next lesson will open automatically.";
+            }
+        }
+
+    // Verify actual stat allocation.
+
+    } else if (.@step == 3) {
+
+        if (StatusPoint == 0 &&
+            callfunc("MYgene_NT_AW_Stats") > 6) {
+
+            @MYGENE_NT_AW_STEP = 4;
+            dispbottom "Existing attribute allocation verified.";
+            addtimer 1000,"MYgene_NT_Awakening::OnPoll";
+            end;
+        }
+
+        if (!@MYGENE_NT_AW_TAUGHT)
+            goto OnLesson;
+
+        if (@MYGENE_NT_AW_TAUGHT &&
+            callfunc("MYgene_NT_AW_Stats") >
+            @MYGENE_NT_AW_STAT_SUM) {
+
+            @MYGENE_NT_AW_STEP = 4;
+
+            dispbottom "Status allocation verified!";
+            dispbottom "Alt + A: Close your Status window.";
+            dispbottom "Weapon Academy unlocked.";
+
+            addtimer 4000,
+                "MYgene_NT_Awakening::OnPoll";
+
+            end;
+        }
+
+    // Weapon education and equipment.
+
+    } else if (.@step == 4) {
+
+        if (!@MYGENE_NT_AW_WEAPONS)
+            goto OnLesson;
+
+        .@weapon = getequipid(EQI_HAND_R);
+
+        if (@MYGENE_NT_AW_WEAPONS &&
+            .@weapon > 0 &&
+            getiteminfo(
+                .@weapon,ITEMINFO_TYPE
+            ) == IT_WEAPON) {
+
+            @MYGENE_NT_AW_STEP = 5;
+
+            dispbottom "Weapon training complete.";
+            dispbottom "Combat Academy unlocked.";
+        }
+
+    // Combat trials.
+
+    } else if (.@step >= 5 && .@step <= 7) {
+
+        .@gid = @MYGENE_NT_AW_DUMMY;
+
+        if (.@gid <= 0 || !unitexists(.@gid)) {
+
+            @MYGENE_NT_AW_DUMMY = 0;
+
+            callfunc "MYgene_NT_AW_Spawn",.@step;
+        }
+
+    } else if (.@step == 8) {
+
+        goto OnLesson;
+
+    } else {
+        end;
+    }
+
+    addtimer 1000,"MYgene_NT_Awakening::OnPoll";
+
+    end;
+
+OnDummyDead:
+
+    if (!playerattached() ||
+        !@MYGENE_NT_AW_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_AW_Valid"))
+        end;
+
+    if (killedgid != @MYGENE_NT_AW_DUMMY)
+        end;
+
+    if (@MYGENE_NT_AW_STEP < 5 ||
+        @MYGENE_NT_AW_STEP > 7)
+        end;
+
+    @MYGENE_NT_AW_DUMMY = 0;
+
+    switch (@MYGENE_NT_AW_STEP) {
+
+        case 5:
+            dispbottom "Targeting and attacking verified.";
+            dispbottom "Next: Evasive target.";
+            dispbottom "DEX improves your HIT.";
+            break;
+
+        case 6:
+            dispbottom "Evasion lesson complete.";
+            dispbottom "Next: Armored target.";
+            dispbottom "DEF reduces physical damage.";
+            break;
+
+        case 7:
+            dispbottom "Combat Academy complete!";
+            dispbottom "Knowledge Trial unlocked.";
+            dispbottom "Your next lesson will open automatically.";
+            break;
+    }
+
+    @MYGENE_NT_AW_STEP++;
+
+    end;
+
+OnLesson:
+
+    if (!callfunc("MYgene_NT_AW_Valid") ||
+        !@MYGENE_NT_AW_ACTIVE) {
+        dispbottom "No active Awakening lesson.";
+        end;
+    }
+
+    .@step = @MYGENE_NT_AW_STEP;
+
+    if (.@step == 3 ||
+        .@step == 4 ||
+        .@step == 8) {
+
+        deltimer "MYgene_NT_Awakening::OnPoll";
+    }
+
+    if (.@step == 3) {
+
+        mes "[Status Academy]";
+        mes "Stats shape your character.";
+        mes "Your Status window will open automatically.";
+        mes "Default shortcut: Alt + A.";
+        mes "You can increase attributes";
+        mes "using available status points.";
+        next;
+
+        mes "[Physical Attributes]";
+        mes "^CC5555STR^000000: Melee attack and carrying capacity.";
+        mes "^55AA55AGI^000000: Attack speed and evasion.";
+        mes "^CC9955VIT^000000: HP and physical resilience.";
+        next;
+
+        mes "[Mental Attributes]";
+        mes "^AA55FFINT^000000: Magic power, SP and recovery.";
+        mes "^5599CCDEX^000000: Accuracy, casting and ranged attack.";
+        mes "^CCAA33LUK^000000: Critical rate and other bonuses.";
+        next;
+
+        mes "[HP and SP]";
+        mes "HP is your life.";
+        mes "SP powers most skills.";
+        mes "Potions and recovery";
+        mes "help restore these resources.";
+        next;
+
+        mes "[Weight]";
+        mes "Items have weight.";
+        mes "Excessive weight can stop";
+        mes "natural HP and SP recovery.";
+        mes "Keep inventory space available.";
+        next;
+
+        mes "[Status Effects]";
+        mes "Poison drains HP.";
+        mes "Blind reduces combat accuracy.";
+        mes "Stun prevents normal actions.";
+        mes "Buffs can improve your abilities.";
+        next;
+
+        mes "[Practical Lesson]";
+        mes "Click + beside any attribute.";
+        mes "Increase at least one attribute.";
+        mes "Alt + A opens or closes Status.";
+        mes "Choose any of the six stats.";
+        mes "You can reset your build once";
+        mes "after completing this floor.";
+
+        close2;
+
+        if (callfunc("MYgene_NT_AW_Valid") &&
+            @MYGENE_NT_AW_STEP == 3) {
+
+            @MYGENE_NT_AW_TAUGHT = 1;
+
+            mygenetowerstatus;
+
+            dispbottom "[Instructor] Allocate your status points.";
+            dispbottom "Click + beside any attribute.";
+            dispbottom "Alt + A: Open or close Status (default).";
+
+            addtimer 1000,
+                "MYgene_NT_Awakening::OnPoll";
+        }
+
+        end;
+    }
+
+    if (.@step == 4) {
+
+        mes "[Weapon Academy]";
+        mes "Each weapon has a purpose.";
+        mes "Choose equipment that suits";
+        mes "your future job and attributes.";
+        next;
+
+        mes "[Swordman]";
+        mes "Swords and spears.";
+        mes "STR for melee damage.";
+        mes "VIT for durability.";
+        next;
+
+        mes "[Mage]";
+        mes "Rods and magical equipment.";
+        mes "INT improves magical power.";
+        mes "DEX helps casting.";
+        next;
+
+        mes "[Archer]";
+        mes "Bows and arrows.";
+        mes "DEX improves ranged damage.";
+        mes "AGI helps attack speed.";
+        next;
+
+        mes "[Acolyte]";
+        mes "Maces and rods.";
+        mes "INT helps healing and SP.";
+        mes "VIT helps survival.";
+        next;
+
+        mes "[Thief]";
+        mes "Daggers and quick attacks.";
+        mes "AGI improves evasion.";
+        mes "STR and DEX help combat.";
+        next;
+
+        mes "[Merchant]";
+        mes "Axes and other melee weapons.";
+        mes "STR helps attack and weight.";
+        mes "Trade skills support wealth.";
+        next;
+
+        mes "[Equipment Rules]";
+        mes "Check job and level requirements.";
+        mes "Not every job can equip";
+        mes "every ordinary weapon.";
+        mes "MYgene Slayer relics are exceptions.";
+        next;
+
+        mes "[Practical Lesson]";
+        mes "Equip a Novice-compatible weapon.";
+        mes "Then click a training monster";
+        mes "to target and attack it.";
+
+        close2;
+
+        if (callfunc("MYgene_NT_AW_Valid") &&
+            @MYGENE_NT_AW_STEP == 4) {
+
+            @MYGENE_NT_AW_WEAPONS = 1;
+
+            dispbottom "Equip your weapon.";
+
+            addtimer 1000,
+                "MYgene_NT_Awakening::OnPoll";
+        }
+
+        end;
+    }
+
+    if (.@step == 8) {
+
+        mes "[Knowledge Trial]";
+        mes "Answer five questions.";
+        mes "Mistakes are allowed.";
+        mes "Learn from each answer.";
+        next;
+
+        while (1) {
+            mes "[Question 1/5]";
+            mes "Which stat improves melee damage?";
+            next;
+
+            .@a = select("STR:INT:LUK:Leave");
+
+            if (.@a == 4)
+                close;
+
+            if (.@a == 1)
+                break;
+
+            mes "Hint: STR means Strength.";
+            next;
+        }
+
+        mes "Correct!";
+        next;
+
+        while (1) {
+            mes "[Question 2/5]";
+            mes "Which stat improves physical accuracy?";
+            next;
+
+            .@a = select("VIT:DEX:INT:Leave");
+
+            if (.@a == 4)
+                close;
+
+            if (.@a == 2)
+                break;
+
+            mes "Hint: DEX improves HIT.";
+            next;
+        }
+
+        mes "Correct!";
+        next;
+
+        while (1) {
+            mes "[Question 3/5]";
+            mes "What powers most skills?";
+            next;
+
+            .@a = select("Zeny:Weight:SP:Leave");
+
+            if (.@a == 4)
+                close;
+
+            if (.@a == 3)
+                break;
+
+            mes "Hint: Skills use SP.";
+            next;
+        }
+
+        mes "Correct!";
+        next;
+
+        while (1) {
+            mes "[Question 4/5]";
+            mes "Which first job specializes in bows?";
+            next;
+
+            .@a = select("Merchant:Archer:Mage:Leave");
+
+            if (.@a == 4)
+                close;
+
+            if (.@a == 2)
+                break;
+
+            mes "Hint: Ranged physical attacks.";
+            next;
+        }
+
+        mes "Correct!";
+        next;
+
+        while (1) {
+            mes "[Question 5/5]";
+            mes "What should you check before equipping?";
+            next;
+
+            .@a = select(
+                "Item color:Job and level requirements:Monster name:Leave"
+            );
+
+            if (.@a == 4)
+                close;
+
+            if (.@a == 2)
+                break;
+
+            mes "Hint: Equipment has requirements.";
+            next;
+        }
+
+        mes "[Awakening]";
+        mes "Knowledge Trial passed: 5/5.";
+        mes "You are ready for Survival.";
+        mes "Your completion reward awaits.";
+
+        close2;
+
+        if (!callfunc("MYgene_NT_AW_Valid"))
+            end;
+
+        MYGENE_NT_F1_PASSED = 1;
+        @MYGENE_NT_AW_STEP = 9;
+
+        callfunc "MYgene_NT_AW_Reward";
+
+        end;
+    }
+
+    if (.@step == 9) {
+        callfunc "MYgene_NT_AW_Reward";
+        end;
+    }
+
+    dispbottom "Complete your current objective first.";
+
+    end;
+
+OnReset:
+
+    if (!playerattached() ||
+        !getgmlevel() ||
+        Class != Job_Novice ||
+        !MYGENE_NT_F1_REWARDED ||
+        MYGENE_NT_DEV_CLEARED < 1) {
+        dispbottom "Free stat reset unavailable.";
+        end;
+    }
+
+    if (MYGENE_NT_F1_RESET_USED) {
+        dispbottom "Free stat reset already used.";
+        end;
+    }
+
+    mes "[Awakening Reward]";
+    mes "Reset all your allocated stat points?";
+    mes "This reward can be used only once.";
+    next;
+
+    if (select("Reset stats:Cancel") == 2)
+        close;
+
+    if (MYGENE_NT_F1_RESET_USED ||
+        Class != Job_Novice)
+        close;
+
+    resetstatus;
+
+    MYGENE_NT_F1_RESET_USED = 1;
+
+    mes "Your stat points have been reset.";
+    mes "Build your character freely.";
+
+    close;
+
+OnPCDieEvent:
+
+    if (@MYGENE_NT_AW_ACTIVE &&
+        strcharinfo(3) == @MYGENE_NT_AW_MAP$) {
+
+        @MYGENE_NT_AW_ACTIVE = 0;
+
+        dispbottom "Awakening attempt stopped.";
+        dispbottom "Re-enter the Tower to retry.";
+    }
+
+    end;
+
+L_Stop:
+
+    @MYGENE_NT_AW_ACTIVE = 0;
+
+    end;
+}

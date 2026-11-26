@@ -1,0 +1,506 @@
+// MYGENE_PUBLIC_RC1
+// MYGENE_CONQUEST_REWARD_V35
+
+function	script	MYgene_NT_CQ_Claim	{
+
+    if (Class != Job_Novice ||
+        Hp <= 0 ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4 ||
+        MYGENE_NT_DEV_GRAD_DONE)
+        return 0;
+
+    if (!callfunc("MYgene_NT_PublicInside"))
+        return 0;
+
+    if (!getgmlevel() &&
+        (!MYGENE_NT_F1_REWARDED ||
+         !MYGENE_NT_F2_REWARDED ||
+         !MYGENE_NT_F3_REWARDED ||
+         !MYGENE_NT_F4_VICTORY))
+        return 0;
+
+    if (MYGENE_NT_F4_REWARDED)
+        return 1;
+
+    setarray .@items[0],569,506;
+    setarray .@amounts[0],30,10;
+
+    if (!checkweight2(.@items,.@amounts)) {
+
+        mes "[Tower Instructor]";
+        mes "Your Conquest victory is saved.";
+        mes "Free some inventory space.";
+        mes "Return to claim your rewards.";
+
+        return 0;
+    }
+
+    if (BaseLevel < 20)
+        BaseLevel = 20;
+
+    if (JobLevel < 9)
+        JobLevel = 9;
+
+    getitem 569,30;
+    getitem 506,10;
+
+    if (!#MYGENE_NT_ZENY_F4) {
+            #MYGENE_NT_ZENY_F4 = 1;
+            Zeny += 2500;
+            dispbottom "Account training bonus: 2500 Zeny.";
+        } else {
+            dispbottom "Account Zeny bonus already claimed.";
+        }
+
+    MYGENE_NT_F4_REWARDED = 1;
+
+    percentheal 100,100;
+
+    debugmes "[CONQUEST V35] Rewards granted.";
+
+    return 1;
+}
+
+function	script	MYgene_NT_CQ_Completion	{
+
+    if (!callfunc("MYgene_NT_CQ_Claim"))
+        return;
+
+    mes "[Tower Instructor]";
+    mes "^339933Conquest completed!^000000";
+    mes "Progress: 4/5.";
+    mes "Your progress and rewards are saved.";
+    next;
+
+    mes "[Conquest Rewards]";
+    mes "Base Level target: 20.";
+    mes "Job Level target: 9.";
+    mes "30 Novice Potions.";
+    mes "10 Green Potions.";
+    mes "First account clear: 2,500 Zeny.";
+    next;
+
+    mes "[Tower Instructor]";
+    mes "Next: Floor 5 - Destiny.";
+    mes "Are you ready to graduate?";
+    next;
+
+    .@choice = select(
+        "Continue to Floor 5:Stop and return to Prontera"
+    );
+
+    close2;
+
+    if (Class != Job_Novice ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4)
+        end;
+
+    if (.@choice == 1) {
+
+        dispbottom "Entering Floor 5 - Destiny...";
+
+        addtimer 1500,
+            "MYgene_NT_DestinyGuide::OnStart";
+
+    } else {
+
+        dispbottom "Your Tower progress is saved.";
+        dispbottom "Return to the Herald for Destiny.";
+
+        warp "prontera",158,176;
+    }
+
+    end;
+}
+
+function	script	MYgene_NT_CQ_Cleanup	{
+
+    for (.@i = 0; .@i < 6; .@i++) {
+
+        if (@MYGENE_NT_CQ_AI[.@i] > 0)
+            mygenecqremove @MYGENE_NT_CQ_AI[.@i];
+
+        @MYGENE_NT_CQ_AI[.@i] = 0;
+    }
+
+    return;
+}
+
+// MYgene Novice Tower
+// Floor 4: Conquest V1
+// GM-only scripted Guardian and six helpers.
+
+function	script	MYgene_NT_CQ_Valid	{
+
+    if (Class != Job_Novice)
+        return 0;
+
+    if (getcharid(1) != 0 || Hp <= 0)
+        return 0;
+
+    if (MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 3)
+        return 0;
+
+    if (instance_id(IM_CHAR) <= 0 ||
+        instance_id(IM_CHAR) != @MYGENE_NT_CQ_INSTANCE)
+        return 0;
+
+    if (strcharinfo(3) != @MYGENE_NT_CQ_MAP$)
+        return 0;
+
+    return 1;
+}
+
+function	script	MYgene_NT_Conquest_Start	{
+
+    .@id = instance_id(IM_CHAR);
+
+    if (.@id <= 0)
+        return;
+
+    if (getmapxy(.@map$,.@x,.@y,BL_PC) != 0)
+        return;
+
+    if (.@map$ != getarg(0) ||
+        .@map$ != instance_mapname("1@tower",.@id))
+        return;
+
+    @MYGENE_NT_CQ_INSTANCE = .@id;
+    @MYGENE_NT_CQ_MAP$ = .@map$;
+
+    if (!callfunc("MYgene_NT_CQ_Valid"))
+        return;
+
+    if (@MYGENE_NT_CQ_ACTIVE)
+        deltimer "MYgene_NT_Conquest::OnPoll";
+
+    @MYGENE_NT_CQ_ACTIVE = 0;
+    @MYGENE_NT_CQ_BOSS = 0;
+    @MYGENE_NT_CQ_STAGE = 0;
+    callfunc "MYgene_NT_CQ_Cleanup";
+    @MYGENE_NT_CQ_HEAL = 0;
+
+    killmonster .@map$,
+        "MYgene_NT_Conquest::OnGuardianDead";
+
+    setmapflag .@map$,MF_NOBASEEXP;
+    setmapflag .@map$,MF_NOJOBEXP;
+    setmapflag .@map$,MF_NOMOBLOOT;
+
+    percentheal 100,100;
+
+    setarray .@ox[0],3,-3,0,0,2,-2,2,-2;
+    setarray .@oy[0],0,0,3,-3,2,2,-2,-2;
+
+    .@found = 0;
+
+    for (.@i = 0; .@i < 8; .@i++) {
+
+        .@sx = .@x + .@ox[.@i];
+        .@sy = .@y + .@oy[.@i];
+
+        if (checkcell(.@map$,.@sx,.@sy,cell_chkpass)) {
+            .@found = 1;
+            break;
+        }
+    }
+
+    if (!.@found) {
+        dispbottom "Guardian spawn failed. Re-enter to retry.";
+        return;
+    }
+
+    monster .@map$,.@sx,.@sy,
+        "Tower Guardian",1013,1,
+        "MYgene_NT_Conquest::OnGuardianDead";
+
+    .@gid = $@mobid[0];
+
+    if (.@gid <= 0 || !unitexists(.@gid)) {
+        dispbottom "Guardian spawn failed.";
+        return;
+    }
+
+    // MYGENE_CONQUEST_V2
+
+    .@guardianhp = MaxHp * 8;
+
+    if (.@guardianhp < 1200)
+        .@guardianhp = 1200;
+
+    if (.@guardianhp > 4000)
+        .@guardianhp = 4000;
+
+    .@attack = (MaxHp * 5 + 99) / 100;
+
+    if (.@attack < 1)
+        .@attack = 1;
+
+    setunitdata .@gid,UMOB_MAXHP,.@guardianhp;
+    setunitdata .@gid,UMOB_HP,.@guardianhp;
+    setunitdata .@gid,UMOB_ATKMIN,.@attack;
+    setunitdata .@gid,UMOB_ATKMAX,.@attack;
+    setunitdata .@gid,UMOB_MODE,133;
+    setunitdata .@gid,UMOB_FLEE,5;
+    setunitdata .@gid,UMOB_DEF,0;
+
+    debugmes "[CONQUEST V33] Player MaxHP: "+MaxHp;
+    debugmes "[CONQUEST V33] Guardian HP: "+.@guardianhp;
+    debugmes "[CONQUEST V33] Guardian ATK: "+.@attack;
+
+    @MYGENE_NT_CQ_BOSS = .@gid;
+    @MYGENE_NT_CQ_ACTIVE = 1;
+
+    dispbottom "=== FLOOR 4: CONQUEST ===";
+    dispbottom "Defeat the Tower Guardian.";
+    // MYGENE_CONQUEST_REINFORCEMENTS_V33
+
+    @MYGENE_NT_CQ_STAGE = 0;
+    @MYGENE_NT_CQ_RELEASE = 0;
+    @MYGENE_NT_CQ_DEMO_ROLE = 0;
+    @MYGENE_NT_CQ_DEMO_SEEN = 0;
+    @MYGENE_NT_CQ_NEXT = 0;
+    @MYGENE_NT_CQ_TIMEOUT = 0;
+
+    dispbottom "=== ADVENTURER REINFORCEMENTS ===";
+    dispbottom "Six mentors will join one at a time.";
+    dispbottom "Watch their combat abilities.";
+    dispbottom "The Guardian is protected until all arrive.";
+    dispbottom "Keep fighting and use your potions.";
+    debugmes "[CONQUEST] Guardian spawned: " + .@gid;
+
+    addtimer 1000,"MYgene_NT_Conquest::OnPoll";
+
+    return;
+}
+
+-	script	MYgene_NT_Conquest	-1,{
+
+OnPoll:
+
+    if (!playerattached())
+        end;
+
+    if (!@MYGENE_NT_CQ_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_CQ_Valid"))
+        goto L_Stop;
+
+    .@gid = @MYGENE_NT_CQ_BOSS;
+
+    if (.@gid <= 0 || !unitexists(.@gid))
+        goto L_Stop;
+
+    if (@MYGENE_NT_CQ_RELEASE)
+        goto L_ReinforcementWait;
+
+    .@now = gettimetick(2);
+
+    // Observe each newly arrived mentor.
+
+    if (@MYGENE_NT_CQ_STAGE > 0) {
+
+        if (.@now < @MYGENE_NT_CQ_NEXT)
+            goto L_ReinforcementWait;
+
+        if (@MYGENE_NT_CQ_DEMO_SEEN) {
+
+            if (.@now < @MYGENE_NT_CQ_DEMO_SEEN + 2)
+                goto L_ReinforcementWait;
+
+            dispbottom "[Instructor] Signature skill demonstrated.";
+
+        } else {
+
+            if (.@now < @MYGENE_NT_CQ_TIMEOUT)
+                goto L_ReinforcementWait;
+
+            dispbottom "[Instructor] Watch this mentor during combat.";
+
+            debugmes "[CONQUEST V33] Demonstration timeout. Role: "+
+                @MYGENE_NT_CQ_DEMO_ROLE;
+        }
+    }
+
+    // The party is complete. Release HP protection.
+
+    if (@MYGENE_NT_CQ_STAGE >= 6) {
+
+        @MYGENE_NT_CQ_RELEASE = 1;
+        @MYGENE_NT_CQ_DEMO_ROLE = 0;
+
+        dispbottom "=== FULL ADVENTURER PARTY ===";
+        dispbottom "All six mentors have arrived!";
+        dispbottom "Guardian protection removed.";
+        dispbottom "Deliver the final blow!";
+
+        debugmes "[CONQUEST V33] Final combat phase.";
+
+        goto L_ReinforcementWait;
+    }
+
+    // Swordman, Acolyte, Mage, Archer,
+    // Thief and Merchant.
+
+    setarray .@order[0],1,4,2,3,5,6;
+
+    .@role = .@order[@MYGENE_NT_CQ_STAGE];
+
+    @MYGENE_NT_CQ_DEMO_ROLE = .@role;
+    @MYGENE_NT_CQ_DEMO_SEEN = 0;
+
+    .@mentor = mygenecqspawn(.@role,.@gid);
+
+    if (.@mentor <= 0) {
+
+        @MYGENE_NT_CQ_ACTIVE = 0;
+
+        callfunc "MYgene_NT_CQ_Cleanup";
+
+        killmonster strcharinfo(3),
+            "MYgene_NT_Conquest::OnGuardianDead";
+
+        dispbottom "Mentor summon failed.";
+        dispbottom "Re-enter the Tower to retry.";
+
+        end;
+    }
+
+    @MYGENE_NT_CQ_AI[.@role-1] = .@mentor;
+
+    @MYGENE_NT_CQ_STAGE++;
+    @MYGENE_NT_CQ_NEXT = .@now + 6;
+    @MYGENE_NT_CQ_TIMEOUT = .@now + 15;
+
+    dispbottom "Reinforcement "+
+        @MYGENE_NT_CQ_STAGE+"/6";
+
+    switch (.@role) {
+
+        case 1:
+            dispbottom "[Swordman] I'll hold the front line!";
+            dispbottom "Watch Bash and Provoke.";
+            break;
+
+        case 4:
+            dispbottom "[Acolyte] I'll keep you standing!";
+            dispbottom "Watch Heal and Blessing.";
+            break;
+
+        case 2:
+            dispbottom "[Mage] Let me show you elemental magic!";
+            dispbottom "Watch Fire Bolt.";
+            break;
+
+        case 3:
+            dispbottom "[Archer] I'll attack from a distance!";
+            dispbottom "Watch Double Strafe.";
+            break;
+
+        case 5:
+            dispbottom "[Thief] Speed is my advantage!";
+            dispbottom "Watch Double Attack.";
+            break;
+
+        case 6:
+            dispbottom "[Merchant] Time for a powerful strike!";
+            dispbottom "Watch Mammonite.";
+            break;
+    }
+
+    debugmes "[CONQUEST V33] Reinforcement "+
+        @MYGENE_NT_CQ_STAGE+"/6 Role: "+.@role;
+
+L_ReinforcementWait:
+
+    addtimer 1000,"MYgene_NT_Conquest::OnPoll";
+
+    end;
+OnGuardianDead:
+
+    if (!playerattached())
+        end;
+
+    if (!@MYGENE_NT_CQ_ACTIVE)
+        end;
+
+    if (!callfunc("MYgene_NT_CQ_Valid"))
+        end;
+
+    if (killedgid != @MYGENE_NT_CQ_BOSS)
+        end;
+
+    if (@MYGENE_NT_CQ_STAGE >= 6 &&
+        @MYGENE_NT_CQ_RELEASE) {
+
+        dispbottom "[Swordman] Well fought!";
+        dispbottom "[Acolyte] May you travel safely.";
+        dispbottom "[Mage] Never stop learning.";
+        dispbottom "[Archer] Keep your aim true.";
+        dispbottom "[Thief] Stay sharp out there.";
+        dispbottom "[Merchant] Good fortune, adventurer!";
+    }
+
+    @MYGENE_NT_CQ_ACTIVE = 0;
+    @MYGENE_NT_CQ_BOSS = 0;
+
+    callfunc "MYgene_NT_CQ_Cleanup";
+
+    deltimer "MYgene_NT_Conquest::OnPoll";
+
+    if (@MYGENE_NT_CQ_STAGE < 6 ||
+        !@MYGENE_NT_CQ_RELEASE) {
+        dispbottom "Guardian defeated too early.";
+        dispbottom "Meet all six helpers before finishing.";
+        dispbottom "Re-enter the Tower to retry.";
+        end;
+    }
+
+    MYGENE_NT_F4_VICTORY = 1;
+    MYGENE_NT_DEV_CLEARED = 4;
+
+    percentheal 100,100;
+
+    dispbottom "=== CONQUEST COMPLETE ===";
+    dispbottom "You defeated the Tower Guardian!";
+    dispbottom "Floor 4 checkpoint saved.";
+
+    debugmes "[CONQUEST] Guardian trial passed.";
+
+    addtimer 1500,
+        "MYgene_NT_Conquest::OnFinish";
+
+    end;
+
+OnFinish:
+
+    if (!playerattached())
+        end;
+
+    if (Class != Job_Novice ||
+        MYGENE_NT_DEV_ROUTE != 2 ||
+        MYGENE_NT_DEV_CLEARED != 4)
+        end;
+
+    callfunc "MYgene_NT_CQ_Completion";
+
+    close;
+
+OnPCDieEvent:
+OnPCLogoutEvent:
+
+    if (!@MYGENE_NT_CQ_ACTIVE)
+        end;
+
+L_Stop:
+
+    @MYGENE_NT_CQ_ACTIVE = 0;
+
+    callfunc "MYgene_NT_CQ_Cleanup";
+
+    end;
+}

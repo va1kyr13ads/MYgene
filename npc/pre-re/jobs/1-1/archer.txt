@@ -77,6 +77,44 @@ payon_in02,64,71,4	script	Archer Guildsman#archer	85,{
 	next;
 	switch(select("I want to be an Archer.:I need the requirements, please.:Nothing, thanks.")) {
 	case 1:
+    // MYgene: Vanilla First Job Fast Advancement
+    if (Class == Job_Novice && Upper == 0 &&
+        BaseLevel >= 20 && JobLevel >= 10 &&
+        getskilllv("NV_BASIC") >= 9 &&
+        (MYGENE_NT_ROUTE == 0 || MYGENE_NT_ROUTE == 1) &&
+        MYGENE_NT_DEV_ROUTE != 2 &&
+        MYGENE_NT_INSTANCE == 0) {
+
+        mes "[First Job Advancement]";
+        mes "Your training is complete.";
+        mes "You qualify to become a Archer";
+        mes "without taking the job change test.";
+        next;
+
+        if (select("Become a Archer:Cancel") != 1)
+            close;
+
+        skill "NV_TRICKDEAD",0,SKILL_PERM;
+        callfunc "Job_Change",Job_Archer;
+
+        if (Class != Job_Archer) {
+            mes "Job change failed.";
+            close;
+        }
+
+        callfunc "F_ClearJobVar";
+
+        for (.@q = 1001; .@q <= 1014; .@q++) {
+            if (isbegin_quest(.@q) == 1)
+                erasequest .@q;
+        }
+
+        mes "[First Job Advancement]";
+        mes "Congratulations!";
+        mes "You are now a Archer.";
+        close;
+    }
+
 		if (BaseJob == Job_Archer) {
 			mes "[Archer Guildsman]";
 			mes "You've already become an Archer...";
