@@ -1337,7 +1337,8 @@ mod tests {
 
     #[test]
     fn shows_universal_item_id_without_revealing_unidentified_equipment() {
-        let items = items();
+        let mut items = items();
+        items.insert(60019, ItemInfo { name: "Orc Slayer Axe".into(), ..Default::default() });
         let plain = |window: ItemWindow| window.lines(&items, &[], 0).iter()
             .map(|row| row.iter().map(|(_, part)| part.as_str()).collect::<String>())
             .collect::<Vec<_>>();
@@ -1345,7 +1346,9 @@ mod tests {
         assert_eq!(plain(ItemWindow::new(knife.clone())).first().map(String::as_str), Some("Item ID: 1201"));
         assert!(!plain(ItemWindow::new(Shown { identified: false, ..knife }))
             .iter().any(|line| line.starts_with("Item ID:")));
-        assert_eq!(plain(ItemWindow::new(shown(60019, net::ITEM_WEAPON, [0; 4]))).first().map(String::as_str), Some("Item ID: 60019"));
+        let slayer = plain(ItemWindow::new(shown(60019, net::ITEM_WEAPON, [0; 4])));
+        assert_eq!(slayer.first().map(String::as_str), Some("Item ID: 60019"));
+        assert_eq!(slayer.iter().filter(|line| line.starts_with("Item ID:")).count(), 1);
     }
 
     #[test]
