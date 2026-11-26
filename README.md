@@ -1,3 +1,37 @@
+# MYgene Ragnarok Online
+
+**Classic Pre-Renewal server development • Beta 1.0**
+
+MYgene is a customized Ragnarok Online server based on rAthena, with a companion Rustnarok client.
+
+## Current development release
+
+**[Explore MYgene Beta 1.0](https://github.com/va1kyr13ads/MYgene/tree/release/mygene-beta-20261126-113632)**
+
+<img src="https://raw.githubusercontent.com/va1kyr13ads/MYgene/release/mygene-beta-20261126-113632/client/rustnarok/src/ui/mygene_tower_emblem.png" alt="MYgene Novice Tower emblem" width="112" />
+
+| Feature | Version |
+| --- | --- |
+| Slayer Series | V10.11.1 — six weapon families |
+| Novice Tower | Beta 1.0 RC1.1 — five-floor tutorial |
+| Guardian of Time | V1.3.5 |
+| Rustnarok client | Tower V61 |
+
+The Beta branch includes native server changes, gameplay scripts, custom databases and client source. Windows server and client builds passed in local staging. Fresh-install runtime validation remains pending; `master` has not received the Beta gameplay changes.
+
+- [Beta feature overview](https://github.com/va1kyr13ads/MYgene/tree/release/mygene-beta-20261126-113632#features)
+- [Build and deployment instructions](https://github.com/va1kyr13ads/MYgene/blob/release/mygene-beta-20261126-113632/docs/mygene/BUILD-AND-DEPLOY.md)
+- [Releases](https://github.com/va1kyr13ads/MYgene/releases)
+- [Issue tracker](https://github.com/va1kyr13ads/MYgene/issues)
+
+The custom map cache and proprietary game assets must be supplied separately. Never publish production credentials or player data.
+
+MYgene preserves rAthena's upstream license and Rustnarok's license notices. See the upstream documentation below.
+
+---
+
+## Upstream rAthena documentation
+
 <img src="doc/logo.png" align="right" height="90" />
 
 # rAthena
