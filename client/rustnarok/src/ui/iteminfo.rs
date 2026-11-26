@@ -314,7 +314,6 @@ fn mygene_slayer_description(
 
     if id == 31003 {
         return Some(vec![
-            "^3399FFItem ID: 31003^000000".into(),
             "Attraction Potion".into(),
             "".into(),
             "Duration: 5 minutes".into(),
@@ -472,9 +471,7 @@ fn mygene_slayer_description(
     let weight = if perfect { 100 } else { 40 };
     let weapon_lv = if perfect { 4 } else { 1 };
 
-    let mut out = vec![
-        format!("^3399FFItem ID: {id}^000000")
-    ];
+    let mut out = Vec::new();
 
     if perfect {
         out.push(mygene_awakening_line(expires, now));
@@ -934,9 +931,16 @@ impl ItemWindow {
 
     /// The description's lines, cut to their characters: a rental's time left (by `now`, Unix seconds) first.
     pub fn lines(&self, items: &HashMap<u32, ItemInfo>, messages: &[String], now: u64) -> ColoredLines {
-        let Some(info) = items.get(&self.shown.item) else { return Vec::new() };
         let mut color = [0, 0, 0];
         let mut lines = ColoredLines::new();
+        // Universal ID, even when client metadata for an identified item is missing.
+        if self.shown.identified {
+            lines.extend(cut_description(
+                &format!("^3399FFItem ID: {}^000000", self.shown.item),
+                LINE_COLUMNS, &mut color,
+            ));
+        }
+        let Some(info) = items.get(&self.shown.item) else { return lines };
         if self.shown.identified {
             if let Some(description) =
                 mygene_slayer_description(
@@ -983,6 +987,11 @@ impl ItemWindow {
             }
         } else {
             for line in info.description(self.shown.identified) {
+                // Custom item data may already have an ID row; don't repeat it.
+                let plain = line.trim().strip_prefix("^3399FF").unwrap_or(line.trim());
+                if plain.trim_end_matches("^000000").trim().eq_ignore_ascii_case(&format!("Item ID: {}", self.shown.item)) {
+                    continue;
+                }
                 lines.extend(cut_description(line, LINE_COLUMNS, &mut color));
             }
         }
@@ -1324,6 +1333,19 @@ mod tests {
     fn items() -> HashMap<u32, ItemInfo> {
         let info = |name: &str, slots| ItemInfo { name: name.into(), slots, ..Default::default() };
         HashMap::from([(1201, info("Knife", 3)), (2301, info("Cotton Shirt", 0)), (4001, info("Poring Card", 0)), (4700, info("STR+1", 0))])
+    }
+
+    #[test]
+    fn shows_universal_item_id_without_revealing_unidentified_equipment() {
+        let items = items();
+        let plain = |window: ItemWindow| window.lines(&items, &[], 0).iter()
+            .map(|row| row.iter().map(|(_, part)| part.as_str()).collect::<String>())
+            .collect::<Vec<_>>();
+        let knife = shown(1201, net::ITEM_WEAPON, [0; 4]);
+        assert_eq!(plain(ItemWindow::new(knife.clone())).first().map(String::as_str), Some("Item ID: 1201"));
+        assert!(!plain(ItemWindow::new(Shown { identified: false, ..knife }))
+            .iter().any(|line| line.starts_with("Item ID:")));
+        assert_eq!(plain(ItemWindow::new(shown(60019, net::ITEM_WEAPON, [0; 4]))).first().map(String::as_str), Some("Item ID: 60019"));
     }
 
     #[test]
