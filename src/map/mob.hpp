@@ -256,6 +256,7 @@ struct s_mob_drop {
 	uint32 rate;
 	uint16 randomopt_group;
 	bool steal_protected;
+	uint32 mygene_base_rate = 0; // Original YAML rate, before server multipliers.
 };
 
 struct s_mob_db {
