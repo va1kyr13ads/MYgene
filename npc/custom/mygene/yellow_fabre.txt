@@ -10,6 +10,11 @@ function	script	F_MYgeneExclusiveClaim	{
     if (!mygeneexclusivegive(.@id))
         return 0;
 
+    // Record the roll's provenance, not the buff at delivery/retry time.
+    .@gumkey$ = "MYGENE_PENDING_GUM_"+.@id;
+    .@gum = (getd(.@gumkey$) > 0 && getd(.@gumkey$) >= getd(.@key$));
+    if (.@gum)
+        setd .@gumkey$,getd(.@gumkey$)-1;
     setd .@key$,getd(.@key$)-1;
 
     dispbottom "[Slayer] Obtained "+
@@ -38,10 +43,14 @@ function	script	F_MYgeneExclusiveClaim	{
     }
 
     if (.@rate$ != "") {
-        announce "[Slayer] "+strcharinfo(0)+
-            " obtained "+getitemname(.@id)+
-            "! (Base rate: "+.@rate$+")",
-            bc_all,0xFFD700;
+        if (.@gum)
+            announce "[Legendary Drop] "+strcharinfo(0)+" obtained "+
+                getitemname(.@id)+" ["+.@id+"] | "+.@rate$+
+                " -> 100% (Legendary Bubble Gum)",bc_all,0xC084FC;
+        else
+            announce "[Slayer] "+strcharinfo(0)+" obtained "+
+                getitemname(.@id)+" ["+.@id+"] | "+.@rate$+
+                " (Fixed)",bc_all,0xE67E22;
     }
 
     return 1;
@@ -60,8 +69,13 @@ function	script	F_MYgeneExclusiveReward	{
     .@id = getarg(0);
     .@key$ = "MYGENE_PENDING_LOOT_"+.@id;
 
-    // Reserve first, then attempt delivery.
+    // Reserve first, then attempt delivery. Normal reservations are drained
+    // first when mixed; the guaranteed count survives logout and delayed claim.
     setd .@key$,getd(.@key$)+1;
+    if (getarg(1,0)) {
+        .@gumkey$ = "MYGENE_PENDING_GUM_"+.@id;
+        setd .@gumkey$,getd(.@gumkey$)+1;
+    }
 
     if (!callfunc("F_MYgeneExclusiveClaim",.@id)) {
         dispbottom "[Slayer] Reward reserved: "+
@@ -83,7 +97,7 @@ function	script	F_MYgeneExclusiveRoll	{
 
     // Weapon: 0.05%.
     if (.@guaranteed || rand(1000000) < 500)
-        callfunc "F_MYgeneExclusiveReward",.@weapon;
+        callfunc "F_MYgeneExclusiveReward",.@weapon,.@guaranteed;
 
     // One random gemstone: 70%.
     if (.@guaranteed || rand(1000000) < 700000) {
@@ -93,7 +107,7 @@ function	script	F_MYgeneExclusiveRoll	{
 
     // Card: 0.01%.
     if (.@guaranteed || rand(1000000) < 100)
-        callfunc "F_MYgeneExclusiveReward",.@card;
+        callfunc "F_MYgeneExclusiveReward",.@card,.@guaranteed;
 
     // Gold item: 11%.
     if (.@guaranteed || rand(1000000) < 110000)
